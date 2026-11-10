@@ -55,7 +55,12 @@ export async function refreshPlan(): Promise<PlanState | null> {
     const r = await fetch(`${url}/api/cells/self`, { headers: { Authorization: `Bearer ${key}`, 'X-Studio-Cell': org }, signal: AbortSignal.timeout(10_000) });
     if (!r.ok) return cellPlan?.state ?? null;
     const j: any = await r.json();
+    const had = cellPlan?.state;
     setCellPlan({ plan: String(j.plan ?? 'free'), status: j.status ?? null, maxGames: j.maxGames ?? null, from: 'control' });
+    // Cloud builds just came with the plan: builds that were refused for it start again, their Inbox cards go (inbox.ts).
+    if (!featuresOf(had?.plan ?? 'free', had?.maxGames ?? null).features.includes('cloudBuilds') && featuresOf(cellPlan!.state.plan, cellPlan!.state.maxGames).features.includes('cloudBuilds')) {
+      void import('./inbox.ts').then((m) => m.inbox()).catch(() => {});
+    }
   } catch { /* the control plane is away: keep what we had */ }
   return cellPlan?.state ?? null;
 }

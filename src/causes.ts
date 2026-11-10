@@ -49,6 +49,7 @@ const LABELS: Record<string, string> = {
   'gen-restart': 'Hawkes Gen restarting',
   'cloud-quota': 'a cloud quota',
   conflict: 'merge conflicts',
+  'plan-upgrade': "a plan that didn't include cloud builds yet",
   harness: 'the AI harness stopping',
   'gen-link': 'an expired Hawkes Gen file link',
   'gen-file': 'a file missing from the Hawkes Gen library',
@@ -56,7 +57,7 @@ const LABELS: Record<string, string> = {
   'gen-auth': 'Hawkes Gen refusing the key (401)',
 };
 /** Transient: Studio retries them itself. conflict counts as one: a conflict that isn't real goes away on a fresh try. */
-const TRANSIENT = new Set(['studio-restart', 'killed-run', 'token-expired', 'network', 'server-error', 'rate-limit', 'gen-restart', 'cloud-quota', 'conflict']);
+const TRANSIENT = new Set(['studio-restart', 'killed-run', 'token-expired', 'network', 'server-error', 'rate-limit', 'gen-restart', 'cloud-quota', 'conflict', 'plan-upgrade']);
 
 const mk = (key: string, cls?: CauseClass): Cause => ({ key, label: LABELS[key] ?? key.replace(/^access:/, 'GitHub access: '), cls: cls ?? (TRANSIENT.has(key) ? 'transient' : 'other') });
 
@@ -68,6 +69,7 @@ export function causeOf(text: unknown, o: { permission?: string | null; repo?: s
     const repo = o.repo ?? /\b([\w.\-]+\/[\w.\-]+)\b(?=[^/]*$)/.exec(e.replace(/https?:\/\/\S+/g, ''))?.[1] ?? 'repo';
     return mk(`access:${perm}@${repo}`, 'j-only');
   }
+  if (/cloud builds? (is|are) on the .* plan|plan (doesn'?t|does not) include cloud builds/i.test(e)) return mk('plan-upgrade');
   if (/studio restarted|restarted \d+ times in a row|stopped by (a|studio'?s?) restart|killed by (a|studio'?s?) restart|studio('s)? restarts?/i.test(e)) return mk('studio-restart');
   if (/hawkes gen (restarted|was restarting|is restarting|didn't answer|is down|unavailable)|gen restarted/i.test(e)) return mk('gen-restart');
   if (/bad credentials|token (has |had )?expired|expired (github |installation )?token|token (was |is )?lost|tokenLost|lost (its|the) token|requires authentication|\b401\b.*github|github.*\b401\b/i.test(e)) return mk('token-expired');

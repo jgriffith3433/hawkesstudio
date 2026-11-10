@@ -16,7 +16,8 @@
     .cu-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-top: 14px; }
     .cu-box h3 { margin: 0 0 6px; font-size: 15px; } .cu-box h4 { margin: 12px 0 4px; font-size: 13px; }
     .cu-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
-    .cu-form input[name=reason] { flex: 1 1 260px; }
+    .cu-form input[name=reason] { flex: 1 1 260px; } .cu-form select { flex: 1 1 260px; max-width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; color: inherit; }
+    @media (max-width: 600px) { .cu-form > * { flex: 1 1 100%; width: auto !important; } .cu-form button { min-height: 40px; } }
     .cu-msg .err { color: var(--red); } .cu-msg .ok { color: var(--accent); }
     .pill.suspended { color: var(--red); border-color: rgba(255,107,107,.4); }
     .cu-wrap { overflow-x: auto; }`;
@@ -44,7 +45,7 @@
     const th = (k, label, cls = '') => `<th class="${cls}" data-sort="${k}" style="cursor:pointer">${label}${st.sort === k ? (st.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
     return `<div class="cu-bar"><input type="search" id="cuQ" placeholder="Search name, owner, plan, status…" value="${esc(st.q)}"><span class="meta">${rows.length} of ${st.list.customers.length} studios</span></div>
       <div class="cu-wrap"><table class="cu-table"><thead><tr>${th('name', 'Studio')}${th('owner', 'Owner')}${th('plan', 'Plan')}${th('credits', 'Credits', 'num')}${th('created', 'Created')}${th('activity', 'Last activity')}${th('projects', 'Projects', 'num')}${th('status', 'Status')}</tr></thead>
-      <tbody>${rows.map((c) => `<tr data-org="${esc(c.id)}"><td><b>${esc(c.name || c.id)}</b><div class="meta">${esc(c.id)}</div></td><td>${esc(c.ownerEmail)}</td><td>${esc(planName(c.plan))}</td><td class="num">${num(c.credits)}</td><td>${day(c.created)}</td><td>${c.lastActivity ? esc(ago(c.lastActivity)) : '–'}</td><td class="num">${num(c.projects)}</td><td>${pill(c)}</td></tr>`).join('') || '<tr><td colspan="8" class="meta">No studios match.</td></tr>'}</tbody></table></div>
+      <tbody>${rows.map((c) => `<tr data-org="${esc(c.id)}"><td><b>${esc(c.name || c.id)}</b><div class="meta">${esc(c.id)}</div></td><td>${esc(c.ownerEmail)}</td><td>${esc(planName(c.plan))}<div class="meta">${esc((c.plan.includes ?? []).join(', ') || 'No pro features')}</div></td><td class="num">${num(c.credits)}</td><td>${day(c.created)}</td><td>${c.lastActivity ? esc(ago(c.lastActivity)) : '–'}</td><td class="num">${num(c.projects)}</td><td>${pill(c)}</td></tr>`).join('') || '<tr><td colspan="8" class="meta">No studios match.</td></tr>'}</tbody></table></div>
       ${st.list.cellsOn ? '' : '<div class="meta">This Studio is not the control plane (STUDIO_CELLS is off), so there are no customer studios to show.</div>'}`;
   }
 
@@ -56,6 +57,11 @@
       <div class="meta">${esc(d.ownerEmail)} · ${esc(planName(d.plan))} · created ${day(d.created)} · ${num(d.projects)} projects · ${d.members} ${d.members === 1 ? 'person' : 'people'}${d.hibernatedAt ? ` · asleep since ${day(d.hibernatedAt)}` : ''}${d.error ? ` · <span class="err">${esc(d.error)}</span>` : ''}</div>
       ${d.suspended ? `<div class="meta"><span class="err">Suspended ${day(d.suspended.at)}${d.suspended.by ? ` by ${esc(d.suspended.by)}` : ''}: ${esc(d.suspended.reason ?? '')}</span></div>` : ''}
       ${d.gift ? `<div class="meta">🎁 Gift plan ${esc(d.gift.plan)} ${d.gift.until ? `until ${day(d.gift.until)}` : 'for good'}${d.gift.note ? ` · ${esc(d.gift.note)}` : ''} (change plan gifts in Settings → Platform)</div>` : ''}
+      <h4>Plan: ${esc(planName(d.plan))}</h4>
+      <div class="meta">Includes ${num(d.plan.games)} game${d.plan.games === 1 ? '' : 's'}${d.plan.includes?.length ? ` · ${esc(d.plan.includes.join(', '))}` : ' · no pro features'}${d.plan.subscription ? ` · paying for ${esc(d.plan.subscription.replace(/^studio_/, ''))} through Stripe` : ''}</div>
+      <form class="cu-form" data-plan><select name="plan">${(st.list?.plans ?? []).map((p) => `<option value="${esc(p.id)}"${p.id === d.plan.id ? ' selected' : ''}>${esc(p.id === 'free' ? 'Free (take the complimentary plan back)' : p.id.replace(/^studio_/, '').replace(/_/g, ' '))} · ${p.games} games${p.includes.length ? ` · ${esc(p.includes.join(', '))}` : ''}</option>`).join('')}</select>
+        <input name="reason" placeholder="Why (required: kept with the plan)" maxlength="200" required><button class="small primary" type="submit">Change plan…</button></form>
+      <div class="meta">A complimentary plan: no Stripe, no charge. A paid subscription on a higher plan still counts.</div>
       <h3 style="margin-top:12px">Balance: ${num(d.credits)} credits</h3>
       <form class="cu-form" data-gift><input name="amount" type="number" min="1" max="${d.giftMax}" step="1" placeholder="credits (1–${num(d.giftMax)})" style="width:170px" required>
         <input name="reason" placeholder="Why (required: it is written in the ledger)" maxlength="200" required><button class="small primary" type="submit">Gift credits…</button></form>
@@ -108,7 +114,13 @@
     const f = new FormData(form);
     const btn = form.querySelector('button');
     try {
-      if (form.hasAttribute('data-gift')) {
+      if (form.hasAttribute('data-plan')) {
+        const plan = String(f.get('plan')); const reason = String(f.get('reason') ?? '').trim();
+        if (!confirm(`Change ${st.detail?.name || id} to ${plan === 'free' ? 'Free' : plan.replace(/^studio_/, '')}?\n\nReason: ${reason}\n\nA complimentary plan: nobody is charged and no Stripe price changes.`)) return;
+        btn.disabled = true;
+        await api(`/api/admin/customers/${encodeURIComponent(id)}/plan`, { method: 'POST', body: { plan, note: reason, confirm: true } });
+        st.msg = '<span class="ok">Plan changed.</span>';
+      } else if (form.hasAttribute('data-gift')) {
         const amount = Number(f.get('amount')); const reason = String(f.get('reason') ?? '').trim();
         if (!confirm(`Gift ${amount.toLocaleString()} credits to ${st.detail?.name || id}?\n\nReason: ${reason}\n\nIt is written to their ledger as an admin gift from you, and can't be undone from here.`)) return;
         btn.disabled = true;

@@ -180,7 +180,10 @@ function about(q: Question) {
 }
 
 /** Questions that no longer wait on anything are closed (the agent went on, the budget was approved elsewhere). */
-function tidy() {
+const planHasCloudBuilds = async () => (await import('./entitlements.ts').then((m) => m.entitlements())).features.includes('cloudBuilds');
+
+async function tidy() {
+  const cloudBuilds = await planHasCloudBuilds();
   const awaiting = new Set(tasksAwaitingGpu().map((t) => t.id));
   for (const q of listQuestions()) {
     let why = '';
@@ -195,6 +198,8 @@ function tidy() {
       const f = getQuestion(q.forwards);
       if (f && !['open', 'asked J'].includes(f.status)) why = `the agent's question was ${f.status}${f.answered_by ? ` by ${f.answered_by}` : ''}`;
     }
+    // A card asking to confirm an upgrade for cloud builds, once the plan has them: nothing left to decide.
+    if (!why && cloudBuilds && /cloud builds/i.test(q.text) && /\b(upgrade|plan)\b/i.test(q.text)) why = 'the plan includes cloud builds now';
     // Memory curation's contradiction cards: one side deleted, faded or settled, or its twin answered.
     if (!why) why = contradictionSettled(q);
     if (why) setQuestion(q.id, { status: 'resolved', answer: `(no longer waiting: ${why})`, answered_by: 'Studio' });
@@ -257,7 +262,7 @@ async function pmHandles() {
 
 /** Everything waiting on J, sorted by what it blocks most (then oldest first). */
 export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Promise<InboxItem[]> {
-  tidy();
+  await tidy();
   const pm = await import('./pm.ts');
   const handled = await pmHandles();
   const settings = pm.pmSettings();
@@ -376,7 +381,9 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       // again by Studio, up to RETRY_LIMIT times a day; only the last failure shows, saying what was tried.
       const cause = f.kind === 'code' ? null : causeOf(f.reason);
       const tried = cause?.cls === 'transient' ? causeLog(cause.key, 24 * HOUR).filter((r) => r.kind === 'rebuilt' && r.subject === `${p.id}/${f.build}`) : [];
-      if (cause?.cls === 'transient' && tried.length < RETRY_LIMIT && (await rebuildForCause(p.id, f, cause))) continue;
+      // A build refused for its plan waits for the plan (no tries spent) and starts by itself once it includes cloud builds.
+      const planWait = cause?.key === 'plan-upgrade' && !(await planHasCloudBuilds());
+      if (cause?.cls === 'transient' && !planWait && tried.length < RETRY_LIMIT && (await rebuildForCause(p.id, f, cause))) continue;
       const triedLine = tried.length ? `\n\nAlready tried: Studio built it again ${tried.length} time${tried.length === 1 ? '' : 's'} by itself (${tried.map((r) => new Date(r.at).toISOString().slice(11, 16)).join(', ')} UTC) because it looked like ${cause!.label}, and it still fails.` : '';
       out.push({
         id: `build:${f.id}`, kind: 'build', title: `${p.name}: build ${f.build} ${f.version} failed${f.sha ? ` (${f.sha.slice(0, 7)})` : ''}`,

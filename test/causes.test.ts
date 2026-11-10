@@ -52,6 +52,7 @@ test('causes: every transient failure J saw on Nov 8 has its key; a permission i
   assert.equal(C.causeOf('RESOURCE_EXHAUSTED: quota exceeded for cpus')?.key, 'cloud-quota');
   assert.equal(C.causeOf("can't merge into beta: it still conflicts with beta")?.key, 'conflict');
   assert.equal(C.causeOf('Resource not accessible by integration', { permission: 'Actions: write', repo: 'o/r' })?.key, 'access:actions:write@o/r');
+  assert.equal(C.causeOf('Cloud builds are on the Studio plan and up. Upgrade to use it.')?.key, 'plan-upgrade');
   assert.equal(C.causeOf('The palette is ugly'), null);
   for (const k of ['studio-restart', 'token-expired', 'killed-run', 'network', 'server-error', 'rate-limit', 'cloud-quota', 'conflict']) assert.equal(C.causeFromKey(k).cls, 'transient', k);
   assert.ok(C.jOnly({ text: 'Accept the Actions: write permission on the installation page?' }));
