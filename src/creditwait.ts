@@ -16,6 +16,7 @@
 
 import { db, onDbWrite, newId } from './db.ts';
 import { CreditsNeeded } from './billing.ts';
+import { betaPlayWhen } from './config.ts';
 
 export const HOLD_MS = 60 * 60_000;
 
@@ -73,7 +74,7 @@ export function creditsWaitReason(now = Date.now()): string | null {
 }
 
 /** Starts the waiting beta runs again, each once. Returns the new run ids. `startBeta` is pipeline.ts's (a parameter: no import cycle). */
-export function resumeWaiting(startBeta: (product: string, o: { focus: string; playtest: boolean }) => { id: string }, now = Date.now()): string[] {
+export function resumeWaiting(startBeta: (product: string, o: { focus: string; playtest: boolean }) => { id: string }, now = Date.now(), playWhen: () => 'go-live' | 'merge' = betaPlayWhen): string[] {
   const rows = db.prepare('SELECT * FROM credit_waits WHERE resumed IS NULL').all() as any[];
   const started: string[] = [];
   const seen = new Set<string>();
@@ -86,7 +87,9 @@ export function resumeWaiting(startBeta: (product: string, o: { focus: string; p
     if (!r.product || kind !== 'beta' || seen.has(r.product)) continue; // one beta run per product, however many waited
     seen.add(r.product);
     try {
-      const b = startBeta(r.product, { focus: 'Playing beta again: the earlier playtest was waiting for credits.', playtest: true });
+      // Beta plays once, before going live (config.ts betaPlayWhen): the waiting run builds beta again; its play comes then.
+      const play = playWhen() === 'merge';
+      const b = startBeta(r.product, { focus: play ? 'Playing beta again: the earlier playtest was waiting for credits.' : 'Building beta again: the earlier run was waiting for credits (it plays before going live).', playtest: play });
       db.prepare('UPDATE credit_waits SET resume_run = ? WHERE id = ?').run(b.id, r.id);
       started.push(b.id);
     } catch (e: any) {

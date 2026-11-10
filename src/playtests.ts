@@ -15,6 +15,7 @@ import { gen, genEvents, ensureGen, signedFileUrl } from './gen.ts';
 import { noEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
 import { PROJECTS, GEN_PUBLIC_URL, today, betaPageGlobals, type Playtest } from './config.ts';
 import { withPass } from './sitekeys.ts';
+import { submitKnown } from './gen-params.ts';
 
 // ------------------------------------------------------------ running one (never stuck)
 
@@ -134,7 +135,7 @@ async function leaveShared(api: GenApi, e: Shared, id: string | null, how: 'canc
 async function submitGenJob(api: GenApi, tool: string, project: string, params: Record<string, unknown>, priority?: number) {
   for (let i = 0; ; i++) {
     try {
-      return await api.submit(tool, { project, params, ...(priority ? { priority } : {}) });
+      return await submitKnown((t, b) => api.submit(t, b), tool, { project, params, ...(priority ? { priority } : {}) });
     } catch (e: any) {
       if ((e.kind !== 'offline' && !/reach|fetch failed|ECONN/i.test(String(e.message))) || i >= 20) throw e;
       if (i === 3) await ensureGen();

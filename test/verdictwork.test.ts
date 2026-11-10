@@ -57,6 +57,7 @@ const deps = (over: Partial<import('../src/verdictwork.ts').Deps> = {}): import(
   ask: (text, o) => { asked.push({ text, subject: o.subject, topic: o.topic }); return askJ(text, { ...o, from: 'verdicts' }); },
   startBeta: (product, o) => { betas.push({ product, reverify: o.reverify, playtest: o.playtest }); return { id: 'r_x', done: Promise.resolve() }; },
   quietMs: 20,
+  playWhen: () => 'merge',
   ...over,
 });
 
@@ -299,3 +300,8 @@ test('the dashboard names the neutral verdict and reads it grey, not red', () =>
   assert.match(src, /r\?\.verdict === 'nothing-to-playtest'/);
 });
 
+
+test('beta plays once before going live (the default): a fix merge starts no re-check play', async () => {
+  const W = await import('../src/verdictwork.ts');
+  assert.equal(await W.noteMerge('anygame', 'c_x', deps({ playWhen: () => 'go-live' })), false);
+});

@@ -124,7 +124,10 @@ test("deploy() past an unplayed beta needs the card's own record: auto, Talk's t
   db.prepare(`INSERT INTO approvals (id, kind, target, params, bind, token, card, status, decided_by, created, expires) VALUES ('a_othersha01', 'deploy', 'webby', ?, '[]', '', '{}', 'approving', 'J', ?, ?)`).run(JSON.stringify({ skipPlaytest: { by: 'J', at: 1, sha: sha('2'), why: [] } }), Date.now(), Date.now() + 60_000);
   await assert.rejects(D.deploy('webby', { confirm: 'DEPLOY webby', beta: sha('3'), approval: 'a_othersha01' }), /hasn't been playtested/);
   setPolicy('webby', 'auto', 'owner', 'keep going live');
+  // Beta plays after merges here (the before-go-live play is golive-policy.test.ts's), so auto only waits.
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ betaPlayWhen: 'merge' }));
   const auto = await autoGoLive('webby', 'test');
+  fs.rmSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), { force: true });
   assert.ok(!auto.went && /hasn't been playtested/.test(String(auto.waits)), 'auto still waits for a passing playtest');
   setPolicy('webby', 'ask', 'owner');
   assert.equal(webby().refs.main, sha('1'));
