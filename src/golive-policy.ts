@@ -54,9 +54,11 @@ export async function ciOn(slug: string, sha: string, { maxMs = 40 * 60_000, eve
   const read = list ?? (async (s: string, h: string) => {
     const token = (await (await import('./ghtoken.ts')).repoToken(s).catch(() => null)) ?? process.env.GITHUB_TOKEN;
     if (!token) return null;
-    const r = await fetch(`https://api.github.com/repos/${s}/actions/runs?head_sha=${h}&event=push&per_page=50`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20_000) }).catch(() => null);
+    const r = await fetch(`https://api.github.com/repos/${s}/actions/runs?head_sha=${h}&per_page=50`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20_000) }).catch(() => null);
     const j: any = r?.ok ? await r.json() : null;
-    return j ? (j.workflow_runs ?? []).filter((x: any) => !/hawkes-studio/i.test(`${x.name} ${x.path}`)).map((x: any) => ({ name: String(x.name), status: String(x.status), conclusion: x.conclusion ?? null })) : null;
+    // Beta's CI is its Deploy run (ci.yml: build, deploy, health check; no tests on GitHub, J 2026-10-25). The auto-merge
+    // starts it with workflow_dispatch, since a merge made with a workflow's token starts no push run: count both.
+    return j ? (j.workflow_runs ?? []).filter((x: any) => ['push', 'workflow_dispatch'].includes(String(x.event)) && !/hawkes-studio/i.test(`${x.name} ${x.path}`)).map((x: any) => ({ name: String(x.name), status: String(x.status), conclusion: x.conclusion ?? null })) : null;
   });
   const end = Date.now() + maxMs;
   for (;;) {

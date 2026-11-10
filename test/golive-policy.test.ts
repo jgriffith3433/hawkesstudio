@@ -74,6 +74,22 @@ test('skipping beta playtests is per project, from the owner\'s words; CI on the
   assert.match(bad.why, /Deploy failure/);
   const slow = await P.ciOn('o/r', 'abc1234', { every: 5, maxMs: 20, list: async () => [] });
   assert.match(slow.why, /no CI run/);
+  // The real reader: beta's Deploy is started by workflow_dispatch after an auto-merge (no push run), and it counts;
+  // a pull_request run and Studio's own hook don't.
+  const was2 = globalThis.fetch;
+  const tok = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = tok ?? 't';
+  let url = '';
+  globalThis.fetch = (async (u: any) => { url = String(u); return new Response(JSON.stringify({ workflow_runs: [
+    { name: 'Deploy', path: '.github/workflows/ci.yml', event: 'workflow_dispatch', status: 'completed', conclusion: 'success' },
+    { name: 'Beta auto-merge', path: '.github/workflows/beta-automerge.yml', event: 'pull_request', status: 'completed', conclusion: 'failure' },
+    { name: 'Hawkes Studio', path: '.github/workflows/hawkes-studio.yml', event: 'push', status: 'in_progress', conclusion: null },
+  ] }), { status: 200 }); }) as any;
+  try {
+    const real = await P.ciOn('o/r', 'abc1234', { every: 5, maxMs: 100 });
+    assert.deepEqual([real.ok, real.runs], [true, ['Deploy']], real.why);
+    assert.doesNotMatch(url, /event=push/);
+  } finally { globalThis.fetch = was2; if (tok === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = tok; }
   P.setBetaPlay('moon', 'play', 'Talk', 'play beta again');
   assert.equal(ciSkipFor('moon', 'abc1234', { sha: 'abc1234', runs: ['Deploy'] }), null, 'back to playtests: CI alone no longer lets it go');
 });
