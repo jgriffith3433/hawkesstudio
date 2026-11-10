@@ -90,3 +90,36 @@ test('a started job that keeps sending output is left alone', async () => {
   assert.equal(f.cancelled.length, 0);
   f.bucket.set(`jobs/${unit}/out/exit.json`, Buffer.from('{}'));
 });
+
+test('a job followed again after a restart counts its silence from its last write, not from the restart', async () => {
+  // 2026-11-10: an agent job silent since 18:26 was followed again after each of five deploys in an hour; the replay of
+  // its old log reset the silence clock every time, so it held its slot for hours.
+  process.env.STUDIO_JOB_START_MS = '600000';
+  process.env.STUDIO_JOB_SILENT_MS = '60000';
+  const f = fakeRunner({ started: true });
+  const longAgo = Date.now() - 2 * 3600_000;
+  setJobRunner(() => ({ ...f.runner(), lastWrite: async () => longAgo }));
+  const unit = 'hawkes-agent-c_000000replay-d';
+  f.bucket.set(`jobs/${unit}/execution.txt`, Buffer.from('projects/p/locations/r/jobs/studio-agent/executions/e-replay'));
+  f.bucket.set(`jobs/${unit}/out/log-000001`, Buffer.from('old line 1\n'));
+  f.bucket.set(`jobs/${unit}/out/log-000002`, Buffer.from('old line 2\n'));
+  const { child, err } = await follow(unit);
+  assert.equal(child.lost, true, 'two hours silent: stopped and started again right after the restart');
+  assert.match(err, /sent nothing for 120 min/);
+  // (An earlier test's job that ends meanwhile cancels its own execution through the same runner.)
+  assert.deepEqual(f.cancelled.filter((e) => e.endsWith('/e-replay')), ['projects/p/locations/r/jobs/studio-agent/executions/e-replay']);
+});
+
+test('a job followed again that wrote recently is left alone', async () => {
+  process.env.STUDIO_JOB_START_MS = '600000';
+  process.env.STUDIO_JOB_SILENT_MS = '60000';
+  const f = fakeRunner({ started: true });
+  setJobRunner(() => ({ ...f.runner(), lastWrite: async () => Date.now() - 5_000 }));
+  const unit = 'hawkes-agent-c_000000recent-e';
+  f.bucket.set(`jobs/${unit}/execution.txt`, Buffer.from('projects/p/locations/r/jobs/studio-agent/executions/e1'));
+  f.bucket.set(`jobs/${unit}/out/log-000001`, Buffer.from('line 1\n'));
+  reattachCloudJob(unit, TMP);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(cloudJobAlive(unit), true, 'it wrote 5 s ago: still followed');
+  f.bucket.set(`jobs/${unit}/out/exit.json`, Buffer.from('{}'));
+});
