@@ -69,6 +69,12 @@ export type RunOptions = {
 export function activeRun() {
   return db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started DESC LIMIT 1`).get() as any;
 }
+/** The daily run going now, if any (beta, build and playtest runs going beside it don't count). */
+export function activeDaily() {
+  return db.prepare(`SELECT * FROM runs WHERE status = 'running' AND kind = 'daily' ORDER BY started DESC LIMIT 1`).get() as any;
+}
+/** A run still "running" this long after it started is one whose process died: a new run may replace it. */
+const STALE_RUN_MS = 6 * 3600_000;
 
 // ------------------------------------------------------------ resuming after a restart
 //
@@ -135,12 +141,16 @@ export function lastStep(product: string, kind: string, name: string, before?: s
 
 // ------------------------------------------------------------------ runs
 
-/** Starts a run in the background; returns its id at once. One run at a time. */
+/**
+ * Starts a run in the background; returns its id at once. One run at a time, except a daily run: it goes beside the
+ * beta, build and playtest runs (one of those is almost always going, so a daily run that waited for none never started:
+ * 0 daily reports, 2026-11) and its playtests share Gen's queue and capacity with theirs. Only another daily blocks it.
+ */
 export function startRun(kind: string, options: RunOptions = {}) {
-  const running = activeRun();
+  const running = kind === 'daily' ? activeDaily() : activeRun();
   if (running) {
     // A run whose process died stays "running"; let a new one replace it after 6 hours.
-    if (Date.now() - running.started < 6 * 3600_000) throw new Error(`A run is already going (${running.id}, started ${new Date(running.started).toLocaleTimeString()}).`);
+    if (Date.now() - running.started < STALE_RUN_MS) throw new Error(`A run is already going (${running.id}, started ${new Date(running.started).toLocaleTimeString()}).`);
     db.prepare(`UPDATE runs SET status = 'abandoned' WHERE id = ?`).run(running.id);
     kickFollowups();
   }
@@ -160,6 +170,50 @@ export function startRun(kind: string, options: RunOptions = {}) {
     }
   })();
   return { id, done };
+}
+
+/**
+ * Why the scheduled daily run (POST /api/cloud/daily, 05:00) won't start now, or null: another daily run is still
+ * going, or today's daily run already finished. Beta, build and playtest runs never stop it (startRun).
+ */
+export function dailyRefusal(now = Date.now()): { why: string; run: string } | null {
+  const going = activeDaily();
+  if (going && now - going.started < STALE_RUN_MS) return { why: `the daily run ${going.id} is still going (started ${new Date(going.started).toLocaleTimeString()})`, run: going.id };
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const ran = db.prepare(`SELECT id FROM runs WHERE kind = 'daily' AND status IN ('done', 'partial') AND started >= ? ORDER BY started DESC LIMIT 1`).get(midnight.getTime()) as any;
+  if (ran) return { why: `today's daily run ${ran.id} already ran`, run: ran.id };
+  return null;
+}
+
+/**
+ * A daily run that didn't start, said where J and the PM see it: a run row (kind daily, status skipped, its reason as
+ * the detail) in Activity and the Reports list, which the PM reads like any finished daily run (pm.ts). Never silent.
+ */
+export function recordDailySkip(why: string, by = 'the daily schedule') {
+  const id = newId('r');
+  const now = Date.now();
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, 'daily', 'skipped', `daily run not started: ${why}`.slice(0, 600), J([]), J({ skipped: true, by }), now, now);
+  console.warn(`[studio] daily run not started (${by}): ${why}`);
+  kickFollowups();
+  return id;
+}
+
+/**
+ * The scheduled daily run: starts it beside whatever else is going, or says why not (another daily run, today's already
+ * done) and records that refusal, or a failure to start, as a skipped daily run.
+ */
+export function startScheduledDaily(by = 'the daily schedule'): { started: true; id: string; done: Promise<void> } | { started: false; id: string; run: string | null; why: string; failed: boolean } {
+  const no = dailyRefusal();
+  if (no) return { started: false, id: recordDailySkip(no.why, by), run: no.run, why: no.why, failed: false };
+  try {
+    const { id, done } = startRun('daily', {});
+    return { started: true, id, done };
+  } catch (e: any) {
+    const why = `it failed to start: ${String(e?.message ?? e)}`;
+    return { started: false, id: recordDailySkip(why, by), run: null, why, failed: true };
+  }
 }
 
 async function runAll(run: string, ids: string[], o: RunOptions) {
@@ -205,9 +259,9 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   if (isServer() && gpuMode !== 'off' && products.some((p) => p.engine !== 'static')) {
     const s = startStep(run, 'studio', 'gpu', 'playtests', gpuMode === 'fleet' ? 'checking for a ready GPU server' : 'starting the playtester (T4 GPU)');
     usedPlaytester = gpuMode !== 'fleet';
-    if (!finishedBefore(s)) gpuGate = (gpuMode === 'fleet' ? ensureGpu((d) => updateStep(s, { detail: d })) : ensurePlaytester((d) => updateStep(s, { detail: d })))
+    if (!finishedBefore(s)) gpuGates.set(run, (gpuMode === 'fleet' ? ensureGpu((d) => updateStep(s, { detail: d })) : ensurePlaytester((d) => updateStep(s, { detail: d })))
       .then((detail) => updateStep(s, { status: 'done', detail, finished: true }))
-      .catch((e: any) => updateStep(s, { status: 'failed', detail: `${e.message} (games are played in software instead)`, finished: true }));
+      .catch((e: any) => updateStep(s, { status: 'failed', detail: `${e.message} (games are played in software instead)`, finished: true })));
   }
   db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run(`running ${ids.length} products`, run);
   // The scenarios this run will play, in order, so the Activity card can show "n of N" with N fixed (runplan.ts).
@@ -227,9 +281,10 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   // Daily runs: how real players do on each live site (the report's "Players" section; the PM files work from it).
   if ((db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'daily') await recordPlayers(run, ids);
   // The games are played: the playtester stops (unless a playtest outside this run is still on it; then its idle stop does).
-  if (gpuGate) {
-    await gpuGate;
-    gpuGate = null;
+  const gate = gpuGates.get(run);
+  if (gate) {
+    await gate;
+    gpuGates.delete(run);
   }
   {
     if (usedPlaytester) await gen.request('/playtester/stop', { method: 'POST', body: { ifIdle: true } }).catch((e: any) => console.warn(`[studio] couldn't stop the playtester: ${e.message}`));
@@ -281,8 +336,12 @@ async function recordPlayers(run: string, ids: string[]) {
   }
 }
 
-/** Set while a run is getting a GPU machine ready: game playtests wait for it (it boots while Unity builds). */
-let gpuGate: Promise<unknown> | null = null;
+/**
+ * Set while a run is getting a GPU machine ready: game playtests wait for it (it boots while Unity builds). One per run,
+ * since a daily run can go beside a manual one (startRun): neither drops the other's.
+ */
+const gpuGates = new Map<string, Promise<unknown>>();
+const gpuGate = () => (gpuGates.size ? Promise.all(gpuGates.values()) : null);
 
 /** Starts the playtester (T4) and waits until its browser server answers. */
 async function ensurePlaytester(onDetail: (d: string) => void) {
@@ -800,9 +859,10 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
         return null;
       }
     }
-    if (gpuGate && p.engine !== 'static' && !prior) {
+    const gate = p.engine !== 'static' && !prior ? gpuGate() : null;
+    if (gate) {
       updateStep(s, { detail: 'waiting for the GPU machine' });
-      await gpuGate;
+      await gate;
     }
     // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run: the run time counts from the
     // step's first start (kept on the step, so a restart never extends it), and 10 minutes without progress is stuck.

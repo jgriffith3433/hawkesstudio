@@ -15,6 +15,9 @@
 #   firebase-deployer  studio-cells@hawkes-staging (Studio's own account) gets roles/iam.serviceAccountTokenCreator on
 #                  deployer@hawkes-staging and deployer@hawkes-prod, so Studio's Firebase builds (src/firebasebuild.ts)
 #                  can sign in as those deployers for beta and live. Those two bindings only.
+#   run-cpu-quota  asks Google for more Cloud Run CPU in one region of <project> (quota "Total CPU allocation, per
+#                  project per region", run.googleapis.com): a quota preference of <value> vCPU in <region>. Free (only
+#                  CPU actually used is billed). The plan prints the quota's current value and any pending request.
 #
 #   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas          (plan)
 #   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas -f apply=true
@@ -24,7 +27,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [gen-actas, secret-create, net-access, assets-bucket, firebase-deployer]
+        options: [gen-actas, secret-create, net-access, assets-bucket, firebase-deployer, run-cpu-quota]
       apply:
         description: Run the commands (unticked = plan only)
         type: boolean
@@ -42,6 +45,15 @@ on:
         description: secret-create, optional service account that may read it
         type: string
         default: ''
+      region:
+        description: run-cpu-quota region
+        type: choice
+        options: [us-east4, us-central1, us-west1]
+        default: us-east4
+      value:
+        description: run-cpu-quota vCPU wanted in that region (whole number, 21 to 400)
+        type: string
+        default: '100'
 permissions:
   contents: read
   id-token: write
@@ -67,6 +79,8 @@ jobs:
           PROJECT: ${{ inputs.project }}
           NAME: ${{ inputs.name }}
           ACCESSOR: ${{ inputs.accessor }}
+          REGION: ${{ inputs.region }}
+          VALUE: ${{ inputs.value }}
         run: |
           set -euo pipefail
           sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; echo "$*"; }
@@ -157,5 +171,25 @@ jobs:
               else sum "- $sa doesn't exist: skipped"; fi
             done
             sum "Then rebuild the Firebase project in Studio (e.g. hawkes-games' firebase build)." ;;
+          run-cpu-quota)
+            [[ "$VALUE" =~ ^[0-9]+$ ]] && [ "$VALUE" -ge 21 ] && [ "$VALUE" -le 400 ] || { echo "value must be a whole number of vCPU, 21 to 400"; exit 1; }
+            do_ gcloud services enable cloudquotas.googleapis.com --project "$PROJECT"
+            # The quota's id: the run.googleapis.com quota whose name is the per-region CPU allocation.
+            gcloud beta quotas info list --service=run.googleapis.com --project="$PROJECT" --format=json > qi.json || { sum "- couldn't read Cloud Run's quotas (ops-admin needs roles/cloudquotas.admin)"; exit 1; }
+            qid=$(jq -r '[.[] | select((.displayName // "" | test("CPU allocation, per project per region"; "i")) or (.quotaId // "" | test("^CpuAllocPerProjectRegion$")))][0].quotaId // empty' qi.json)
+            [ -n "$qid" ] || { jq -r '.[] | "\(.quotaId)\t\(.displayName)\t\(.unit // "")"' qi.json | head -40; echo "no CPU allocation quota found"; exit 1; }
+            unit=$(jq -r --arg q "$qid" '.[] | select(.quotaId==$q) | .unit // ""' qi.json)
+            cur=$(jq -r --arg q "$qid" --arg r "$REGION" '.[] | select(.quotaId==$q) | [.dimensionsInfos[]? | select((.dimensions.region // "")==$r) | .details.value][0] // "?"' qi.json)
+            sum "- quota $qid ($unit): $REGION is $cur now"
+            # The unit is milli-vCPU for Cloud Run's CPU allocation; anything else stops here rather than guess.
+            case "$unit" in *"1000"*|*milli*|*"{milli"*) want=$((VALUE * 1000));; "1"|"{vCPU}"|*cpu*|*CPU*) want=$VALUE;; *) echo "unexpected unit '$unit'"; exit 1;; esac
+            sum "- asking for $VALUE vCPU ($want in the quota's unit) in $REGION"
+            pref="run-cpu-$REGION"
+            if have gcloud beta quotas preferences describe "$pref" --project="$PROJECT"; then
+              do_ gcloud beta quotas preferences update "$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="Hawkes Studio and Gen live services plus builds need more than the default in $REGION"
+            else
+              do_ gcloud beta quotas preferences create --preference-id="$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="Hawkes Studio and Gen live services plus builds need more than the default in $REGION"
+            fi
+            if [ "$APPLY" = true ]; then gcloud beta quotas preferences describe "$pref" --project="$PROJECT" --format='yaml(quotaConfig,reconciling)' | tee -a "$GITHUB_STEP_SUMMARY"; fi ;;
           esac
           [ "$APPLY" = true ] && sum "Applied." || sum "Plan only: run again with apply ticked to make these changes."

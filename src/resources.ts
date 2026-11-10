@@ -489,6 +489,14 @@ export function queueAttention(q: { stalled: string | null; heldBy: string | nul
   return { level: 'warn', text: `The agent queue isn't moving: ${q.stalled}. Held by: ${q.heldBy ?? 'nothing named'}. Studio drops timed holds and starts it again on its next look.` };
 }
 
+/** An invariant broken past its grace with nothing done (selfheal.ts): a red line on the page (pure: tested). */
+export function selfHealAttention(h: { ok: boolean; stale: boolean; failing: { label: string; minutes: number; detail: string | null }[] } | null): Attention | null {
+  if (!h || h.ok) return null;
+  if (h.stale) return { level: 'bad', text: "Studio's self-healing supervisor hasn't looked for over 15 minutes: its timer stopped." };
+  const f = h.failing[0];
+  return { level: 'bad', text: `Self-healing couldn't fix "${f.label}" for ${f.minutes} min (${f.detail ?? 'no detail'})${h.failing.length > 1 ? `, and ${h.failing.length - 1} more` : ''}.` };
+}
+
 /** The page's one sentence: the worst problem, or that all is fine with the main numbers. */
 export function headline(host: Host | null, attention: Attention[], w: Awaited<ReturnType<typeof work>> | null) {
   if (attention.length) return attention[0].text;
@@ -606,11 +614,13 @@ export async function resources({ range = '1h' } = {}) {
   const qa = queueAttention(await import('./agents.ts').then((A) => A.queueHealth()).catch(() => null));
   // A change whose page names another provider than the job running it (runs.ts liveMismatches): what J reads would be wrong.
   const mm = w?.mismatches?.length ? [{ level: 'bad' as const, text: `${plural(w.mismatches.length, 'change')} ${w.mismatches.length === 1 ? 'shows' : 'show'} another AI provider than the one running it: ${w.mismatches.slice(0, 3).map((x) => x.text).join('; ')}.` }] : [];
-  const attention = [...mm, ...attentionOf(host, w, fl, s), ...netAttention(net), ...(gb ? [gb] : []), ...(qa ? [qa] : []), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
+  const heal = await import('./selfheal.ts').then((S) => S.selfHealPanel()).catch(() => null);
+  const sa = selfHealAttention(heal ? { ok: heal.ok, stale: heal.stale, failing: heal.invariants.filter((i) => i.failing).map((i) => ({ label: i.label, minutes: i.breachedMin ?? 0, detail: i.detail })) } : null);
+  const attention = [...mm, ...attentionOf(host, w, fl, s), ...netAttention(net), ...(sa ? [sa] : []), ...(gb ? [gb] : []), ...(qa ? [qa] : []), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
     .sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
   return {
     at: Date.now(), headline: headline(host, attention, w), attention, host, loop: loopHealth(), commands: runningCommands(),
-    fleet: fl, net, work: w, external: xs.externalState(), settings: s, history: history(range), spark: range === '1h' ? undefined : history('1h', { points: 60 }),
+    fleet: fl, net, work: w, selfheal: heal, external: xs.externalState(), settings: s, history: history(range), spark: range === '1h' ? undefined : history('1h', { points: 60 }),
   };
 }
 
@@ -638,6 +648,11 @@ export function resourcesMarkdown(r: Awaited<ReturnType<typeof resources>>) {
   if (x) L.push('## Outside', `- Portal ${x.portal.url || '(not probed yet)'}/v1/health: ${x.portal.last ? `${x.portal.last.ok ? 'ok' : 'FAILING'} (${x.portal.last.status ?? x.portal.last.error}), ${x.portal.last.ms} ms` : 'not probed yet'}`,
     `- Portal details: ${x.details.state === 'ok' && x.details.data ? `loop p99 ${x.details.data.p99ms ?? '?'} ms, sockets ${x.details.data.sockets ?? '?'}/${x.details.data.cap ?? '?'}, last backup ${x.details.data.lastBackup ? new Date(x.details.data.lastBackup).toISOString() : '?'}` : `${x.details.state}${x.details.note ? ` (${x.details.note})` : ''}`}`,
     ...x.nodes.list.map((n) => `- Relay node ${n.id}: ${n.last.ok ? 'up' : 'DOWN'}, ${n.last.ms} ms${n.players != null ? `, ${n.players}${n.capacity ? `/${n.capacity}` : ''} players` : ''}`), '');
+  if (r.selfheal) {
+    const hs = r.selfheal;
+    L.push('## Self-healing', `- ${hs.ok ? 'Every check holds or is being fixed' : 'Something is broken that it could not fix'}; last look ${hs.lastLook ? new Date(hs.lastLook).toISOString().slice(11, 19) : 'not yet'}`,
+      ...hs.invariants.filter((i) => i.since || i.did).map((i) => `- ${i.label}: ${i.since ? `broken ${i.breachedMin} min (${i.detail})` : 'holds'}${i.did ? `; last did: ${i.did}` : ''}${i.escalated ? `; fix filed: ${i.escalated}` : ''}`), '');
+  }
   L.push('## Fleet (Hawkes Gen)');
   if (!r.fleet.ok) L.push(`- ${r.fleet.error}`);
   for (const m of r.fleet.machines) {

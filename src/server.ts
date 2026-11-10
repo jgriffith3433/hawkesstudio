@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PORT, DATA, ROOT, paths, loadProducts, getProduct, StudioError, localUrl, managedElsewhere } from './config.ts';
 import { db, rowToStep } from './db.ts';
-import { startRun, startBeta, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
+import { startRun, startScheduledDaily, recordDailySkip, startBeta, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
 import { pruneDetached } from './detach.ts';
 import { listFindings, getFinding, updateFinding } from './backlog.ts';
 import { reportMarkdown, reportVerdict, listReports } from './report.ts';
@@ -171,11 +171,16 @@ const server = http.createServer(async (req, res) => {
       if (!(await schedulerCall(req))) return send(res, 401, { error: 'Only Cloud Scheduler (or J\'s owner key) starts the daily run here.' });
       // A customer's nightly run is on their plan (entitlements.ts; the control plane's cron only asks paying cells).
       const up = await (await import('./entitlements.ts')).upgradeRefusal(route, method);
-      if (up) return send(res, 402, up);
-      const running = activeRun();
-      if (running) return send(res, 200, { ok: true, run: running.id, note: 'a run is already going' });
-      const { id } = startRun('daily', {});
-      return send(res, 202, { ok: true, run: id });
+      if (up) {
+        recordDailySkip(`not on this Studio's plan (${up.error.slice(0, 200)})`);
+        return send(res, 402, up);
+      }
+      // Beside the beta, build and playtest runs going now; only another daily run, or today's done one, stops it, and
+      // that refusal (or a failure to start) is a skipped daily run in Activity, never a silent 200 (pipeline.ts).
+      const d = startScheduledDaily();
+      if (d.started) return send(res, 202, { ok: true, run: d.id });
+      if (d.failed) return send(res, 500, { ok: false, error: d.why, skipped: d.id });
+      return send(res, 200, { ok: true, run: d.run, skipped: d.id, note: d.why });
     }
     // Stripe's webhook (billing.ts): open, its signature is the check. The portal, Gen and other Studios share the Stripe
     // account, so most events aren't ours: those get 200 untouched (an error makes Stripe retry, then disable the endpoint).
@@ -249,7 +254,10 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') {
       const ops = await import('./ops.ts');
-      return send(res, 200, { ok: true, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
+      // ok is false while a self-healing invariant has been broken past its grace with nothing done (selfheal.ts). The
+      // answer stays 200: deploys and the edge's wake page read the status as "Studio is up", which it is.
+      const selfheal = await import('./selfheal.ts').then((S) => S.selfHealHealth()).catch(() => null);
+      return send(res, 200, { ok: selfheal?.ok ?? true, selfheal, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
     }
     // Background operations (ops.ts): the go-live queue, rollbacks and merges, the commands running now, the event loop.
     if (route === '/api/ops' && method === 'GET') {

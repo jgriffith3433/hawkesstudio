@@ -416,8 +416,15 @@ export const SUMMARY_STOP_MAX = 400;
  * is held studio-wide (harness-hold.ts). Never failed, never a try, no nudge spent: when the hold lifts (or the other
  * harness stands in) pump resumes it where it was (harnessResume). J, 2026-10-20: "It should just recover itself."
  */
-function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, stop: HarnessStop) {
-  const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
+/** The provider a stopped pass ran on: its result's, else the change's last pass (runs.ts), else its phase, else the one in use. */
+export function parkHarness(id: string, ph: Pick<Phase, 'brain'>, ran?: Harness | null): Harness {
+  return (ran ?? lastHarness(id) ?? (isHarness(ph.brain) ? ph.brain : brainId())) as Harness;
+}
+function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, stop: HarnessStop, ran?: Harness | null) {
+  // The provider that really ran the pass (its result says, else the change's provider history), so a limit on one
+  // provider never holds another: the phase's brain only when neither knows, and the harness in use last of all.
+  const harness = parkHarness(id, ph, ran);
+  if (isHarness(ph.brain) && ph.brain !== harness) addLog(id, `the stop came from ${HARNESS_LABEL[harness]}, the provider that ran the pass (its phase still said ${HARNESS_LABEL[ph.brain]})`);
   const { hold } = holdHarness(stop, { source: `agent change ${id}`, harness });
   noteBrain(id, { kind: 'park', harness, model: currentBrain(id)?.model ?? null, why: `${stop.kind}: ${stop.line}` });
   writeHandoff(id, harness, `${HARNESS_LABEL[harness]} stopped it (${stop.kind}: ${stop.line.slice(0, 160)})`);
@@ -472,10 +479,10 @@ export function resumeGate(h: { at: number; parks?: number[]; capped?: boolean }
  * run the pass again on the next tier down. Not a try, not a hold. Null when it wasn't that, or the model was already
  * known as refused (so a requeue never loops).
  */
-function modelRefused(r: { ok: boolean; sawResult: boolean; result: string; stderr?: string }, ph: Phase) {
+function modelRefused(r: { ok: boolean; sawResult: boolean; result: string; stderr?: string; harness?: Harness }, ph: Phase) {
   if (r.ok && r.sawResult) return null;
   const model = refusedModelOf(`${r.result ?? ''}\n${r.stderr ?? ''}`);
-  const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
+  const harness = (r.harness ?? (isHarness(ph.brain) ? ph.brain : brainId())) as Harness;
   return model && markModelUnavailable(harness, model) ? { model, harness } : null;
 }
 function requeueForModel(id: string, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, gone: { model: string; harness: Harness }) {
@@ -2153,6 +2160,49 @@ export function pumpAt(at: number) {
   t.unref?.();
   pumpTimer = { at, t };
 }
+/** Studio's own work: a change to Hawkes Studio itself or one of its infra targets. It jumps the queue and the memory gate. */
+export const studioOwn = (c: Pick<Change, 'product'> & { infra?: unknown }) => Boolean(c.infra) || c.product === 'hawkesstudio' || c.product === 'hawkes-studio';
+
+/**
+ * The self-healing supervisor's temporary cap on agent slots (selfheal-checks.ts: Cloud Run refusing for its CPU quota):
+ * work beside it scales down instead of failing, and the cap ends by itself.
+ */
+let healCap: { max: number; until: number; why: string } | null = null;
+export function setSelfHealCap(max: number, forMs: number, why: string) { healCap = { max: Math.max(1, Math.floor(max)), until: Date.now() + forMs, why }; }
+export const selfHealCap = (now = Date.now()) => (healCap && healCap.until > now ? healCap : null);
+/**
+ * Slots the pump may fill now. Pure: maxConcurrent, the supervisor's cap while it lasts, and one slot kept for Studio's
+ * own fix when none is running and one waits, so product work, a full queue or a cap can never starve the fix (ownOnly:
+ * that slot is the fix's alone).
+ */
+export function slotsFree(max: number, held: number, o: { ownRunning: boolean; ownQueued: boolean; cap?: number | null }) {
+  const cap = o.cap === undefined ? selfHealCap()?.max ?? null : o.cap;
+  const free = Math.min(max, cap ?? max) - held;
+  if (free > 0) return { free, ownOnly: false };
+  if (o.ownQueued && !o.ownRunning) return { free: 1, ownOnly: true };
+  return { free: 0, ownOnly: false };
+}
+/**
+ * The supervisor closes a queued change that never started (selfheal-checks.ts): a duplicate of another open change for
+ * the same task, or one whose task was dropped or finished. Never one that is running or has a pull request. Logged with
+ * why, so it can be queued again. Returns whether it closed it.
+ */
+function closeQueued(id: string, why: string): boolean {
+  const c = getChange(id);
+  if (!c || c.status !== 'queued' || running.has(id) || c.pr) return false;
+  update(id, { status: 'closed', detail: `closed by self-healing: ${why}`.slice(0, 300), notes: [...c.notes, { at: Date.now(), by: 'Studio (self-healing)', text: `closed: ${why}` }] });
+  addLog(id, `self-healing: closed before it started (${why}); queue it again to undo`);
+  remember(id);
+  // Findings it had taken go back to open, as when a change is closed by hand (closeNow).
+  for (const f of c.findings) { const fd = getFinding(f); if (heldBy(fd, id)) updateFinding(f, { status: 'open' }); }
+  return true;
+}
+export const closeDuplicate = async (id: string, keep: string) => closeQueued(id, `a duplicate of ${keep}, which has the same task`);
+export const closeOrphan = async (id: string, why: string) => closeQueued(id, why);
+
+/** Drops every timed disk wait so each change is looked at again now (the supervisor, when the disk has room). */
+export function clearDiskWaits() { const n = diskWait.size; diskWait.clear(); if (n) void pump(); return n; }
+
 /** Test hooks: the pump's pending wake time (or null), and a pump call as the rest of Studio makes it. */
 export const pumpWakeAt = () => pumpTimer?.at ?? null;
 export const pumpNow = () => pump();
@@ -2179,7 +2229,9 @@ async function pumpPass() {
   // One look at the providers for the whole pass, not two per queued change (each reads every provider's hold and PATH).
   let free: Harness | null | undefined;
   const freeOnce = () => (free === undefined ? (free = freeHarness()) : free);
-  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce));
+  // Studio's own fixes go first (J, 2026-11-10: the queue fix couldn't start because of the queue): stable, oldest first within each.
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce))
+    .sort((a, b) => Number(studioOwn(b)) - Number(studioOwn(a)));
   // Each change's shape (its task, earlier changes and files: git) once per pass, however many candidates it sits beside.
   const shapes = new Map<string, WorkShape>();
   const shape = (c: Change) => shapes.get(c.id) ?? (shapes.set(c.id, shapeOf(c)), shapes.get(c.id)!);
@@ -2194,7 +2246,11 @@ async function pumpPass() {
   // A video has a lane of its own (noRoomFor): only the studio-wide cap applies to it.
   const lane = (c: Change) => (isVideoTask(c.task) ? `video:${c.id}` : c.product);
   const busy = [...active.values()].map(lane);
-  const picks = pickQueued(queued.map((c) => ({ id: c.id, product: lane(c) })), busy, s.maxConcurrent - slotHolders(), { limit: (p) => (p.startsWith('video:') ? 1 : perProductLimit(p, s)), fit });
+  const room = slotsFree(s.maxConcurrent, slotHolders(), { ownRunning: [...active.values()].some(studioOwn), ownQueued: queued.some(studioOwn) });
+  const picks = pickQueued(queued.map((c) => ({ id: c.id, product: lane(c) })), busy, room.free, { limit: (p) => (p.startsWith('video:') ? 1 : perProductLimit(p, s)), fit });
+  // The slot kept for Studio's own fix is only for it: product work never takes it.
+  if (room.ownOnly && picks.length && !studioOwn(getChange(picks[0])!)) picks.length = 0;
+  else if (room.ownOnly) picks.length = Math.min(picks.length, 1);
   // A queued change's " behind c_..." names what it waits for now, not one that finished since (J, 2026-10-18).
   const ahead = new Map<string, string[]>();
   for (const c of [...active.values(), ...picks.map((x) => getChange(x)!)]) ahead.set(c.product, [...(ahead.get(c.product) ?? []), c.id]);
@@ -2208,9 +2264,14 @@ async function pumpPass() {
   // Memory is the floor under maxConcurrent (memgate.ts): while too little is free, nothing new starts beside running work.
   const could = picks.length;
   if (picks.length && memLow()) {
-    const room = inFlight > 0 ? 0 : 1;
+    // Studio's own fixes start anyway: the fix for what fills memory must never wait for memory (J, 2026-11-10).
+    const own = picks.filter((id) => studioOwn(getChange(id)!));
+    const rest = picks.filter((id) => !own.includes(id));
+    const room = own.length || inFlight > 0 ? 0 : 1;
     const why = `queued: waits for memory to free up (${memSummary()})`;
-    for (const id of picks.splice(room)) { const c = getChange(id); if (c && !String(c.detail ?? '').startsWith('queued: waits for memory')) update(id, { detail: why }); }
+    for (const id of rest.splice(room)) { const c = getChange(id); if (c && !String(c.detail ?? '').startsWith('queued: waits for memory')) update(id, { detail: why }); }
+    picks.length = 0;
+    picks.push(...own, ...rest);
   }
   pumpNote = picks.length ? `started ${picks.length}`
     : !queued.length ? 'nothing to start'
@@ -2446,7 +2507,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
         save({}, { cost: getChange(id)!.cost + r.cost });
-        return parkForHarness(id, ph, save, stop);
+        return parkForHarness(id, ph, save, stop, r.harness);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
       save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, qualityFix: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
@@ -3315,7 +3376,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
         save({}, { cost: getChange(id)!.cost + r.cost });
-        return parkForHarness(id, ph, save, stop);
+        return parkForHarness(id, ph, save, stop, r.harness);
       }
       save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
@@ -4778,17 +4839,31 @@ const STUCK_EVERY_MS = () => Number(process.env.STUDIO_STUCK_EVERY_MS) > 0 ? Num
 /** Starts the watchdog (server.ts, after resumeChanges): a first look once start-up has settled, then every STUCK_EVERY_MS. */
 export function startStuckWatch() {
   if (stuckTimer) return;
-  const look = () => {
+  // The self-healing supervisor (selfheal.ts) runs on this timer: the stuck-work watchdog and the queue check are two of
+  // its invariants (selfheal-checks.ts), beside every other one. If it can't load, the two run as before.
+  const look = async () => {
     try {
-      const did = checkStuck();
-      if (did.length) console.log(`[stuckwatch] took over ${did.length}: ${did.map((d) => `${d.id} ${d.step} ${d.was} ${d.idleMin}m -> ${d.did}`).join('; ')}`);
-      checkQueue();
+      const S = await import('./selfheal.ts');
+      if (!S.invariants().length) {
+        await S.loadEscalation();
+        (await import('./selfheal-checks.ts')).registerChecks();
+      }
+      const out = await S.supervise();
+      const acted = out.filter((r) => r.breach || r.did);
+      if (acted.length) console.log(`[selfheal] ${acted.map((r) => `${r.key}: ${r.breach ?? 'holds'}${r.did ? ` -> ${r.did}` : ''}${r.escalated ? ` (escalated: ${r.escalated})` : ''}`).join('; ').slice(0, 2000)}`);
     } catch (e: any) {
-      console.warn(`[stuckwatch] ${e?.message ?? e}`);
+      console.warn(`[selfheal] the supervisor failed (${e?.message ?? e}); running the watchdog alone`);
+      try {
+        const did = checkStuck();
+        if (did.length) console.log(`[stuckwatch] took over ${did.length}: ${did.map((d) => `${d.id} ${d.step} ${d.was} ${d.idleMin}m -> ${d.did}`).join('; ')}`);
+        checkQueue();
+      } catch (e2: any) {
+        console.warn(`[stuckwatch] ${e2?.message ?? e2}`);
+      }
     }
   };
-  setTimeout(look, 3 * 60_000).unref();
-  stuckTimer = setInterval(look, STUCK_EVERY_MS());
+  setTimeout(() => void look(), 3 * 60_000).unref();
+  stuckTimer = setInterval(() => void look(), STUCK_EVERY_MS());
   stuckTimer.unref();
 }
 
