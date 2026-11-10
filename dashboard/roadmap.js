@@ -433,7 +433,7 @@ async function loadReady() {
 
 function rmRefresh() {
   const t = location.hash.slice(1);
-  if (t === 'roadmap') loadRoadmap().catch((e) => ($('#rmList').innerHTML = `<div class="empty">${esc(e.message)}</div>`));
+  if (t === 'roadmap') loadRoadmap().then(() => window.studioReady('roadmap'), (e) => { $('#rmList').innerHTML = `<div class="empty">${esc(e.message)}</div>`; window.studioReady('roadmap', e); });
   if (t === 'ready') loadReady().catch((e) => ($('#readyList').innerHTML = `<div class="empty">${esc(e.message)}</div>`));
 }
 document.querySelectorAll('nav button[data-tab="roadmap"], nav button[data-tab="ready"]').forEach((b) => b.addEventListener('click', () => setTimeout(rmRefresh, 0)));

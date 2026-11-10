@@ -3,6 +3,14 @@ let GEN = 'http://127.0.0.1:8790';
 // On the server, Hawkes Gen is at its public address.
 fetch('/api/config').then((r) => r.json()).then((c) => { if (c.genUrl) GEN = c.genUrl; }).catch(() => {});
 const $ = (s, el = document) => el.querySelector(s);
+// A tab's loader says when its data is on screen (or that it failed): playtest.js waits for this event, not the DOM.
+window.studioReady = (t, error) => {
+  try {
+    const sec = document.getElementById(t);
+    if (sec) sec.dataset.ready = error ? 'error' : 'ready';
+    dispatchEvent(new CustomEvent('studio-ready', { detail: { tab: t, error: error ? String(error.message ?? error) : undefined } }));
+  } catch {}
+};
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 // Library files through Studio's relay (its own Gen key, ranges for video): Gen's /v1/files answers 401 to a browser.
 const file = (asset) => `/api/gen/v1/files/${asset}`;
@@ -704,7 +712,7 @@ async function loadReport() {
     </div>`;
   }).join('');
 }
-$('#reportRun').onchange = loadReport;
+$('#reportRun').onchange = () => loadReport().then(() => window.studioReady('report'), (e) => window.studioReady('report', e));
 $('#reportBody').addEventListener('click', (e) => {
   const a = e.target.closest('[data-report-run]');
   if (!a) return;
@@ -784,7 +792,9 @@ $('#runList').onclick = (e) => {
 };
 
 // ---------------------------------------------------------- refresh
+const READY_TABS = ['home', 'backlog', 'report', 'changes', 'talk'];
 async function refresh() {
+  const shown = tab;
   try {
     if (!overview || tab === 'today') await loadToday();
     if (tab === 'report') await loadReport();
@@ -806,8 +816,10 @@ async function refresh() {
     if (tab === 'connect' && window.loadConnectTab) await window.loadConnectTab();
     if (tab === 'plugins' && window.loadPluginsTab) await window.loadPluginsTab();
     if (tab === 'talk' && window.loadTalk && !window.__talkLoaded) { window.__talkLoaded = true; await window.loadTalk(); }
+    if (READY_TABS.includes(shown)) window.studioReady(shown);
   } catch (e) {
     $('#status').innerHTML = `<span><span class="dot bad"></span>${esc(e.message)}</span>`;
+    if (READY_TABS.includes(shown)) window.studioReady(shown, e);
   }
 }
 // #live/<job> on the first load: that playtest opens big (live.js).

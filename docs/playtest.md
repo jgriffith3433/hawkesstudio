@@ -349,6 +349,14 @@ map with the playtest (`data.explore`) and draws it: `GET /api/playtests/heatmap
 by time spent, amber stuck, red falls). A fall spot fails the quality gate; stuck spots are listed. Run it like any
 scenario: `{ "scenario": "explore", "where": "live" }` in a product's playtests.
 
+## Studio's own dashboard
+
+`dashboard/playtest.js` implements the contract for Studio's dashboard (`product: "hawkesstudio"`). Its `smoke`
+scenario clicks through Home, Roadmap, Backlog, Reports (opens the newest report), Changes (opens one change) and Talk.
+Each step waits for the tab's own `studio-ready` event (`window.studioReady(tab, error)`, fired by the loader in
+`app.js` / `roadmap.js`, never a DOM poll), then checks for console errors and elements wider than the viewport. A
+broken tab fails the run with its name. Test `test/dashboard-playtest.test.ts`.
+
 ## Games without the contract
 
 A page with no `window.hawkesPlaytest` still gets a **generic smoke test**: load it, wait for the canvas or the
