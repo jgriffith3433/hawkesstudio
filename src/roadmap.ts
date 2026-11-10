@@ -24,6 +24,7 @@
 import { db, newId, J, parse } from './db.ts';
 import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 import { walkAwaySettings, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
+import { refreshTaskChanges } from './queue-follow.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -468,10 +469,14 @@ export function updateTask(id: string, patch: Partial<{ title: string; request: 
     db.prepare('UPDATE tasks SET priority = ? WHERE id = ?').run(priorityOf(patch.priority, true), id);
     delete patch.priority;
   }
-  return setTask(id, {
+  const t = setTask(id, {
     ...patch, criteria: patch.criteria !== undefined ? list(patch.criteria) : undefined, depends: patch.depends !== undefined ? list(patch.depends) : undefined,
     ...(fresh ? { tries: 0, change: null, checks: null } : {}),
   });
+  // Edited while its change is still queued (not started): the change takes the new request and criteria now, and a task
+  // that is gone keeps it from starting (queue-follow.ts; the queue checks again as it starts).
+  if (['request', 'criteria', 'title', 'status'].some((k) => k in patch)) refreshTaskChanges(id);
+  return t;
 }
 
 /** Sets task fields (the loop's own updates too) and keeps its item's status current. */
