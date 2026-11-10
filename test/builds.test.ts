@@ -178,7 +178,9 @@ test('a Unity build in Hawkes Gen with the repo\'s own token, mounted into its w
   assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
   const sent = genCalls.at(-1);
   assert.equal(sent.tool, 'unity.build');
-  assert.deepEqual(sent.params.github, { repo: 'acme/game', commit: SHA1, token: 'ghs_acme', ref: 'beta' }, 'Gen takes only repo, commit, token and ref');
+  const { refresh, ...github } = sent.params.github;
+  assert.deepEqual(github, { repo: 'acme/game', commit: SHA1, token: 'ghs_acme', ref: 'beta' }, 'Gen takes repo, commit, token, ref and refresh');
+  assert.match(refresh.url, /\/o\/acme-1a2b\/api\/builds\/gen-token$/, 'Gen asks this Studio for a fresh token before it reads the repo');
   assert.equal(sent.params.out, 'artifact');
   assert.equal(sent.params.path, 'Game');
   W.resetSmall();
@@ -598,12 +600,11 @@ test('a Unity build Gen lost to a restart is resubmitted by itself, and the run 
     assert.equal(row.status, 'ready');
     assert.ok(row.token_sent, 'when the token was sent is recorded');
     const g = sent[0].params.github;
-    assert.deepEqual(Object.keys(g).sort(), ['commit', 'ref', 'repo', 'token'], 'no github.refresh: Gen rejects it');
-    // The flag-on shape, for when Gen accepts refresh.
-    const on = B.githubFor('a/b', 'c', 't', 'beta', row.id, true) as any;
-    assert.equal(on.refresh.build, row.id);
-    assert.match(on.refresh.url, /\/api\/builds\/gen-token$/);
-    assert.equal(on.refresh.key, B.refreshKey(row.id));
+    // github.refresh rides with every build (Gen takes it since 2026-11-10): Gen asks for a fresh token when it starts.
+    assert.deepEqual(Object.keys(g).sort(), ['commit', 'ref', 'refresh', 'repo', 'token']);
+    assert.equal(g.refresh.build, row.id);
+    assert.equal(g.refresh.url, 'https://studio.hawkesgen.ai/o/acme-1a2b/api/builds/gen-token');
+    assert.equal(g.refresh.key, B.refreshKey(row.id));
   } finally {
     globalThis.fetch = before;
   }
@@ -851,4 +852,31 @@ test("a finished build's download is tried again when Gen answers 502 (half of P
 test('a lost Gen job is infrastructure Studio retries itself', () => {
   assert.equal(B.infraLost('Hawkes Gen lost job j_e54e36e0cb10 (no such job)'), true);
   assert.equal(B.infraLost('error CS0103: no such job'), false, 'a compile error is never retried');
+});
+
+test('a Gen that refuses github.refresh gets the same build again at once without it, and never again with it', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-norefresh', name: 'Game no refresh', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const before = globalThis.fetch;
+  const sent: any[] = [];
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs' && init.method === 'POST') { sent.push(JSON.parse(String(init.body))); return Response.json({ jobs: [{ id: `j_nr${sent.length}`, status: 'queued' }] }); }
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs/j_nr1') return Response.json({ id: 'j_nr1', status: 'failed', error: 'customer builds take github { repo, commit, token, ref? } (not refresh): the output comes back as an asset, nothing is pushed' });
+    return before(input, init);
+  }) as typeof fetch;
+  try {
+    assert.ok(B.genRefusedRefresh('customer builds take github { repo, commit, token, ref? } (not refresh): x'));
+    assert.equal(B.genRefusedRefresh('Assets/Foo.cs(3,1): error CS1002'), false);
+    const r = (await B.startBuild('game-norefresh', {}))!;
+    await r.done;
+    assert.ok(sent.length >= 2, 'sent again');
+    assert.ok(sent[0].params.github.refresh, 'first with refresh');
+    assert.equal(sent[1].params.github.refresh, undefined, 'then without');
+    assert.equal(B.githubFor('a/b', 'c', 't', 'beta', 'b_x').refresh, undefined, 'remembered');
+    void db;
+  } finally {
+    globalThis.fetch = before;
+    B.resetRefreshRefused();
+  }
 });
