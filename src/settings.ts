@@ -266,6 +266,12 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
         clean[k] = next;
         continue;
       }
+      if (k === 'betaPlayWhen') {
+        const { BETA_PLAY_WHEN } = await import('./config.ts');
+        if (!(BETA_PLAY_WHEN as readonly string[]).includes(String(v))) throw new StudioError(`agents.betaPlayWhen: ${BETA_PLAY_WHEN.join(' or ')}`);
+        clean[k] = v;
+        continue;
+      }
       if (k === 'perProduct' && !(Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 4)) throw new StudioError('agents.perProduct: 1 to 4');
       if (typeof v !== typeof known[k]) throw new StudioError(`agents.${k} must be a ${typeof known[k]}`);
       if (typeof v === 'number' && !(v >= 0)) throw new StudioError(`agents.${k}: 0 or more`);

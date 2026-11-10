@@ -198,7 +198,7 @@ export function sinceLastReport(run: string) {
 export function listReports(limit = 60) {
   const rows = db.prepare(`SELECT * FROM runs ORDER BY started DESC LIMIT ?`).all(limit) as any[];
   return rows.map((r) => {
-    const n = db.prepare(`SELECT SUM(kind = 'playtest') AS playtests, SUM(kind = 'review' AND status = 'done') AS reviews FROM steps WHERE run = ?`).get(r.id) as any;
+    const n = db.prepare(`SELECT SUM(kind = 'playtest' AND status NOT IN ('skipped', 'pending')) AS playtests, SUM(kind = 'review' AND status = 'done') AS reviews FROM steps WHERE run = ?`).get(r.id) as any;
     return {
       run: r.id, kind: r.kind, daily: r.kind === 'daily', status: r.status, date: today(new Date(r.started)), started: r.started, finished: r.finished,
       headline: r.detail, products: (parse(r.products) as string[]) ?? [], cost: r.cost ?? 0, playtests: n.playtests ?? 0, reviews: n.reviews ?? 0,
