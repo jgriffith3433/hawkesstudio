@@ -52,11 +52,39 @@ export type Op = {
   id: string; kind: string; product: string | null; title: string; status: OpStatus; step: string | null; log: string[];
   payload: any; result: any; error: string | null; by: string | null; origin: string | null; attempts: number;
   created: number; started: number | null; finished: number | null; heartbeat: number | null; seconds: number | null; stuck?: boolean;
-  wait?: { on: string | null; why: string; rounds: number; since: number } | null;
+  wait?: { on: string | null; why: string; rounds: number; since: number; retries?: number; due?: number } | null;
 };
 
 const MAX_RUNNING = Number(process.env.STUDIO_OPS_PARALLEL) || 2;
 const MAX_ATTEMPTS = 3;
+
+/**
+ * An operation that fails on something that passes by itself (GitHub or a cloud API not answering, a 5xx, a rate limit,
+ * an expired token) recovers itself: it waits (status waiting, no running slot), wakes itself after the next of these
+ * waits and runs again from the top (handlers are idempotent). Only after every wait is used does it fail. Before this,
+ * one GitHub timeout failed a whole go live (2026-11-10 21:26, op_d8491e73f571) and nothing tried again. A test sets
+ * the waits to 0.
+ */
+export const opRetry = { waits: [60_000, 5 * 60_000, 15 * 60_000] };
+const OP_RETRY_CAUSES = new Set(['network', 'server-error', 'rate-limit', 'token-expired', 'gen-restart']);
+/** The cause key when this failure passes by itself, else null. */
+async function passingCause(e: unknown): Promise<string | null> {
+  const { causeOf } = await import('./causes.ts');
+  const c = causeOf(String((e as any)?.message ?? e));
+  return c && OP_RETRY_CAUSES.has(c.key) ? c.key : null;
+}
+const retryTimers = new Map<string, NodeJS.Timeout>();
+/** Wakes one waiting operation at `due` (its own retry; a restart re-arms it in resumeOps). */
+function wakeAt(id: string, due: number) {
+  clearTimeout(retryTimers.get(id));
+  const t = setTimeout(() => {
+    retryTimers.delete(id);
+    const r = db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ? AND status = 'waiting'`).run(id);
+    if (r.changes) { append(id, 'trying again'); void pump(); }
+  }, Math.max(0, due - Date.now()));
+  t.unref();
+  retryTimers.set(id, t);
+}
 /** How long an operation may run before it shows as stuck (going live with a Unity build push can take minutes). */
 const STUCK_MS: Record<string, number> = { golive: 20 * 60_000, rollback: 15 * 60_000, 'merge-main': 15 * 60_000, sync: 15 * 60_000 };
 
@@ -154,6 +182,8 @@ export async function pump() {
 }
 
 async function runOp(id: string) {
+  clearTimeout(retryTimers.get(id));
+  retryTimers.delete(id);
   const op = getOp(id)!;
   const run = handlers.get(op.kind);
   const ctx: Ctx = {
@@ -173,10 +203,22 @@ async function runOp(id: string) {
   } catch (e: any) {
     if (e instanceof OpWaits) {
       const before = getOp(id)?.wait;
-      const wait = { on: e.on, why: e.why.slice(0, 300), rounds: (before?.rounds ?? 0) + (e.on && e.on !== before?.on ? 1 : 0), since: before?.since ?? Date.now() };
+      const wait = { on: e.on, why: e.why.slice(0, 300), rounds: (before?.rounds ?? 0) + (e.on && e.on !== before?.on ? 1 : 0), since: before?.since ?? Date.now(), retries: before?.retries ?? 0 };
       // attempts counts restarts mid-run (resumeOps): a wait isn't one.
       db.prepare(`UPDATE ops SET status = 'waiting', step = ?, wait = ?, attempts = 0, heartbeat = ? WHERE id = ?`).run(e.why.slice(0, 300), J(wait), Date.now(), id);
       append(id, `waiting: ${e.why.slice(0, 300)}`);
+      return;
+    }
+    const before = getOp(id)?.wait;
+    const retries = before?.retries ?? 0;
+    const cause = retries < opRetry.waits.length ? await passingCause(e).catch(() => null) : null;
+    if (cause) {
+      const due = Date.now() + opRetry.waits[retries];
+      const why = `${String(e?.message ?? e).split('\n')[0].slice(0, 200)} (${cause}); trying again by itself in ${Math.round(opRetry.waits[retries] / 60_000)} min (${retries + 1} of ${opRetry.waits.length})`;
+      const wait = { on: null, why, rounds: before?.rounds ?? 0, since: before?.since ?? Date.now(), retries: retries + 1, due };
+      db.prepare(`UPDATE ops SET status = 'waiting', step = ?, wait = ?, attempts = 0, heartbeat = ? WHERE id = ?`).run(why.slice(0, 300), J(wait), Date.now(), id);
+      append(id, `waiting: ${why}`);
+      wakeAt(id, due);
       return;
     }
     db.prepare(`UPDATE ops SET status = 'failed', error = ?, finished = ? WHERE id = ?`).run(String(e?.message ?? e).slice(0, 2000), Date.now(), id);
@@ -218,6 +260,9 @@ export function wakeOps({ kind, product, run }: { kind?: string; product?: strin
  */
 export function resumeOps() {
   for (const w of db.prepare(`SELECT id, wait FROM ops WHERE status = 'waiting'`).all() as any[]) {
+    const due = (parse(w.wait) as any)?.due;
+    // Waiting out a failure that passes by itself: its own retry, re-armed (or due now).
+    if (due) { wakeAt(w.id, due); continue; }
     const on = (parse(w.wait) as any)?.on;
     const r = on ? (db.prepare('SELECT status FROM runs WHERE id = ?').get(on) as any) : null;
     if (!r || r.status !== 'running') db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ?`).run(w.id);
