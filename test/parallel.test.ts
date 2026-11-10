@@ -24,10 +24,13 @@ test('two changes run side by side only when they won\'t collide', () => {
   const art = { task: 't_art', text: 'Portraits for Gloob and the imps' };
   const levels = { task: 't_lv', text: 'Levels 7-10' };
   assert.equal(overlapWith(art, [levels]), null, 'art beside levels');
-  assert.match(overlapWith({ task: 't_lv2', text: 'Levels 3-6' }, [levels])!, /both work on levels/);
+  // The same area, or a footprint that can't be told, is no reason to wait (J, 2026-11-10: free slots sat idle):
+  // only the same known file, the same task or a dependency is.
+  assert.equal(overlapWith({ task: 't_lv2', text: 'Levels 3-6' }, [levels]), null, 'same area runs beside');
+  assert.equal(overlapWith({ task: 't_cam', text: 'Camera that never clips' }, [{ task: 't_boss', text: 'Boss set pieces: engine code' }]), null, 'both "engine" runs beside');
   assert.match(overlapWith({ task: 't_art', text: 'Portraits again' }, [art])!, /same task/, 'never two on the same task');
   assert.match(overlapWith({ task: 't_x', depends: ['t_lv'], text: 'Portraits for level 7' }, [levels])!, /depends on t_lv/);
-  assert.match(overlapWith({ task: 't_y', text: 'Make it better' }, [levels])!, /can't tell/, 'unknown waits');
+  assert.equal(overlapWith({ task: 't_y', text: 'Make it better' }, [levels]), null, 'unknown runs beside');
   // Files: a shared one collides whatever the words say; known files with nothing in common don't.
   assert.match(overlapWith({ text: 'Portraits', files: ['Assets/GameConfig/levels/level7.json'] }, [{ text: 'Levels 7-10', files: ['Assets/GameConfig/levels/level7.json'] }])!, /both touch/);
   assert.equal(overlapWith({ text: 'Levels 3-6', files: ['Assets/GameConfig/levels/level3.json'] }, [{ text: 'Levels 7-10', files: ['Assets/GameConfig/levels/level7.json'] }]), null);
@@ -72,7 +75,7 @@ test('noRoomFor: a product\'s slots and what runs in them', () => {
   db.prepare(`INSERT INTO changes (id, product, findings, status, title, task, created) VALUES ('c_00000000par1', 'sickofit', '[]', 'working', 'Levels 7-10', NULL, ?)`).run(now);
   try {
     assert.equal(noRoomFor('sickofit', { task: 't_art', text: 'Portraits for the imps' }), null, 'a second slot for art beside levels');
-    assert.match(noRoomFor('sickofit', { task: 't_lv', text: 'Levels 3-6' })!, /levels/);
+    assert.equal(noRoomFor('sickofit', { task: 't_lv', text: 'Levels 3-6' }), null, 'levels beside levels: different files, a conflict is resolved by its agent');
     assert.match(noRoomFor('phorigins', { text: 'Portraits' }) ?? 'free', /free/);
     db.prepare(`INSERT INTO changes (id, product, findings, status, title, created) VALUES ('c_00000000par2', 'sickofit', '[]', 'queued', 'Portraits', ?)`).run(now);
     assert.match(noRoomFor('sickofit', { task: 't_sfx', text: 'Sound effects' })!, /2 changes are running/);

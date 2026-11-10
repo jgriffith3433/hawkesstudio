@@ -244,8 +244,8 @@ export type JobRunner = {
   remove(key: string): Promise<void>;
   /** Starts the execution; returns its name. */
   start(unit: string): Promise<string>;
-  /** null: Cloud Run doesn't know it (any more). */
-  state(execution: string): Promise<{ done: boolean; message: string } | null>;
+  /** null: Cloud Run doesn't know it (any more). started: Cloud Run began running it (false: still waiting for room). */
+  state(execution: string): Promise<{ done: boolean; message: string; started?: boolean } | null>;
   cancel(execution: string): Promise<void>;
 };
 
@@ -428,7 +428,7 @@ async function gitRefresh(unit: string, remote: string): Promise<{ refresh?: { u
 
 /** After a Studio restart: follows a job started before it (the execution's name is in the bucket). */
 export function reattachCloudJob(unit: string, cwd: string, env: NodeJS.ProcessEnv = process.env) {
-  if (follows.has(unit) || fs.existsSync(local(unit, 'exit'))) return;
+  if (follows.has(unit) || fs.existsSync(local(unit, 'exit')) || fs.existsSync(local(unit, 'gone'))) return;
   const f: Follow = { unit, execution: null, seen: { log: 0, err: 0 }, done: false };
   follows.set(unit, f);
   fs.mkdirSync(DIR(), { recursive: true, mode: 0o700 });
@@ -501,6 +501,28 @@ function end(f: Follow, exit: { code: number | null; signal: string | null; erro
   setTimeout(() => follows.delete(f.unit), 60_000).unref();
 }
 
+/**
+ * A job given up on with no result (dropJob): its execution is cancelled and no exit is written, so its DetachedChild
+ * reads it as gone without a result (`lost`) and the agent's pass starts again with a new job, not counted as a try.
+ */
+function dropJob(f: Follow, why: string) {
+  f.done = true;
+  if (f.execution) { const r = runnerFor(); void r.cancel(f.execution).catch(() => {}); }
+  try { fs.appendFileSync(local(f.unit, 'err'), `[studio] ${why}\n`); } catch { /* the folder went */ }
+  try { fs.writeFileSync(local(f.unit, 'gone'), why); } catch { /* the folder went */ }
+  console.warn(`[cloudjob] ${f.unit}: ${why}`);
+  jobFiles.emit(f.unit);
+  setTimeout(() => follows.delete(f.unit), 60_000).unref();
+}
+
+/**
+ * A job Cloud Run hasn't started after this long (it waits for room: the region's CPU quota is held by other
+ * executions) is given up on and started again (J, 2026-11-10: a reattached agent sat 40 minutes with nothing behind it).
+ */
+export const JOB_START_MS = () => Number(process.env.STUDIO_JOB_START_MS) || 15 * 60_000;
+/** A started job that sends no output for this long (its runner hung) is given up on and started again. */
+export const JOB_SILENT_MS = () => Number(process.env.STUDIO_JOB_SILENT_MS) || 60 * 60_000;
+
 /** Copies new output chunks into the local files, in order. */
 async function pull(f: Follow, r: JobRunner) {
   const names = (await r.list(key(f.unit, 'out/'))).map((n) => n.slice(key(f.unit, 'out/').length)).sort();
@@ -542,6 +564,9 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
   let goneAt = 0;
   let stateAt = 0;
   const since = Date.now();
+  /** When new output last came (or following began), for JOB_SILENT_MS; and whether any came at all. */
+  let heardAt = since;
+  let heard = false;
   let timer: NodeJS.Timeout | null = null;
   let busy = false;
   let again = false;
@@ -557,7 +582,9 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
         await r.put(key(f.unit, 'stop'), String(Date.now()));
       }
       if (f.stopAsked && f.execution && Date.now() - f.stopAsked > 20_000) await r.cancel(f.execution);
+      const was = f.seen.log + f.seen.err;
       const names = await pull(f, r);
+      if (f.seen.log + f.seen.err > was) { heardAt = Date.now(); heard = true; }
       if (names.includes('exit.json')) {
         await finish(f, r, cwd, env);
         return true;
@@ -571,6 +598,14 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
       if (f.execution && (goneAt || Date.now() - stateAt >= every)) {
         stateAt = Date.now();
         const st = await r.state(f.execution);
+        if (st && !st.done && !heard && st.started === false && Date.now() - since > JOB_START_MS()) {
+          dropJob(f, `the Cloud Run job never started in ${Math.round((Date.now() - since) / 60_000)} min (Cloud Run had no room for it): starting it again`);
+          return true;
+        }
+        if (st && !st.done && Date.now() - heardAt > JOB_SILENT_MS()) {
+          dropJob(f, `the Cloud Run job sent nothing for ${Math.round((Date.now() - heardAt) / 60_000)} min: stopped and started again`);
+          return true;
+        }
         if (!st || st.done) {
           goneAt ||= Date.now();
           if (Date.now() - goneAt > 30_000) {
@@ -733,7 +768,7 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
 export function cloudJobAlive(unit: string) {
   const f = follows.get(unit);
   if (f) return !f.done;
-  return !fs.existsSync(local(unit, 'exit'));
+  return !fs.existsSync(local(unit, 'exit')) && !fs.existsSync(local(unit, 'gone'));
 }
 
 /** The MCP servers a job's Claude Code gets: Studio's over its address (stdio client, agents' key), Gen's over HTTPS. */

@@ -1637,6 +1637,11 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
   } catch { /* the ledger never stops a pass */ }
   return r;
 }
+/** The last "[studio] ..." line a job's stderr has (why Studio gave up on it), without the prefix. */
+function lastStudioLine(stderr: string | undefined | null) {
+  const l = String(stderr ?? '').split('\n').map((x) => x.trim()).filter((x) => x.startsWith('[studio] ')).pop();
+  return l ? l.slice(9, 200) : null;
+}
 async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session?: string; prompt: string }) {
   const brief = path.join(getChange(id)!.worktree, '.hawkes', 'brief.md');
   // A conflict pass tells the job which branch to bring in with its token (cloudjob-run.ts premerge): the job's clone has no
@@ -1667,10 +1672,16 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
       addLog(id, `agent: reattached to ${ph.proc.rec.unit} after a Studio restart`);
       const r = await runAgent(getChange(id)!, brief, s, env, resume, { ...fresh(), reattach: ph.proc });
       if (!r.lost) return { ...r, harness };
-      addLog(id, `agent: ${ph.proc.rec.unit} is gone with no result (the server restarted?); starting the pass again`);
+      addLog(id, `agent: ${ph.proc.rec.unit} is gone with no result (${lastStudioLine(r.stderr) ?? 'the server restarted?'}); starting the pass again`);
       save({ proc: undefined });
     }
     if (harness !== brainOf(ph)) save({ brain: harness });
+    const first = await runAgent(getChange(id)!, brief, s, env, resume, fresh());
+    if (!first.lost) return { ...first, harness };
+    // Its job went with no result (Cloud Run never started it, or it went silent: cloudjob.ts dropJob): once more with a
+    // new job, not counted as a try.
+    addLog(id, `agent: its job went with no result (${lastStudioLine(first.stderr) ?? 'it never answered'}); starting the pass again`);
+    save({ proc: undefined });
     return { ...(await runAgent(getChange(id)!, brief, s, env, resume, fresh())), harness };
   } finally {
     release();
@@ -1897,6 +1908,19 @@ export async function customerAgentGate(): Promise<string | null> {
   return null;
 }
 
+/** Changes put back in the queue for want of disk room (waitForDisk): not picked again before this time. */
+const diskWait = new Map<string, number>();
+const DISK_WAIT_MS = () => Number(process.env.STUDIO_DISK_WAIT_MS) > 0 ? Number(process.env.STUDIO_DISK_WAIT_MS) : 5 * 60_000;
+const waitsForDisk = (id: string) => (diskWait.get(id) ?? 0) > Date.now();
+/** A change that couldn't get disk room for its worktree: queued again (not failed), looked at again after DISK_WAIT_MS. */
+function waitForDisk(id: string, why: string) {
+  diskWait.set(id, Date.now() + DISK_WAIT_MS());
+  const short = why.replace(/\. Cleared .*$/, '').replace(/^in-memory disk is full/, 'the disk is full');
+  update(id, { status: 'queued', phase: null, detail: `queued: waits for disk room (${short.slice(0, 200)})` });
+  addLog(id, `disk: no room for its worktree (${short.slice(0, 200)}): back in the queue, it starts once work beside it ends`);
+  setTimeout(() => void pump(), DISK_WAIT_MS() + 1000).unref();
+}
+
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return;
@@ -1913,7 +1937,7 @@ async function pump() {
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
   const active = new Map(listChanges({ status: ACTIVE, limit: 500 }).map((c) => [c.id, c]));
   for (const id of running) { const r = getChange(id); if (r) active.set(r.id, r); }
-  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && resumeAllowed(c));
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c));
   const fit = (id: string, picked: string[]) => {
     const c = getChange(id)!;
     if (isVideoTask(c.task)) return true;
@@ -2086,9 +2110,13 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         }
         fs.mkdirSync(WORK(), { recursive: true });
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
-        await import('./disksweep.ts').then((d) => d.ensureDiskRoom(100 * 1024 * 1024, { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).catch((e) => {
-          if (/in-memory disk is full/.test(String(e?.message ?? e))) throw e;
+        // No disk room (it is memory on Cloud Run) is a wait, not a failure (J, 2026-11-10: three changes failed at
+        // "preparing" this way and sat failed): back in the queue, picked again once work beside it ends.
+        const full = await import('./disksweep.ts').then((d) => d.ensureDiskRoom(100 * 1024 * 1024, { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).then(() => null, (e) => {
+          const m = String(e?.message ?? e);
+          return /in-memory disk is full/.test(m) ? m : null;
         });
+        if (full) return void waitForDisk(id, full);
         await checkoutSlot(() => critical(`making the worktree of ${id}`, async () => {
           // Studio on Cloud Run starts with no checkouts: the product's repo is cloned the first time it's needed.
           await ensureCloned(c.repo, c.slug);
@@ -4474,7 +4502,10 @@ export function checkStuck(now = Date.now()): StuckAction[] {
     }
     // A finish or verify step with the pull request open and the work committed: carry on from the step, but the
     // second time it hangs it is ready as it stands (above).
-    const next: Phase = { ...ph, watch: { step: ph.step, n, at: now }, restarts: undefined };
+    // A stalled agent step's job is stopped (a Cloud Run execution that never started, or went silent): the new pass
+    // starts a fresh one instead of reattaching to it.
+    if (ph.step === 'agent' && ph.proc) { try { stopDetached(ph.proc.rec); } catch { /* already gone */ } }
+    const next: Phase = { ...ph, watch: { step: ph.step, n, at: now }, restarts: undefined, ...(ph.step === 'agent' && ph.proc ? { proc: undefined } : {}) };
     update(r.id, { phase: next, detail: `carrying on: ${here ? 'it hung' : 'nothing was working on it'} at the ${ph.step} step` });
     addLog(r.id, `watchdog: ${what}: carrying on from the ${ph.step} step (${n} of ${WATCH_TRIES})`);
     launchResume(getChange(r.id)!, next, out.length * resumeGapMs());
