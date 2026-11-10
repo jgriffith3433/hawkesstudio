@@ -189,6 +189,15 @@ const STOPS: [HarnessKind, RegExp][] = [
  */
 // The OpenAI API (a game's key), not Codex on a ChatGPT plan: Codex's own limit and sign-in lines name chatgpt.com or
 // openai.com, and they are the harness stopping.
+/**
+ * Studio's own machinery and Google Cloud are never the AI provider stopping (2026-11-10: a Cloud Run agent job that
+ * couldn't start for us-east4's CPU quota left "[studio] the Cloud Run job failed: ... Quota exceeded for total allowable
+ * CPU per project per region" on the pass's stderr; "Quota exceeded" read as "Claude usage ran out", Claude was held and
+ * Cursor stood in for ~19 hours while Claude had usage left). Such a line is the machine's failure (agents.ts
+ * machineryFailure), not a hold. The harness's own lines inside the job's output are read as before.
+ */
+export const NOT_THE_PROVIDER = /^\s*\[(studio|job|cloudjob)\]|Google Cloud answered|run\.googleapis\.com|cloudbuild\.googleapis\.com|cpu_allocation|total allowable CPU|per project per region|Cloud Run job|the Cloud Run|Cloud Build/i;
+
 export const THIRD_PARTY = /eleven ?labs|payment_issue|payment_required|\bgen (tool|job)|hawkes ?gen|audio\.voice|openai[ -]?api|OPENAI_API_KEY|platform\.openai\.com|stripe|replicate|fal\.ai|runpod/i;
 
 /**
@@ -197,7 +206,7 @@ export const THIRD_PARTY = /eleven ?labs|payment_issue|payment_required|\bgen (t
  * isn't taken for one.
  */
 export function harnessStopOf(text: string, { now = Date.now(), kinds }: { now?: number; kinds?: HarnessKind[] } = {}): HarnessStop | null {
-  const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean).filter((l) => !THIRD_PARTY.test(l));
+  const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean).filter((l) => !THIRD_PARTY.test(l) && !NOT_THE_PROVIDER.test(l));
   for (const [kind, re] of STOPS) {
     if (kinds && !kinds.includes(kind)) continue;
     const line = lines.find((l) => re.test(l));

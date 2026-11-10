@@ -120,3 +120,29 @@ test('one at a time: the chosen harness runs everything, and the card offers eve
   assert.equal(P.noProviderFree(), false, 'Claude and Cursor take the work now');
   assert.ok(P.providerTrouble()?.holds.some((h) => h.harness === 'codex'), 'the bill is still J\'s to pay: the card stays for it');
 });
+
+test('code work fills the best provider up to its cap, then overflows; a provider that just throttled is tried last', () => {
+  reset();
+  P.saveProviders({ caps: { claude: 2 } });
+  assert.equal(P.providerSettings().caps.claude, 2);
+  assert.equal(P.providerSettings().caps.cursor, P.DEFAULT_CAPS.cursor, 'unset caps keep their default');
+  const a = P.using('claude');
+  assert.equal(P.pickHarness({ role: 'builder' }), 'claude', 'deep work stays on Claude while it has room');
+  const b = P.using('claude');
+  assert.equal(P.pickHarness({ role: 'builder' }), 'codex', 'Claude is at its cap: the next in J\'s order takes it');
+  assert.equal(P.pickHarness({ role: 'scout' }), 'codex', 'scouts go to the least busy with room');
+  a(); b();
+  // Claude's hold just lifted: code goes to the others first for a while, Claude still takes overflow.
+  const was = P.providerDeps.lifted;
+  P.providerDeps.lifted = (h) => (h === 'claude' ? Date.now() - 60_000 : null);
+  assert.equal(P.pickHarness({ role: 'fixer' }), 'codex');
+  P.providerDeps.lifted = (h) => (h === 'claude' ? Date.now() - 3600_000 : null);
+  assert.equal(P.pickHarness({ role: 'fixer' }), 'claude', 'cooled down: back first');
+  P.providerDeps.lifted = was;
+  // Every provider full: the least full for its cap, so nothing stalls.
+  const all = [P.using('claude'), P.using('claude'), ...Array.from({ length: P.DEFAULT_CAPS.codex }, () => P.using('codex')), ...Array.from({ length: P.DEFAULT_CAPS.cursor }, () => P.using('cursor'))];
+  assert.ok(['claude', 'codex', 'cursor'].includes(P.pickHarness({ role: 'builder' })));
+  for (const r of all) r();
+  assert.throws(() => P.saveProviders({ caps: { claude: 0 } }), /1 to 50/);
+  assert.equal(P.providerStatus().providers.find((x) => x.id === 'claude')?.cap, 2);
+});

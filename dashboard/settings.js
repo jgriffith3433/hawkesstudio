@@ -174,7 +174,7 @@
       const l = login(x.id);
       const si = l?.signin;
       const state = x.ready
-        ? `<span style="color:var(--accent)">✓ answering</span>${x.busy ? ` · ${x.busy} running` : ''}${l?.account ? ` · ${esc(l.account)}` : ''}`
+        ? `<span style="color:var(--accent)">✓ answering</span>${` · ${x.busy ?? 0} of ${x.cap ?? '?'} running`}${l?.account ? ` · ${esc(l.account)}` : ''}`
         : x.hold
           ? `<span class="set-err">${esc(x.hold.why)}</span>${x.hold.needsYou ? '' : ` · back by itself ${x.hold.resets ? 'when it resets' : 'once it answers'}`}`
           : `<span class="meta">${esc(x.why ?? '')}</span>`;
@@ -202,7 +202,7 @@
     const roleSel = PROV_ROLES.map(([r, name]) => `${name} <select data-airole="${r}"><option value="">any</option>${pv.providers.map((x) => `<option value="${x.id}" ${pv.roles?.[r] === x.id ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>`).join(' &nbsp; ');
     return `<div class="set-box" id="setProvidersBox"><h3>🔌 AI providers</h3>
       <div class="meta">${pv.mode === 'spread'
-        ? `Every provider that's signed in takes agent work at once, each new pass on the least busy one (now: ${ready.length ? esc(ready.join(', ')) : '<span class="set-err">none</span>'}). When one runs out of usage, is signed out or down, its work moves to the others and it comes back by itself. Talk stays on the harness above.`
+        ? `Every provider that's signed in takes agent work at once, code work on the best one in this order that has room under its limit, scouts on the least busy (now: ${ready.length ? esc(ready.join(', ')) : '<span class="set-err">none</span>'}). When one runs out of usage, is signed out or down, its work moves to the others and it comes back by itself. Talk stays on the harness above.`
         : `Everything runs on the harness above; when it's held, the next provider in this order stands in until it answers again.`}
         You hear about it in the Inbox only when one needs you (signed out or billing) or none can run.</div>
       ${row('Use', `<select data-aimode><option value="spread" ${pv.mode === 'spread' ? 'selected' : ''}>Every signed-in provider at once</option><option value="one" ${pv.mode === 'one' ? 'selected' : ''}>One at a time (the harness above, others stand in)</option></select>`)}

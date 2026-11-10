@@ -250,3 +250,40 @@ test('a change parked by the harness waits out the gap and stops at the cap', as
   // parks older than an hour don't count
   assert.deepEqual(resumeGate({ at: now - RESUME_GAP - 1, parks: [now - 2 * 3600_000, now - 3 * 3600_000, now - RESUME_GAP - 1] }, now), { go: true });
 });
+
+test("Google Cloud's CPU quota on an agent job is never the AI provider's usage limit", async () => {
+  // 2026-11-10: a job that couldn't start for us-east4's CPU quota held Claude for ~19 hours ("Claude usage ran out").
+  const jobLine = '[studio] the Cloud Run job failed: the Cloud Run job didn\'t start: Google Cloud answered 429 for https://run.googleapis.com/v2/projects/hawkes-staging/locations/us-east4/jobs/studio-cell-agent:run: Quota exceeded for total allowable CPU per project per region. (exit code none); it printed nothing';
+  assert.equal(brains.harnessStopOf(jobLine), null);
+  assert.equal(brains.harnessStopOf('RESOURCE_EXHAUSTED: project exceeded its quota limit for run.googleapis.com/cpu_allocation'), null);
+  assert.equal(agents.passStop({ ok: false, sawResult: false, result: '', stderr: `${jobLine}\n` }), null);
+  assert.ok(agents.machineryFailure(`${jobLine}\n`), "it is Studio's machinery failing instead");
+  // The provider's own limit inside the job's output still holds it.
+  assert.equal(agents.passStop({ ok: false, sawResult: false, result: '', stderr: `${jobLine}\nClaude AI usage limit reached|1794330000\n` })?.kind, 'usage');
+  // Gemini's own quota wording is still its usage.
+  assert.equal(brains.harnessStopOf('RESOURCE_EXHAUSTED: You have exhausted your capacity on this model. Your quota will reset after 2h3m')?.kind, 'usage');
+});
+
+test('a hold made from a line that turns out not to be the provider lifts at the next look, and the stand-in ends', async () => {
+  clear();
+  brains.saveBrain('claude');
+  // A hold saved by an older Studio from Google Cloud's quota line, with Cursor standing in.
+  const line = '[studio] the Cloud Run job failed: the Cloud Run job didn\'t start: Google Cloud answered 429: Quota exceeded for total allowable CPU per project per region.';
+  db.prepare(`INSERT INTO harness_holds (harness, kind, why, line, since, until, attempts, reset, log) VALUES ('claude', 'usage', 'Claude usage ran out', ?, ?, ?, 6, 0, '[]')`)
+    .run(line, Date.now() - 19 * 3600_000, Date.now() + 3600_000);
+  brains.setFailover({ harness: 'cursor', from: 'claude', since: Date.now() - 19 * 3600_000, why: 'Claude usage ran out' });
+  assert.equal(brains.brainId(), 'cursor');
+  await hold.reviewHolds();
+  assert.equal(hold.harnessHeld('claude'), false, 'lifted without waiting for its time');
+  assert.equal(brains.brainId(), 'claude', 'back on Claude');
+  assert.deepEqual(probed, [], 'no probe needed');
+  assert.match(hold.getHold('claude')!.log.at(-1)!, /lifted: it wasn't Claude/);
+});
+
+test('a usage stop with no reset time is looked at again within minutes', () => {
+  const now = Date.now();
+  const first = hold.untilFor({ kind: 'usage', resetsAt: null }, 0, now) - now;
+  const later = hold.untilFor({ kind: 'usage', resetsAt: null }, 9, now) - now;
+  assert.equal(first, 5 * Number(process.env.STUDIO_HARNESS_MINUTE_MS));
+  assert.equal(later, 30 * Number(process.env.STUDIO_HARNESS_MINUTE_MS));
+});
