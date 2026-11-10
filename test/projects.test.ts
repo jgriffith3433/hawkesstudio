@@ -61,7 +61,9 @@ test("its pages report bugs with its key, from its own sites only, through the s
     assert.match(loader, /\/r\/widget\.js/);
     assert.match(loader, /\/r\/gen-app\/report\?k=rk_/, 'the widget posts to this project with its key');
     assert.equal((await fetch(`${base}/r/gen-app.js?k=rk_wrong`)).status, 403);
-    assert.equal((await fetch(`${base}/r/widget.js`)).status, 200);
+    const wj = await fetch(`${base}/r/widget.js`);
+    assert.equal(wj.status, 200);
+    assert.equal(wj.headers.get('cross-origin-resource-policy'), 'cross-origin', 'ORB/CORP lets another origin load it');
     const post = (origin: string, key = info.key) => fetch(`${base}/r/gen-app/report?k=${key}`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ text: 'The export button does nothing.', url: 'https://beta.app.example.com/', state: JSON.stringify({ scene: { id: 'sc_9' } }) }) });
     assert.equal((await post('https://evil.example.com')).status, 403, 'only its own sites');
     assert.equal((await post('https://beta.app.example.com', 'rk_nope')).status, 403, 'only with its key');
