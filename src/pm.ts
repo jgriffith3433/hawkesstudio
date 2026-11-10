@@ -40,7 +40,7 @@ import {
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf, waitingOn, STUCK_DEPENDENCY,
   pmLogVersion,
 } from './roadmap.ts';
-import { gate, allMet } from './acceptance.ts';
+import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { fileUrl, signFileLinks } from './gen.ts';
@@ -322,12 +322,20 @@ async function checkOnBeta(t: Task) {
   // its tasks once, milestoneCheck); a beta review that did judge this task's criteria still decides it.
   const playsAfterMerges = betaPlaytestsOn();
   const s = pmSettings();
+  // Its change's own playtest before the merge passed every criterion, and beta since touched none of its files.
+  if (await carryChangeVerdict(t)) return;
+  // Beta runs, and the daily run's plays of beta (they judge every merged task's criteria: acceptance.ts sweepCriteria).
   const steps = db.prepare(`SELECT s.*, r.kind AS run_kind, r.status AS run_status FROM steps s JOIN runs r ON r.id = s.run
-    WHERE s.product = ? AND s.kind = 'review' AND r.kind = 'beta' AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
-  // Only a review that judged this task's own criteria (a beta run checks whatever its starter asked: another task's, a fix's).
-  // Never from a run that broke (stuck, a missing scenario, not built: brokenCheck): that's played again, not a miss.
+    WHERE s.product = ? AND s.kind = 'review' AND r.kind IN ('beta', 'daily') AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
+  // Only reviews that judged this task's own criteria (a beta run checks whatever its starter asked: another task's, a fix's).
+  // Never from a run that broke (stuck, a missing scenario, not built: brokenCheck): that's played again, not a miss. A
+  // daily run plays live and phone too: only the play behind the review counts there. A review that judged merged
+  // tasks in passing (data.sweep: their ids) counts only for those (beta had built them when it played).
   const parsedSteps = steps.map((x) => ({ ...x, data: reviewData(x.id, x.data) }));
-  const judged = parsedSteps.find((x) => judgesAll(x.data?.criteria, t.criteria) && !brokenCheck(x.run, t.product));
+  const usable = parsedSteps.filter((x) => Array.isArray(x.data?.criteria) && x.data.criteria.some((r: any) => t.criteria.includes(r?.criterion))
+    && (!Array.isArray(x.data.sweep) || x.data.sweep.includes(t.id))
+    && (x.run_kind === 'daily' ? playedClean(x.run, t.product, x.name) : !brokenCheck(x.run, t.product)));
+  const judged = runVerdicts(usable, t.criteria);
   if (!judged) {
     // No beta check yet: start one if nothing is running for this product and the merge is a while ago (only looked up
     // when beta is played after merges: two more queries per merged task every pass otherwise, 2026-11-10 freezes).
@@ -350,12 +358,13 @@ async function checkOnBeta(t: Task) {
   }
   const play = db.prepare(`SELECT data FROM steps WHERE run = ? AND kind = 'playtest' AND product = ? ORDER BY started DESC LIMIT 1`).get(judged.run, t.product) as any;
   const video = parse(play?.data)?.video ?? null;
-  const results = t.criteria.map((k) => (judged.data.criteria as Check[]).find((r) => r.criterion === k)!);
-  const checks = { where: 'beta' as const, at: judged.started, run: judged.run, video, verdict: judged.data.verdict, results };
+  const results = judged.results;
+  const checks = { where: 'beta' as const, at: judged.started, run: judged.run, video, verdict: judged.verdict ?? undefined, results };
   if (allMet(results, t.criteria)) {
     setTask(t.id, { status: 'verified', verified_at: Date.now(), checks });
-    logDecision('verified', t.id, t.product, `"${t.title}": all ${t.criteria.length} criteria met on beta (run ${judged.run})`);
-    pmEvent('verified', `Task ${t.id} ("${t.title}", ${name(t.product)}) passed every criterion on beta.`, t.id, t.product);
+    logDecision('verified', t.id, t.product, `"${t.title}": all ${t.criteria.length} criteria met on beta (run ${judged.run}${judged.sweep ? ", judged with the other merged tasks in that run's play" : ''})`);
+    // A swept verdict needs nothing from the PM (no Talk turn for each of them).
+    if (!judged.sweep) pmEvent('verified', `Task ${t.id} ("${t.title}", ${name(t.product)}) passed every criterion on beta.`, t.id, t.product);
     return;
   }
   if (getTask(t.id)!.checks?.run === judged.run) return; // Already handled this check.
@@ -375,6 +384,12 @@ async function checkOnBeta(t: Task) {
     logDecision('slow-scenario', t.id, t.product, `"${t.title}":${slow}`.slice(0, 1000));
   }
   if (!missed.some((r) => r.met === 'no')) {
+    // Judged in a play that wasn't its own scenario (the play before going live, the daily run): unclear only waits for a
+    // play that shows it. Never an agent change for it (no new work or spend): its checks say what that play saw.
+    if (judged.sweep) {
+      logDecision('beta-check', t.id, t.product, `"${t.title}": judged in run ${judged.run}'s play of beta with the other merged tasks; nothing failed, unclear: ${why}`.slice(0, 1000));
+      return;
+    }
     // Unclear because the bot never got there (not reached, not seen): sent back ONCE as a scenario fix, not a try.
     const unseen = notReached(missed);
     if (unseen.length && await scenarioFix(t, unseen, judged.run, checks, slow)) return;
@@ -384,11 +399,47 @@ async function checkOnBeta(t: Task) {
   }
   // Walk-away mode: the PM decides it (try again, park, or one investigation for many), never a question per task.
   if (walkAwayOn()) {
-    await decideMiss(getTask(t.id)!, { where: 'beta', at: judged.started, run: judged.run, video, verdict: judged.data.verdict }, judged.data.criteria as Check[]);
+    await decideMiss(getTask(t.id)!, { where: 'beta', at: judged.started, run: judged.run, video, verdict: judged.verdict ?? undefined }, judged.all);
     return;
   }
   setTask(t.id, { status: 'failed', note: `on beta: ${why}`.slice(0, 1000) });
   askJ(`"${t.title}" (${name(t.product)}) is merged into beta but misses criteria there (try ${t.tries} of ${s.maxTries}): ${why}. Try again on top of beta, change the criteria, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change the criteria', 'drop it'] });
+}
+
+/** Carry checks already made per task and change (one git comparison each, not one a minute). */
+const carryTried = new Set<string>();
+
+/**
+ * A merged task whose change's own playtest before the merge (its showcase) met every criterion: once beta built it,
+ * that is its verdict, unless beta changed the same files since that play (acceptance.ts changeVerdictHolds). Once per
+ * task and change; otherwise beta's plays judge it. Returns whether it was verified.
+ */
+export async function carryChangeVerdict(t: Task, deps?: Parameters<typeof changeVerdictHolds>[2]) {
+  if (!t.criteria.length || !t.change || t.build?.ok !== true || t.checks?.where !== 'change' || t.checks.change !== t.change) return false;
+  const key = `${t.id}:${t.change}`;
+  if (carryTried.has(key)) return false;
+  carryTried.add(key);
+  const { getChange } = await changes();
+  const c = getChange(t.change);
+  if (!c || c.status !== 'merged') return false;
+  const dir = path.join(PROJECTS, c.repo);
+  if (!deps && !fs.existsSync(dir)) return false;
+  const r = await changeVerdictHolds(c, t.criteria, deps ?? localGitDeps(dir, c.base, c.pr));
+  const now = getTask(t.id);
+  if (!now || now.status !== 'merged') return false;
+  if (!r.holds) {
+    logDecision('carry', t.id, t.product, `"${t.title}": its change's playtest before the merge is not its verdict on beta: ${r.why}; beta's plays judge it`.slice(0, 1000));
+    return false;
+  }
+  setTask(t.id, { status: 'verified', verified_at: Date.now(), checks: { ...t.checks, carried: r.why } });
+  logDecision('verified', t.id, t.product, `"${t.title}": ${r.why}`.slice(0, 1000));
+  return true;
+}
+
+/** A daily run's play behind a review: done, and not stuck (the rest of a daily run says nothing about it). */
+function playedClean(run: string, product: string, name: string) {
+  const x = db.prepare(`SELECT status, detail, data FROM steps WHERE run = ? AND product = ? AND kind = 'playtest' AND name = ? ORDER BY started DESC LIMIT 1`).get(run, product, name) as any;
+  return Boolean(x) && x.status === 'done' && !/\bstuck\b/i.test(String(x.detail ?? '')) && parse(x.data)?.outcome !== 'stuck';
 }
 
 /**
@@ -787,9 +838,6 @@ export function brokenCheck(run: string, product?: string): string | null {
   const build = buildOf(p, { ...r, status: r.status === 'failed' ? 'failed' : 'done' }, sp);
   return build.ok ? null : build.detail;
 }
-
-/** Every one of a task's criteria judged by name in these checks. */
-const judgesAll = (checks: unknown, criteria: string[]) => Array.isArray(checks) && criteria.length > 0 && criteria.every((k) => checks.some((r: any) => r?.criterion === k));
 
 /** A task's change still in flight: an agent on it, ready for review, waiting on an answer or on its Gen jobs. */
 const LIVE = [...ACTIVE, 'ready', 'needs answer', 'waiting on Gen'];

@@ -215,7 +215,8 @@ const focusFor = (short: string) => `${BEFORE_GO_LIVE} ${short} once, covering e
  * Starts ONE beta playtest of beta's newest commit before it goes live (autoGoLive, betaPlayWhen "go-live"), unless one
  * is already playing for the project (merges that land meanwhile wait for it: the next pass plays the newest commit) or
  * one already played this exact commit (a failed play holds it until a fix lands; no loop). Its run ends in autoGoLive,
- * which takes beta live if the play passed. `start` is for the tests.
+ * which takes beta live if the play passed. Its review also judges the criteria of every merged task not verified yet
+ * (pipeline.ts betaBody, acceptance.ts sweepFor): no play of its own for them. `start` is for the tests.
  */
 export async function playBeforeGoLive(productId: string, short: string, why: string, start?: (product: string, o: Record<string, unknown>) => { id: string }): Promise<{ started?: string; playing?: string; played?: string; error?: string }> {
   const runs = db.prepare(`SELECT id, status, options FROM runs WHERE kind = 'beta' AND options LIKE ? AND products LIKE ? ORDER BY started DESC LIMIT 20`).all(`%${BEFORE_GO_LIVE}%`, `%"${productId}"%`) as any[];

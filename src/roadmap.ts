@@ -10,7 +10,9 @@
 //   task  status: idea | planned (starts by itself when its item is planned and what it depends on is on beta)
 //                 -> working (an agent change) -> review (the change is ready: the PM checks it against the criteria)
 //                 -> merged (into beta; beta's build of it is recorded on the task: build) -> verified (its criteria pass
-//                 on beta: the milestone's playtest, or a beta playtest J asked for) -> live
+//                 on beta: the milestone's playtest, a beta playtest J asked for, the play before going live or the daily
+//                 run's play of beta (both judge every merged task's criteria, acceptance.ts sweepCriteria), or its
+//                 change's own playtest before the merge when beta since touched none of its files) -> live
 //                 | failed (3 tries, then J is asked) | dropped
 //                 | done (already done: its work is on beta from other changes, nothing for an agent to do; counts as on
 //                   beta, J 2026-10-19: items whose tasks were all "dropped as already done" showed "planned")
@@ -116,7 +118,9 @@ export type Task = {
   /** 'video': a video J screens (videos.ts); null: work judged on beta. */
   kind: string | null;
   /** The latest acceptance results: where they were judged (the change's verification, or beta), per criterion. */
-  checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; video?: string | null; verdict?: string; results: Check[] } | null;
+  checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; video?: string | null; verdict?: string; results: Check[];
+    /** The change's own playtest became the verdict on beta (acceptance.ts changeVerdictHolds): why it still holds. */
+    carried?: string } | null;
   /** How J can try it (the agent's words). */
   try: string | null; note: string | null; merged_at: number | null; verified_at: number | null; live_at: number | null; created: number; updated: number | null;
   /**
