@@ -3,6 +3,7 @@
 import { customerStudio } from './tenancy.ts';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { abs, localUrl, paths, DATA, loadProducts, type Product } from './config.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
@@ -13,7 +14,9 @@ import { isServer } from './repos.ts';
 const WIN = process.platform === 'win32';
 /** A shell command, the platform's way (cmd on Windows, sh elsewhere). */
 const shell = (cmd: string): [string, string[]] => (WIN ? ['cmd.exe', ['/c', cmd]] : ['sh', ['-c', cmd]]);
-const PYTHON = WIN ? 'python' : 'python3';
+/** The static file server for a site's folder (static-child.mjs): Node, which the image always has (it had no python3). */
+const STATIC_CHILD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'static-child.mjs');
+const staticServer = (port: number | string): [string, string[]] => [process.execPath, [STATIC_CHILD, String(port)]];
 
 const SERVERS = path.join(DATA, 'servers.json');
 const readServers = (): Record<string, { pid: number; port: number; started: number }> => {
@@ -90,7 +93,7 @@ export async function ensureServer(p: Product, log: (s: string) => void = () => 
   if (p.local.serve === 'npm') {
     child = spawn(...shell(`npm run dev -- --port ${p.local.port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
   } else {
-    child = spawn(PYTHON, ['-m', 'http.server', String(p.local.port), '--bind', '127.0.0.1'], { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
+    child = spawn(...staticServer(p.local.port), { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
   }
   // A server that can't start (no shell or python in the image) fails this playtest below, never Studio: an unhandled
   // 'error' ended the process, and the resumed run ended it again on every start (studio-beta, 2026-10-29).
@@ -140,7 +143,7 @@ export async function serveDir(p: Product, dir: string, port: number) {
   const out = fs.openSync(path.join(paths.logs, `serve-${p.id}-${port}.log`), 'a');
   const child = p.local.serve === 'npm'
     ? sandboxSpawn(...shell(`npm run dev -- --port ${port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out] })
-    : spawn(PYTHON, ['-m', 'http.server', String(port), '--bind', '127.0.0.1'], { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
+    : spawn(...staticServer(port), { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
   child.on('error', (e) => console.warn(`[studio] ${p.id}: serving ${dir} on :${port} didn't start: ${e.message}`));
   child.unref();
   served.set(port, child.pid!);

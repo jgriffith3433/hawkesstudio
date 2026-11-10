@@ -17,6 +17,21 @@ const FLAG = path.join(DATA, 'deploy-pending');
 /** True while a Studio deploy is waiting for the critical sections in progress to end. */
 export const deployPending = () => fs.existsSync(FLAG);
 
+/**
+ * Removes a drain flag older than maxMs (a deploy waits a few minutes at most; one that died left it behind), so the
+ * queue isn't held by a deploy that will never come. Returns what it did, or null.
+ */
+export function clearStaleDeployFlag(maxMs = 20 * 60_000, now = Date.now()): string | null {
+  try {
+    const age = now - fs.statSync(FLAG).mtimeMs;
+    if (age < maxMs) return null;
+    fs.rmSync(FLAG, { force: true });
+    return `removed a deploy drain flag left for ${Math.round(age / 60_000)} min`;
+  } catch {
+    return null;
+  }
+}
+
 /** Waits (checking every 2 s) until no deploy is pending, at most maxMs; resolves either way. */
 export async function waitForDeploy(maxMs = 6 * 60_000) {
   const end = Date.now() + maxMs;

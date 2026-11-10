@@ -71,7 +71,7 @@ import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
 import { lfsPull, pushPendingLfs } from './lfs.ts';
 import { healSource, populateSource, probeSource, repairedError, sourceError, SOURCE_UNREADABLE_SAID } from './source-ready.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
-import { deployPending, critical } from './drain.ts';
+import { deployPending, critical, clearStaleDeployFlag } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor, getTask, addItem, addTask } from './roadmap.ts';
 import { overlapWith, filesIn, othersSection, sortConflicts, UNITY_RULES, type WorkShape } from './parallel.ts';
@@ -84,7 +84,7 @@ import { routeFor, routeLine, routingSettings, premiumFor, usePremium, modelPin,
 import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
-import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
+import { launch, DetachedChild, detachedActivity, stopDetached, detachMode, type DetachRec } from './detach.ts';
 import { cloudMcp, setWorkspaceRestorer, MERGE_BASE_FILE } from './cloudjob.ts';
 import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
@@ -93,7 +93,7 @@ import { infraFailed, INFRA_FAILED_SQL, isInfraText } from './infra-failure.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
-import { noProviderFree, pickHarness, providerSettings, using } from './providers.ts';
+import { noProviderFree, notReady, pickHarness, providerSettings, using } from './providers.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 import { githubReachable } from './ghtoken.ts';
 import { kickFollowups } from './followup-kick.ts';
@@ -1662,6 +1662,7 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
   });
   const release = using(harness);
   try {
+    return await offMachine(id, async () => {
     if (ph.proc && brainOf(ph) !== harness) {
       addLog(id, `agent: stopping the ${brainOf(ph)} session; the brain is ${brainLabel(harness)} now, so this pass starts again`);
       stopDetached(ph.proc.rec);
@@ -1683,6 +1684,7 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
     addLog(id, `agent: its job went with no result (${lastStudioLine(first.stderr) ?? 'it never answered'}); starting the pass again`);
     save({ proc: undefined });
     return { ...(await runAgent(getChange(id)!, brief, s, env, resume, fresh())), harness };
+    });
   } finally {
     release();
   }
@@ -1714,18 +1716,41 @@ const flightOf = new Map<string, () => void>();
 function claim(id: string, o: { flight?: boolean } = {}) {
   running.add(id);
   const gen = passGen(id);
-  if (o.flight) inFlight++;
+  if (o.flight) takeFlight(id);
   let done = false;
   const land = () => {
     if (done) return;
     done = true;
-    if (o.flight) { inFlight--; memFreed(); }
+    if (o.flight) dropFlight(id);
     if (passGen(id) === gen) running.delete(id);
     if (flightOf.get(id) === land) flightOf.delete(id);
   };
   flightOf.set(id, land);
   return land;
 }
+/** The changes counted in inFlight: a pass holding memory on this machine now. */
+const flying = new Set<string>();
+function takeFlight(id: string) { if (!flying.has(id)) { flying.add(id); inFlight++; } }
+function dropFlight(id: string) { if (flying.delete(id)) { inFlight--; memFreed(); } }
+
+/**
+ * Runs a pass's agent step. On Cloud Run the agent is a job on another machine (detach.ts 'cloudrun'): while it works,
+ * the pass holds no memory here, so it isn't counted against memRoom, and other changes can start beside it. On
+ * 2026-11-10 every new start waited behind passes whose agents ran elsewhere for an hour: memory was low at rest (the
+ * in-memory disk and Studio itself), and memRoom lets a start go only when nothing is in flight. The count comes back
+ * when the agent step ends and the pass carries on here (its publish and checks use this machine).
+ */
+async function offMachine<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  if (detachMode() !== 'cloudrun' || !flying.has(id)) return fn();
+  const gen = passGen(id);
+  dropFlight(id);
+  try {
+    return await fn();
+  } finally {
+    if (passGen(id) === gen && running.has(id)) takeFlight(id);
+  }
+}
+
 /** Gives up on a change's pass in this process (checkStuck): its slot and memory count are freed and it can write no more. */
 function abandonPass(id: string) {
   gens.set(id, passGen(id) + 1);
@@ -1926,6 +1951,8 @@ const reviseNotes = new Map<string, string>();
 
 /** When the pump last started a change (checkQueue: a queue with free slots and no start for long is stalled). */
 let lastStartAt = Date.now();
+/** What the pump's last look came to (why it started nothing): the watchdog logs it with a stall. */
+let pumpNote = 'not run yet';
 
 /**
  * A queue that should be moving and isn't (J, 2026-11-10: "the goal shouldn't be to have to watch studio"). On
@@ -1934,9 +1961,10 @@ let lastStartAt = Date.now();
  */
 export function queueStalled(o: { queued: number; free: number; lastStartAt: number; oldestQueuedAt: number; now: number; memLow: boolean; held: boolean; stallMs?: number }): string | null {
   const stall = o.stallMs ?? QUEUE_STALL_MS();
-  if (!o.queued || o.free <= 0 || o.held) return null;
+  if (!o.queued || o.free <= 0) return null;
   if (o.now - o.lastStartAt < stall || o.now - o.oldestQueuedAt < stall) return null;
-  return `${o.queued} queued and ${o.free} slot(s) free, but nothing started for ${Math.round((o.now - o.lastStartAt) / 60_000)} min${o.memLow ? ' (memory is low)' : ''}`;
+  // A hold (a deploy, no provider) is a reason, not an excuse: one that lasts this long is reported like any stall.
+  return `${o.queued} queued and ${o.free} slot(s) free, but nothing started for ${Math.round((o.now - o.lastStartAt) / 60_000)} min${o.memLow ? ' (memory is low)' : ''}${o.held ? ' (held: a deploy is pending or no provider is ready)' : ''}`;
 }
 /** How long a queue may sit with free slots before the watchdog steps in (STUDIO_QUEUE_STALL_MS; 20 minutes). */
 export const QUEUE_STALL_MS = () => Number(process.env.STUDIO_QUEUE_STALL_MS) > 0 ? Number(process.env.STUDIO_QUEUE_STALL_MS) : 20 * 60_000;
@@ -1965,7 +1993,10 @@ export function checkQueue(now = Date.now()): string | null {
   const why = queueStalled({ queued: queued.length, free, lastStartAt, oldestQueuedAt: oldest, now, memLow: memLow(), held: deployPending() || noProviderFree() });
   if (!why) return null;
   const reasons = queueHeldBy(queued.map((c) => c.detail));
-  console.warn(`[stuckwatch] queue stalled: ${why}; held by: ${reasons}; dropping timed holds and starting the queue`);
+  console.warn(`[stuckwatch] queue stalled: ${why}; the pump's last look: ${pumpNote}; held by: ${reasons}; dropping timed holds and starting the queue`);
+  // A drain flag no deploy took away (drain.ts; the deploy that set it died) holds the queue forever: it goes.
+  const stale = clearStaleDeployFlag();
+  if (stale) console.warn(`[stuckwatch] ${stale}`);
   diskWait.clear();
   lastStartAt = now;
   void pump();
@@ -1974,15 +2005,18 @@ export function checkQueue(now = Date.now()): string | null {
 
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
-  if (deployPending()) return;
+  if (deployPending()) return void (pumpNote = 'a Studio deploy is pending (the drain flag is set)');
   // No provider can run (harness-hold.ts holds, providers.ts): nothing starts; the hold's own look resumes the queue.
-  if (noProviderFree()) return void reviewHolds().catch(() => {});
+  if (noProviderFree()) {
+    pumpNote = `no AI provider can take work (${providerSettings().order.map((h) => `${h}: ${notReady(h) ?? 'ready'}`).join(', ')})`;
+    return void reviewHolds().catch(() => {});
+  }
   // A customer's Studio whose plan has no agents, or with no AI linked yet: nothing starts (it would only fail as a
   // harness stop and wait forever); the queued changes say why, and start the moment that's fixed (2026-10-31 review).
   const gate = await customerAgentGate();
   if (gate) {
     for (const c of listChanges({ status: 'queued', limit: 500 })) if (c.detail !== gate) update(c.id, { detail: gate });
-    return;
+    return void (pumpNote = gate);
   }
   const s = agentSettings();
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
@@ -2012,11 +2046,16 @@ async function pump() {
     ahead.set(c.product, [...before, c.id]);
   }
   // Memory is the floor under maxConcurrent (memgate.ts): while too little is free, nothing new starts beside running work.
+  const could = picks.length;
   if (picks.length && memLow()) {
     const room = inFlight > 0 ? 0 : 1;
     const why = `queued: waits for memory to free up (${memSummary()})`;
     for (const id of picks.splice(room)) { const c = getChange(id); if (c && !String(c.detail ?? '').startsWith('queued: waits for memory')) update(id, { detail: why }); }
   }
+  pumpNote = picks.length ? `started ${picks.length}`
+    : !queued.length ? 'nothing to start'
+    : could ? `memory is low (${memSummary()}; ${inFlight} pass(es) on this machine: ${[...flying].join(', ') || 'none'})`
+    : `no queued change fits: ${running.size} running of ${s.maxConcurrent} (${[...running].join(', ') || 'none'}), busy: ${busy.join(', ') || 'none'}`;
   if (picks.length) lastStartAt = Date.now();
   for (const id of picks) {
     const c = getChange(id)!;
@@ -4569,7 +4608,7 @@ export function checkStuck(now = Date.now()): StuckAction[] {
 
 /** For the tests: a pass's claim, the watchdog's give-up, and code run as a pass of a change. */
 export const passInternals = {
-  claim, abandonPass, isRunning: (id: string) => running.has(id), inFlight: () => inFlight,
+  claim, abandonPass, offMachine, isRunning: (id: string) => running.has(id), inFlight: () => inFlight,
   asPass: <T>(id: string, fn: () => T) => passCtx.run({ id, gen: passGen(id) }, fn),
 };
 
