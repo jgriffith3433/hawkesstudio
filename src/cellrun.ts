@@ -259,21 +259,27 @@ export async function serviceImage(service: string, c = cellsConfig()): Promise<
  * CELL_LIMITS gets raised and every one gets CELL_STARTUP_PROBE: the roll after a deploy is what brings
  * older cells up to date).
  */
-export async function setImage(service: string, image: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
+export async function setImage(service: string, image: string, o: { dry?: boolean; disk?: boolean } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${service}`;
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
   const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
   // With the working disk (CELL_DISK): the roll after a deploy brings every cell onto it. Refused (a launch stage or a
   // quota Google won't take): the image alone, as before, so a deploy never fails for the disk.
+  const plainBody = () => {
+    const plain = containers.map((ct: any) => ({ ...ct, volumeMounts: (ct.volumeMounts ?? []).filter((m: any) => m?.name !== CELL_DISK.name) })).map((ct: any) => (ct.volumeMounts.length ? ct : (({ volumeMounts: _v, ...r }) => r)(ct)));
+    return { template: { containers: plain, volumes: (s.template?.volumes ?? []).filter((v: any) => v?.name !== CELL_DISK.name) } };
+  };
+  // Without the disk (disk: false): the revision with it was refused after the update was taken (Google's ephemeral disk
+  // quota is checked when the revision starts, not when it's asked for), so the image goes out on its own.
+  if (o.disk === false) return call('PATCH', `${url}?updateMask=template.containers,template.volumes`, plainBody(), o);
   const withDisk = { launchStage: 'BETA', template: { containers: containers.map((ct: any, i: number) => (i === 0 ? { ...ct, volumeMounts: withDiskMount(ct.volumeMounts) } : ct)), volumes: withDiskVolume(s.template?.volumes) } };
   try {
     return await call('PATCH', `${url}?updateMask=launchStage,template.containers,template.volumes`, withDisk, o);
   } catch (e: any) {
     if (!diskRefused(e)) throw e;
     console.warn(`[cells] ${service}: Cloud Run refused the working disk (${String(e?.message ?? e).slice(0, 300)}); new image without it`);
-    const plain = containers.map((ct: any) => ({ ...ct, volumeMounts: (ct.volumeMounts ?? []).filter((m: any) => m?.name !== CELL_DISK.name) })).map((ct: any) => (ct.volumeMounts.length ? ct : (({ volumeMounts: _v, ...r }) => r)(ct)));
-    return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: plain } }, o);
+    return call('PATCH', `${url}?updateMask=template.containers,template.volumes`, plainBody(), o);
   }
 }
 
@@ -330,22 +336,37 @@ export async function rollImage(image: string, o: { dry?: boolean; health?: (url
 /** Whether a service's newest revision runs `image`, is ready, and takes the traffic (waits up to ~11 minutes: the
  * startup probe allows 10). */
 export async function newRevisionServes(service: string, image: string, c = cellsConfig(), waitMs = 11 * 60_000): Promise<boolean> {
+  return (await newRevisionOutcome(service, image, c, waitMs)).ok;
+}
+
+/** Why a service's revision failed, in Google's words (its failed conditions), or null. */
+const failureOf = (sv: any): string | null => {
+  const bad = [sv?.terminalCondition, ...(sv?.conditions ?? [])].filter((x: any) => x?.state === 'CONDITION_FAILED' && x?.message);
+  return bad.length ? bad.map((x: any) => String(x.message)).join(' ').slice(0, 500) : null;
+};
+/** The revision was refused for its working disk (Google's ephemeral disk quota, or the disk itself), not for the image. */
+export const diskFailure = (why: string | null | undefined) => /ephemeral (disk|storage)|emptyDir|volume .*(disk|quota)|disk allocation/i.test(String(why ?? ''));
+
+/** newRevisionServes with Google's reason when it doesn't. */
+export async function newRevisionOutcome(service: string, image: string, c = cellsConfig(), waitMs = 11 * 60_000): Promise<{ ok: boolean; why: string | null }> {
   const end = Date.now() + waitMs;
+  let why: string | null = null;
   while (Date.now() < end) {
     const sv = await gapi(`${base(c)}/services/${service}`, { missingOk: true }).catch(() => null);
     const created = sv?.latestCreatedRevision, ready = sv?.latestReadyRevision;
     const failed = (sv?.conditions ?? []).some((x: any) => x.type === 'RoutesReady' && x.state === 'CONDITION_FAILED') || sv?.terminalCondition?.state === 'CONDITION_FAILED';
     if (sv?.template?.containers?.[0]?.image === image && created && created === ready && !sv?.reconciling) {
       const tr = (sv.trafficStatuses ?? sv.traffic_statuses ?? []) as any[];
-      if (!tr.length || tr.some((t) => (t.percent ?? 0) === 100 && (t.type === 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST' || String(t.revision ?? '').endsWith(String(ready).split('/').pop()!)))) return true;
+      if (!tr.length || tr.some((t) => (t.percent ?? 0) === 100 && (t.type === 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST' || String(t.revision ?? '').endsWith(String(ready).split('/').pop()!)))) return { ok: true, why: null };
     }
-    if (failed && !sv?.reconciling) return false;
+    why = failureOf(sv) ?? why;
+    if (failed && !sv?.reconciling) return { ok: false, why };
     await new Promise((r) => setTimeout(r, Math.min(5000, Math.max(0, end - Date.now()))));
   }
-  return false;
+  return { ok: false, why: why ?? 'the new revision wasn\'t serving in time' };
 }
 
-export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void } = {}, c = cellsConfig()) {
+export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void; outcome?: typeof newRevisionOutcome } = {}, c = cellsConfig()) {
   const log = o.log ?? ((s: string) => console.log(`[cells] ${s}`));
   const health = o.health ?? (async (url: string) => {
     for (let i = 0; i < 20; i++) {
@@ -362,9 +383,20 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
     await setImage(cell.service, image, o, c);
     // Healthy means the NEW revision is ready and serving, then answering: the old one answers /api/health until it's
     // replaced, so a bad image used to pass every cell (2026-10-31 review). A cell that fails goes back to its image.
-    if (!dryRun(o) && !((await newRevisionServes(cell.service, image, c)) && (await health(serviceUrl(cell.org, c))))) {
-      log(`${cell.service} is not healthy on the new image: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
-      await setImage(cell.service, cell.image, o, c).catch((e) => log(`${cell.service}: couldn't put it back (${e.message})`));
+    let out = dryRun(o) ? { ok: true, why: null } : await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
+    let disk = true;
+    // Refused for its working disk, not its image (2026-11-10 22:41: "Quota exceeded for total allowable ephemeral disk
+    // allocation per project per region", and every fix on main stayed off J's Studio): the same image without the disk.
+    // The next roll asks for the disk again, so the cell gets it back once Google allows it.
+    if (!out.ok && diskFailure(out.why)) {
+      log(`${cell.service}: Google refused the new revision's working disk (${String(out.why).slice(0, 200)}); the new image without it`);
+      disk = false;
+      await setImage(cell.service, image, { ...o, disk: false }, c);
+      out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
+    }
+    if (!dryRun(o) && !(out.ok && (await health(serviceUrl(cell.org, c))))) {
+      log(`${cell.service} is not healthy on the new image${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
+      await setImage(cell.service, cell.image, { ...o, disk }, c).catch((e) => log(`${cell.service}: couldn't put it back (${e.message})`));
       return { image, done, failed: cell.service, left: cells.filter((x) => !done.includes(x.service) && x.service !== cell.service).map((x) => x.service) };
     }
     done.push(cell.service);

@@ -56,7 +56,7 @@ function fakeGoogle(refuseDisk: boolean) {
     if (/oauth2|metadata|token/.test(url)) return json(200, { access_token: 't', expires_in: 3600 });
     if (method === 'GET') return json(200, svc);
     if (method === 'PATCH') {
-      if (refuseDisk && /template\.volumes/.test(url)) return json(400, { error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Ephemeral disk is not available for this project' } });
+      if (refuseDisk && (body?.template?.volumes ?? []).some((v: any) => v?.emptyDir?.medium === 'DISK')) return json(400, { error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Ephemeral disk is not available for this project' } });
       Object.assign(svc.template, body.template);
       if (body.launchStage) svc.launchStage = body.launchStage;
       return json(200, {});
@@ -126,4 +126,44 @@ test('the entrypoint moves the working files onto /disk only when it is mounted'
   const i = sh.indexOf('mountpoint -q /disk');
   assert.ok(i > 0 && i < sh.indexOf('mkdir -p /data "$STUDIO_PROJECTS"'));
   assert.match(sh, /export STUDIO_PROJECTS=\/disk\/projects TMPDIR=\/disk\/tmp STUDIO_NPM_CACHE=\/disk\/npm-cache/);
+});
+
+// 2026-11-10 22:41: main went live, but J's Studio cell refused the new revision: "Quota exceeded for total allowable
+// ephemeral disk allocation per project per region". Google takes the update and refuses the revision when it starts,
+// so the PATCH fallback above never ran, the roll put the old image back, and every fix stayed off the cell.
+test('a revision refused for its working disk rolls the same image out without the disk, never back to the old image', async () => {
+  const g = fakeGoogle(false);
+  g.svc.labels = { 'hawkes-studio-cell': '1', 'hawkes-org': 'acme', 'hawkes-lane': 'live' };
+  const realGet = g.svc;
+  // listCells reads the services list: the fake answers every GET with the service, so give it a list shape too.
+  (realGet as any).services = [{ ...realGet, name: 'projects/p/locations/us-east4/services/studio-o-acme' }];
+  const seen: boolean[] = [];
+  const outcome = async () => {
+    const hasDisk = (g.svc.template.volumes ?? []).some((v: any) => v.name === 'studio-work');
+    seen.push(hasDisk);
+    return hasDisk ? { ok: false, why: 'Revision studio-o-acme-00096 is not ready: Quota exceeded for total allowable ephemeral disk allocation per project per region.' } : { ok: true, why: null };
+  };
+  const lines: string[] = [];
+  const r = await R.rollCells('v9', { health: async () => true, log: (s) => lines.push(s), outcome }, cfg);
+  assert.equal(r.failed, null, lines.join('\n'));
+  assert.deepEqual(r.done, ['studio-o-acme']);
+  assert.equal(g.svc.template.containers[0].image, 'v9', 'the new image is what runs');
+  assert.deepEqual(seen, [true, false], 'tried with the disk, then without it');
+  assert.equal((g.svc.template.volumes ?? []).some((v: any) => v.name === 'studio-work'), false);
+  assert.match(lines.join('\n'), /refused the new revision's working disk/);
+});
+
+test('a revision that fails for its image (not the disk) still goes back to the old image', async () => {
+  const g = fakeGoogle(false);
+  g.svc.labels = { 'hawkes-studio-cell': '1', 'hawkes-org': 'acme', 'hawkes-lane': 'live' };
+  (g.svc as any).services = [{ ...g.svc, name: 'projects/p/locations/us-east4/services/studio-o-acme' }];
+  const r = await R.rollCells('bad', { health: async () => true, log: () => {}, outcome: async () => ({ ok: false, why: 'Container failed to start and listen on the port' }) }, cfg);
+  assert.equal(r.failed, 'studio-o-acme');
+  assert.equal(g.svc.template.containers[0].image, 'old');
+});
+
+test('diskFailure tells a disk refusal from an image failure', () => {
+  assert.equal(R.diskFailure('Quota exceeded for total allowable ephemeral disk allocation per project per region.'), true);
+  assert.equal(R.diskFailure('Container failed to start and listen on the port defined by PORT'), false);
+  assert.equal(R.diskFailure(null), false);
 });
