@@ -1921,6 +1921,54 @@ function waitForDisk(id: string, why: string) {
   setTimeout(() => void pump(), DISK_WAIT_MS() + 1000).unref();
 }
 
+/** When the pump last started a change (checkQueue: a queue with free slots and no start for long is stalled). */
+let lastStartAt = Date.now();
+
+/**
+ * A queue that should be moving and isn't (J, 2026-11-10: "the goal shouldn't be to have to watch studio"). On
+ * 2026-11-10 a disk budget below the disk's size at rest put every change back as "waits for disk room" for hours while
+ * five of six slots sat free, and nothing said so. Pure: what the watchdog sees, and why it's stalled or null.
+ */
+export function queueStalled(o: { queued: number; free: number; lastStartAt: number; oldestQueuedAt: number; now: number; memLow: boolean; held: boolean; stallMs?: number }): string | null {
+  const stall = o.stallMs ?? QUEUE_STALL_MS();
+  if (!o.queued || o.free <= 0 || o.held) return null;
+  if (o.now - o.lastStartAt < stall || o.now - o.oldestQueuedAt < stall) return null;
+  return `${o.queued} queued and ${o.free} slot(s) free, but nothing started for ${Math.round((o.now - o.lastStartAt) / 60_000)} min${o.memLow ? ' (memory is low)' : ''}`;
+}
+/** How long a queue may sit with free slots before the watchdog steps in (STUDIO_QUEUE_STALL_MS; 20 minutes). */
+export const QUEUE_STALL_MS = () => Number(process.env.STUDIO_QUEUE_STALL_MS) > 0 ? Number(process.env.STUDIO_QUEUE_STALL_MS) : 20 * 60_000;
+
+/** The reasons queued changes give, counted (the first words of their detail): what holds the queue. */
+export function queueHeldBy(details: (string | null | undefined)[]): string {
+  const n = new Map<string, number>();
+  for (const d of details) {
+    const k = String(d ?? 'queued').replace(/\(.*$/, '').replace(/\b(behind|for) c_[0-9a-f]+.*$/, '$1 another change').trim().slice(0, 60) || 'queued';
+    n.set(k, (n.get(k) ?? 0) + 1);
+  }
+  return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v}x ${k}`).join('; ');
+}
+
+/**
+ * The watchdog's look at the queue: when it's stalled, every timed hold (disk waits) is dropped so each change is
+ * checked again now, the pump runs, and the reasons go to the log. A hold that is still true holds again on its own;
+ * one that was wrong (a gate set below what the machine holds at rest) stops holding work for good.
+ */
+export function checkQueue(now = Date.now()): string | null {
+  const queued = listChanges({ status: 'queued', limit: 500 });
+  const s = agentSettings();
+  const active = listChanges({ status: ACTIVE, limit: 500 }).length;
+  const free = s.maxConcurrent - Math.max(active, running.size);
+  const oldest = Math.min(...queued.map((c) => c.updated ?? c.created ?? now), now);
+  const why = queueStalled({ queued: queued.length, free, lastStartAt, oldestQueuedAt: oldest, now, memLow: memLow(), held: deployPending() || noProviderFree() });
+  if (!why) return null;
+  const reasons = queueHeldBy(queued.map((c) => c.detail));
+  console.warn(`[stuckwatch] queue stalled: ${why}; held by: ${reasons}; dropping timed holds and starting the queue`);
+  diskWait.clear();
+  lastStartAt = now;
+  void pump();
+  return `${why}; held by: ${reasons}`;
+}
+
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return;
@@ -1966,6 +2014,7 @@ async function pump() {
     const why = `queued: waits for memory to free up (${memSummary()})`;
     for (const id of picks.splice(room)) { const c = getChange(id); if (c && !String(c.detail ?? '').startsWith('queued: waits for memory')) update(id, { detail: why }); }
   }
+  if (picks.length) lastStartAt = Date.now();
   for (const id of picks) {
     const c = getChange(id)!;
     const land = claim(c.id, { flight: true });
@@ -4530,6 +4579,7 @@ export function startStuckWatch() {
     try {
       const did = checkStuck();
       if (did.length) console.log(`[stuckwatch] took over ${did.length}: ${did.map((d) => `${d.id} ${d.step} ${d.was} ${d.idleMin}m -> ${d.did}`).join('; ')}`);
+      checkQueue();
     } catch (e: any) {
       console.warn(`[stuckwatch] ${e?.message ?? e}`);
     }
