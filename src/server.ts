@@ -16,7 +16,7 @@ import { syncRepos } from './repos.ts';
 import { chooseBrain, ensureBrain } from './brains.ts';
 import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, markAllSeen, unseenConversations, untilIdle } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
-import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
+import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges, startStuckWatch } from './agents.ts';
 import { startAssets } from './pipeline.ts';
 import { gitState, stopServers } from './local.ts';
 import { gen, genEvents, genUp, signFileLinks } from './gen.ts';
@@ -1350,6 +1350,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); void import('./firebasebuild.ts').then((F) => F.retireActionsCards()).catch((e) => console.warn(`[studio] closing Actions cards: ${e?.message ?? e}`)); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
   const changes = resumeChanges();
+  // Changes that say they're being worked on with nothing behind them are carried on by themselves (agents.ts checkStuck).
+  startStuckWatch();
   // Playtests refused with 429 carry on with their backoff; runs and changes the restarts stopped start again once Studio
   // has stayed up (transient.ts): one timer each, nothing polls.
   void import('./transient.ts').then((T) => { T.resumeRateRetries(); T.reviveWhenStable(); });

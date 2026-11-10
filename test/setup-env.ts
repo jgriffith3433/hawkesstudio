@@ -10,3 +10,6 @@ process.env.STUDIO_J_PRODUCTS ||= path.join(path.dirname(fileURLToPath(import.me
 process.env.STUDIO_MEM_GATE ||= 'off';
 // The PM's starts-today memo (pm.ts) is off for tests that write pm_log and changes directly; test/pm-memo.test.ts turns it on.
 process.env.STUDIO_PM_MEMO ||= 'off';
+// The in-memory disk guard (src/disksweep.ts) reads the test machine's disk against its memory: a dev box with a few GB
+// used refuses every build as "in-memory disk is full". test/disksweep.test.ts turns it on for itself.
+process.env.STUDIO_DISK_SWEEP ||= 'off';

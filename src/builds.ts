@@ -443,6 +443,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     const version = o.resume ? o.resume.version : o.change ? 0 : nextVersion(p.id, b.id);
     rowId = o.resume?.row ?? newId('b');
     if (!o.resume) db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, version || -Date.now(), 'building', sha, ref, runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
+    if (!o.resume) await supersedeOlder({ product: p.id, build: b.id, row: rowId, run, sha, ref, change: o.change ?? null }).catch((e) => console.warn(`[builds] ${p.id}: superseding older builds: ${e?.message ?? e}`));
     say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
     const row = rowId;
     stage = 'build';
@@ -549,6 +550,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
   } finally {
     out?.cleanup();
     release();
+    if (rowId) forgetGenQueued(rowId);
   }
 }
 
@@ -789,9 +791,59 @@ export function slowLimitMs(product: string, build: string): number {
 }
 
 /** What the build step says while Gen works: Gen's own step (its detail: the stage, the Unity line), not just "running". Exported for the tests. */
-export function genStepWords(j: any): string | null {
+export function genStepWords(j: any, row?: string | null): string | null {
   const words = String(j?.detail || j?.progress?.step || j?.status || '').trim();
+  if (row) noteGenQueued(row, genIsQueued(j));
+  // Waiting for a Gen builder: said as queued, with its place in Studio's line (2026-11-10: builds waiting hours read "running").
+  if (row && genQueue.get(row)?.queued) {
+    const place = queuePlace(row);
+    return `queued in Hawkes Gen: ${place.n}${ordinal(place.n)} of ${place.of} waiting${words && !/^queued$/i.test(words) ? ` (${words})` : ''}`;
+  }
   return words ? `Hawkes Gen: ${words}` : null;
+}
+
+/** A Gen job that hasn't started building: queued, or waiting for a builder (Gen allows a few at once). */
+export const genIsQueued = (j: any) => j?.status === 'queued' || (j?.status !== 'running' || !j?.progress?.step) && /\bwaiting\b|\bqueued\b|already running/i.test(String(j?.detail ?? ''));
+const ordinal = (n: number) => (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th');
+/** Builds of this Studio waiting for a Hawkes Gen builder, by build row, in the order they were started. */
+const genQueue = new Map<string, { queued: boolean; started: number }>();
+function noteGenQueued(row: string, queued: boolean) {
+  const cur = genQueue.get(row);
+  if (cur) { cur.queued = queued; return; }
+  const started = (db.prepare('SELECT started FROM builds WHERE id = ?').get(row) as { started: number } | undefined)?.started ?? Date.now();
+  genQueue.set(row, { queued, started });
+}
+export const forgetGenQueued = (row: string) => genQueue.delete(row);
+/** Where a queued build is in Studio's line for Gen's builders (1 = next). */
+export function queuePlace(row: string) {
+  const mine = genQueue.get(row);
+  const waiting = [...genQueue.entries()].filter(([, v]) => v.queued).sort((a, b) => a[1].started - b[1].started).map(([k]) => k);
+  return { n: Math.max(1, waiting.indexOf(row) + 1 || (mine ? waiting.length + 1 : 1)), of: Math.max(1, waiting.length) };
+}
+
+/**
+ * One build per project, build and branch at a time (2026-11-10: four Yooba Land builds and two of Sick of It waited
+ * hours in Hawkes Gen's queue, which takes two builders at once). A new build of a commit makes older builds of the same
+ * branch that haven't started building in Gen yet (still queued there, or not submitted) pointless: they are cancelled,
+ * said on their run. A build already building is left to finish. A change's own build (c/<id>) replaces its older ones
+ * the same way, started or not (only the newest is played).
+ */
+export async function supersedeOlder(n: { product: string; build: string; row: string; run: string; sha: string; ref: string; change: string | null }) {
+  const older = db.prepare(`SELECT b.id, b.run, b.sha, b.gen_job FROM builds b JOIN runs r ON r.id = b.run
+    WHERE b.product = ? AND b.build = ? AND b.status = 'building' AND b.id != ? AND b.run != ? AND r.status = 'running'
+      AND ${n.change ? 'b.change = ?' : 'b.change IS NULL AND b.ref = ?'}`).all(n.product, n.build, n.row, n.run, n.change ?? n.ref) as { id: string; run: string; sha: string; gen_job: string | null }[];
+  const { cancelRun } = await import('./cancel.ts');
+  const out: string[] = [];
+  for (const o of older) {
+    if (!n.change && o.sha === n.sha) continue;
+    // Building in Gen already: let it finish (its cost is mostly spent, and it publishes at its own version).
+    if (!n.change && o.gen_job && genQueue.get(o.id)?.queued !== true) continue;
+    const why = n.change ? `a newer build of the same change replaced it (${n.run})` : `a newer commit of ${n.ref} (${n.sha.slice(0, 7)}) is being built (${n.run})`;
+    await cancelRun(o.run, 'Studio', why).catch((e) => console.warn(`[builds] cancelling ${o.run}: ${e?.message ?? e}`));
+    console.log(`[builds] ${n.product}: ${o.run} (${o.sha.slice(0, 7)}) cancelled: ${why}`);
+    out.push(o.run);
+  }
+  return out;
 }
 
 const mins = (ms: number) => Math.round(ms / 60_000);
@@ -804,7 +856,7 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // How long this build may take before it counts as stuck: from its own history (slowLimitMs). A build resumed after a
   // restart has what is left of it (at least 5 min, so it gets one fresh look).
   const limit = slowLimitMs(p.id, b.id);
-  const submit = (tok: string, r: typeof resume, timeoutMs: number) => genRun('unity.build', p.id, genBuildParams(b, slug, sha, ref, tok, resume.row), (j) => { const w = genStepWords(j); if (w) say(w); }, timeoutMs, { job: r.job, onSubmit: r.onSubmit, halt: resume.halt });
+  const submit = (tok: string, r: typeof resume, timeoutMs: number) => genRun('unity.build', p.id, genBuildParams(b, slug, sha, ref, tok, resume.row), (j) => { const w = genStepWords(j, resume.row); if (w) say(w); }, timeoutMs, { job: r.job, onSubmit: r.onSubmit, halt: resume.halt });
   // Minted now, as late as there is: a token made at the start of the run could be an hour old by the time Gen reads it.
   // Gen also asks Studio for a new one when the job starts (refresh, genTokenFor), so no build rides on this one.
   const { forgetRepoToken, repoToken } = await import('./ghtoken.ts');
