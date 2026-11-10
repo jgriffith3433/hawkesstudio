@@ -12,6 +12,9 @@
 #   assets-bucket  gs://hawkes-assets-library (private, uniform access, versioned) in <project>, WIF provider
 #                  github-assets (hawkes-assets, main, production only) and ops-assets@<project>, objectAdmin on
 #                  that bucket only.
+#   firebase-deployer  studio-cells@hawkes-staging (Studio's own account) gets roles/iam.serviceAccountTokenCreator on
+#                  deployer@hawkes-staging and deployer@hawkes-prod, so Studio's Firebase builds (src/firebasebuild.ts)
+#                  can sign in as those deployers for beta and live. Those two bindings only.
 #
 #   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas          (plan)
 #   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas -f apply=true
@@ -21,7 +24,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [gen-actas, secret-create, net-access, assets-bucket]
+        options: [gen-actas, secret-create, net-access, assets-bucket, firebase-deployer]
       apply:
         description: Run the commands (unticked = plan only)
         type: boolean
@@ -145,5 +148,14 @@ jobs:
             account "$PROJECT" ops-assets jgriffith3433/hawkes-assets
             do_ gcloud storage buckets add-iam-policy-binding $B --member="serviceAccount:ops-assets@$PROJECT.iam.gserviceaccount.com" --role=roles/storage.objectAdmin
             sum "Then hawkes-assets gets its GCS sync and the S3 copy (once AWS is readable) as PRs." ;;
+          firebase-deployer)
+            for p in hawkes-staging hawkes-prod; do
+              sa="deployer@$p.iam.gserviceaccount.com"
+              if have gcloud iam service-accounts describe "$sa" --project "$p"; then
+                do_ gcloud iam service-accounts add-iam-policy-binding "$sa" --project "$p" --role=roles/iam.serviceAccountTokenCreator \
+                  --member=serviceAccount:studio-cells@hawkes-staging.iam.gserviceaccount.com --format=none
+              else sum "- $sa doesn't exist: skipped"; fi
+            done
+            sum "Then rebuild the Firebase project in Studio (e.g. hawkes-games' firebase build)." ;;
           esac
           [ "$APPLY" = true ] && sum "Applied." || sum "Plan only: run again with apply ticked to make these changes."
