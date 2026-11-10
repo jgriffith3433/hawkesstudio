@@ -62,7 +62,9 @@ export async function ciOn(slug: string, sha: string, { maxMs = 40 * 60_000, eve
   });
   const end = Date.now() + maxMs;
   for (;;) {
-    const runs = await read(slug, sha);
+    // A look that fails (GitHub slow: the 20 s timeout aborts reading its answer) is a look with no answer, never the
+    // end of the wait. 2026-11-10 20:46: one such timeout threw out of here and that commit never went live.
+    const runs = await read(slug, sha).catch((e: any) => { console.warn(`[golive] CI on ${slug} ${sha.slice(0, 7)}: ${e?.message ?? e}`); return null; });
     if (runs?.length && runs.every((x) => x.status === 'completed')) {
       const bad = runs.filter((x) => !['success', 'skipped', 'neutral'].includes(String(x.conclusion)));
       return bad.length
@@ -170,6 +172,7 @@ async function autoGoLiveNow(productId: string, why: string): Promise<{ went?: s
       // on its own pass once its CI is done. Already live (another pass took main past it): nothing to do.
       plan = await deployPlan(p.id, { notesWaitMs: 0 });
       if (plan.beta?.sha !== ci.sha && !(plan.commits ?? []).some((c: any) => c?.sha === ci.sha)) return { waits: `${ci.sha.slice(0, 7)} is already live` };
+      if (plan.beta?.sha !== ci.sha) console.log(`[golive] ${p.id}: going live at ${ci.sha.slice(0, 7)} (green CI); beta's tip ${plan.beta?.short ?? '?'} follows once its own CI passes`);
       const { op } = queueLive('golive', { product: p.id, confirm: plan.confirm, by: `Studio (${ci.why}; the owner said to skip beta playtests${pol.betaPlayWords ? `: "${pol.betaPlayWords.slice(0, 60)}"` : ''})`, beta: ci.sha, ciPassed: { sha: ci.sha, runs: ci.runs } });
       console.log(`[golive] ${p.id}: going live by itself on green CI (${why}): ${op.id}`);
       return { went: op.id };
