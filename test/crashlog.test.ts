@@ -38,3 +38,11 @@ test('an unhandled rejection is logged and survived; the log file keeps it', asy
   assert.match(said, /unhandled rejection \(kept running\).*boom-test/s);
   assert.match(fs.readFileSync(path.join(process.env.STUDIO_DATA!, 'restarts.jsonl'), 'utf8'), /unhandledRejection/);
 });
+
+test('the heartbeat says what the whole machine holds, and the verdict repeats it', async () => {
+  const { systemNow } = await import('../src/crashlog.ts');
+  const s = systemNow();
+  assert.ok(s.limitMb! > 0 && s.freeMb! >= 0);
+  if (process.platform === 'linux') assert.match(s.top ?? '', /\d/);
+  assert.match(verdictOn({ lastSeen: Date.now() - 5000, rssMb: 300, system: 'free 120 of 4096 MB; biggest: git 2900 MB' })!, /machine: free 120 of 4096 MB; biggest: git 2900/);
+});

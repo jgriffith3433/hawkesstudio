@@ -1279,6 +1279,7 @@ void import('./stream.ts').then(({ setProbes }) => setProbes({
 }));
 
 // Breadcrumbs for the next unexplained restart (crashlog.ts).
+void import('./oomguard.ts').then((m) => m.installOomGuard());
 void import('./crashlog.ts').then((m) => m.installCrashLog());
 
 // On Cloud Run the platform's port on every address (its front end is the only way in; cloudauth.ts gates it).
