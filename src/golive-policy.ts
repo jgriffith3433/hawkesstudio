@@ -44,6 +44,8 @@ export const skipsBetaPlay = (product: string) => { try { return policyOf(produc
 
 export type CiResult = { ok: boolean; sha: string; runs: string[]; why: string };
 type CiRun = { name: string; status: string; conclusion: string | null };
+/** How autoGoLive reads CI runs (GitHub's API when unset; the tests set it). */
+export const goLiveCi: { list?: (slug: string, sha: string) => Promise<CiRun[] | null> } = {};
 
 /**
  * CI on one commit (every push workflow run for it, Studio's own hook aside), waited for while it runs: a deploy on
@@ -161,15 +163,27 @@ async function autoGoLiveNow(productId: string, why: string): Promise<{ went?: s
         console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${left.join(' | ').slice(0, 400)}`);
         return { waits: left.join(' ') };
       }
-      const ci = await ciOn(plan.github.slug, plan.beta.sha);
+      // One look, no wait held in memory: beta's CI tells Studio when it ends (ci.yml's last step calls the same hook as a
+      // push), and that call brings Studio back here. Waiting up to 40 minutes inside this call was lost whenever Studio
+      // restarted meanwhile (2026-11-10 21:42 to 21:48: four restarts, and nothing went live).
+      const look = (at: string) => ciOn(plan.github.slug, at, { maxMs: 0, list: goLiveCi.list });
+      let ci = await look(plan.beta.sha);
+      // The tip's CI not done yet, or cancelled because a newer merge's run took its place: the newest beta commit whose
+      // CI passed goes live (main moves to it, never past it). With merges every few minutes and CI taking ten, the tip
+      // rarely has finished CI, and waiting for one that has kept every fix on beta for hours (2026-11-10: 20 commits,
+      // 70 minutes). The tip goes live on a later pass once its own CI is done.
       if (!ci.ok) {
-        console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${ci.why}`);
+        for (const c of (plan.commits ?? []).slice(0, 12)) {
+          if (!c?.sha || c.sha === plan.beta.sha) continue;
+          const older = await look(c.sha);
+          if (older.ok) { ci = older; break; }
+        }
+      }
+      if (!ci.ok) {
+        console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${ci.why}; Studio looks again when beta's CI ends`);
         return { waits: ci.why };
       }
-      // Beta may have moved while CI ran. That commit still goes live (main moves to it, not to the newer tip): with
-      // merges landing every few minutes and CI taking ten, beta's tip almost never has finished CI, and waiting for
-      // one that does kept every fix on beta for hours (2026-11-10: 20 commits, 70 minutes). The newer tip goes live
-      // on its own pass once its CI is done. Already live (another pass took main past it): nothing to do.
+      // Already live (another pass took main past it): nothing to do.
       plan = await deployPlan(p.id, { notesWaitMs: 0 });
       if (plan.beta?.sha !== ci.sha && !(plan.commits ?? []).some((c: any) => c?.sha === ci.sha)) return { waits: `${ci.sha.slice(0, 7)} is already live` };
       if (plan.beta?.sha !== ci.sha) console.log(`[golive] ${p.id}: going live at ${ci.sha.slice(0, 7)} (green CI); beta's tip ${plan.beta?.short ?? '?'} follows once its own CI passes`);

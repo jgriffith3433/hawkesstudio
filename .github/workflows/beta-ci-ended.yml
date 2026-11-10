@@ -1,0 +1,28 @@
+# Beta's CI (the Deploy workflow, ci.yml) has ended: tell Hawkes Studio, so a go live waiting on that commit's CI looks
+# again now (golive-policy.ts autoGoLive). Studio holds no wait of its own for CI, so a restart in between loses
+# nothing: on 2026-11-10 (21:42 to 21:48) Studio restarted four times while it waited up to 40 minutes in memory for
+# CI, and nothing went live.
+#
+# It runs once the Deploy run is complete (a step inside that run would still see it running), and it starts the same
+# hook a push to beta does (hawkes-studio.yml on beta), so Studio hears it the way it hears beta moving. GitHub runs
+# workflow_run workflows from the default branch: this takes effect once it is on main.
+name: Beta CI ended
+on:
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
+    branches: [beta]
+permissions:
+  actions: write
+concurrency:
+  group: beta-ci-ended
+  cancel-in-progress: false
+jobs:
+  tell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tell Hawkes Studio that beta's CI ended
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run hawkes-studio.yml --repo "${{ github.repository }}" --ref beta
