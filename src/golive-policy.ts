@@ -164,9 +164,12 @@ async function autoGoLiveNow(productId: string, why: string): Promise<{ went?: s
         console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${ci.why}`);
         return { waits: ci.why };
       }
-      // Beta may have moved while CI ran: the newer commit gets its own pass when its CI is done.
+      // Beta may have moved while CI ran. That commit still goes live (main moves to it, not to the newer tip): with
+      // merges landing every few minutes and CI taking ten, beta's tip almost never has finished CI, and waiting for
+      // one that does kept every fix on beta for hours (2026-11-10: 20 commits, 70 minutes). The newer tip goes live
+      // on its own pass once its CI is done. Already live (another pass took main past it): nothing to do.
       plan = await deployPlan(p.id, { notesWaitMs: 0 });
-      if (plan.beta?.sha !== ci.sha) return { waits: `beta moved to ${plan.beta?.short ?? '?'} while CI ran on ${ci.sha.slice(0, 7)}` };
+      if (plan.beta?.sha !== ci.sha && !(plan.commits ?? []).some((c: any) => c?.sha === ci.sha)) return { waits: `${ci.sha.slice(0, 7)} is already live` };
       const { op } = queueLive('golive', { product: p.id, confirm: plan.confirm, by: `Studio (${ci.why}; the owner said to skip beta playtests${pol.betaPlayWords ? `: "${pol.betaPlayWords.slice(0, 60)}"` : ''})`, beta: ci.sha, ciPassed: { sha: ci.sha, runs: ci.runs } });
       console.log(`[golive] ${p.id}: going live by itself on green CI (${why}): ${op.id}`);
       return { went: op.id };
