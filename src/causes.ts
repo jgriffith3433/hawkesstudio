@@ -77,7 +77,7 @@ export function causeOf(text: unknown, o: { permission?: string | null; repo?: s
   if (/usage limit|AI harness|billing (is )?out|credit balance is too low/i.test(e)) return mk('harness');
   if (isRateLimited(e)) return mk('rate-limit');
   if (/quota|RESOURCE_EXHAUSTED/i.test(e)) return mk('cloud-quota');
-  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network (error|is unreachable)|connection (reset|refused|closed)/i.test(e)) return mk('network');
+  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network (error|is unreachable)|connection (reset|refused|closed)|github didn'?t answer|aborted due to timeout|TimeoutError/i.test(e)) return mk('network');
   if (/(^|[^\d$.])(500|502|503|504)([^\d]|$)|bad gateway|service unavailable|gateway time-?out|internal server error/i.test(e)) return mk('server-error');
   if (/merge conflict|conflicts? with|still conflicts|conflicted with/i.test(e)) return mk('conflict');
   return null;
