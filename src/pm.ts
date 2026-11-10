@@ -298,6 +298,23 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
 /** Go lives already looked at per task (one git fetch each, not one a minute). */
 const liveChecked = new Set<string>();
 
+/**
+ * A review step's data, parsed once while it stays the same: every merged task reads its product's last ten beta reviews
+ * on every pass, and parsing those (large) JSON blobs again per task froze Studio for over a second with 300 tasks
+ * (2026-11-10, studio_ops: checkOnBeta). Keyed by step and the text's length and ends; at most 300 kept.
+ */
+const reviewMemo = new Map<string, { key: string; v: any }>();
+function reviewData(id: string, text: string | null): any {
+  const raw = text ?? '';
+  const key = `${raw.length}:${raw.slice(0, 32)}:${raw.slice(-64)}`;
+  const hit = reviewMemo.get(id);
+  if (hit && hit.key === key) return hit.v;
+  const v = parse(raw);
+  reviewMemo.set(id, { key, v });
+  if (reviewMemo.size > 300) reviewMemo.delete(reviewMemo.keys().next().value!);
+  return v;
+}
+
 /** The beta check of a merged task: the newest beta review of its product since the merge that judged its criteria. */
 async function checkOnBeta(t: Task) {
   if (!hasBeta(t.product)) return; // Nothing to run a beta check on (startBeta would throw).
@@ -309,12 +326,15 @@ async function checkOnBeta(t: Task) {
     WHERE s.product = ? AND s.kind = 'review' AND r.kind = 'beta' AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
   // Only a review that judged this task's own criteria (a beta run checks whatever its starter asked: another task's, a fix's).
   // Never from a run that broke (stuck, a missing scenario, not built: brokenCheck): that's played again, not a miss.
-  const judged = steps.map((x) => ({ ...x, data: parse(x.data) })).find((x) => judgesAll(x.data?.criteria, t.criteria) && !brokenCheck(x.run, t.product));
+  const parsedSteps = steps.map((x) => ({ ...x, data: reviewData(x.id, x.data) }));
+  const judged = parsedSteps.find((x) => judgesAll(x.data?.criteria, t.criteria) && !brokenCheck(x.run, t.product));
   if (!judged) {
-    // No beta check yet: start one if nothing is running for this product and the merge is a while ago.
-    const running = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
-    const asked = listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check' }).some((d) => d.subject === t.id);
-    if (playsAfterMerges && !running && !asked && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled && !creditsWaitReason()) {
+    // No beta check yet: start one if nothing is running for this product and the merge is a while ago (only looked up
+    // when beta is played after merges: two more queries per merged task every pass otherwise, 2026-11-10 freezes).
+    const due = playsAfterMerges && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled;
+    const running = due && db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
+    const asked = due && !running && listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check' }).some((d) => d.subject === t.id);
+    if (due && !running && !asked && !creditsWaitReason()) {
       const { getChange } = await changes();
       const c = getChange(t.change!);
       const { startBeta } = await import('./pipeline.ts');
@@ -323,7 +343,7 @@ async function checkOnBeta(t: Task) {
     }
     if (playsAfterMerges && !t.criteria.length && Date.now() - (t.merged_at ?? 0) > 2 * 3600_000) {
       // Nothing to judge: the beta run passing without a blocker is the check.
-      const last = steps.map((x) => ({ ...x, data: parse(x.data) }))[0];
+      const last = parsedSteps[0];
       if (last?.data?.verdict && last.data.verdict !== 'broken') setTask(t.id, { status: 'verified', verified_at: Date.now(), checks: { where: 'beta', at: last.started, run: last.run, verdict: last.data.verdict, results: [] } });
     }
     return;

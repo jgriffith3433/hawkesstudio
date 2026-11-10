@@ -8,6 +8,7 @@
 //    start reads it, and a file not marked clean is a stop nobody saw (an out-of-memory kill is SIGKILL: no handler runs).
 //    `.data/restarts.jsonl` keeps one line per start with that verdict (last 200).
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { DATA, PROJECTS } from './config.ts';
 import { memInfo } from './memgate.ts';
@@ -57,27 +58,38 @@ const sysLine = (s: ReturnType<typeof systemNow>) => [
 ].filter(Boolean).join('; ');
 
 /**
- * What fills the in-memory disk, biggest first (2026-11-10: projects held 2 GB of a 4 GB instance before each kill, and
- * nothing said what). du runs off Studio's thread (spawner.ts), on the projects folder two levels deep (each repo, and
- * each worktree, beta site and app under .work) and /tmp one level. Folders under 50 MB are left out.
+ * What fills the in-memory disk, biggest first (2026-11-10: the disk held 2 GB of a 4 GB instance before each kill, and
+ * nothing said what). du runs off Studio's thread (spawner.ts): the projects folder two levels deep (each repo, and each
+ * worktree, beta site and app under .work), the data folder, then the whole machine one level deep (caches in the home
+ * folder, /tmp), staying on the root's own filesystem. The biggest `max` folders are listed, deepest first; a du that
+ * fails says so instead of an empty line.
  */
-export async function diskTop(dirs: { dir: string; depth: number }[] = [{ dir: PROJECTS, depth: 2 }, { dir: DATA, depth: 1 }, { dir: '/tmp', depth: 1 }], max = 10, minMb = 50): Promise<string> {
+export async function diskTop(dirs: { dir: string; depth: number }[] = [{ dir: PROJECTS, depth: 2 }, { dir: DATA, depth: 1 }, { dir: os.homedir(), depth: 2 }, { dir: '/', depth: 1 }], max = 12, minMb = 10): Promise<string> {
   const rows: { p: string; mb: number }[] = [];
+  const failed: string[] = [];
+  const seen = new Set<string>();
   for (const { dir, depth } of dirs) {
-    if (!fs.existsSync(dir)) continue;
-    const r = await runLight('du', ['-xm', `--max-depth=${depth}`, dir], { cwd: '/', timeoutMs: 60_000, maxBytes: 4 * 1024 * 1024 });
+    if (!dir || seen.has(dir) || !fs.existsSync(dir)) continue;
+    seen.add(dir);
+    const r = await runLight('du', ['-xm', `--max-depth=${depth}`, dir], { cwd: '/', timeoutMs: 90_000, maxBytes: 4 * 1024 * 1024 });
+    let got = 0;
     for (const line of r.stdout.split('\n')) {
       const m = line.match(/^(\d+)\s+(.+)$/);
-      if (!m || m[2] === dir) continue;
+      if (!m) continue;
+      got++;
+      if (m[2] === dir && dir !== '/') continue;
+      if (m[2] === '/') { rows.push({ p: '(whole disk)', mb: Number(m[1]) }); continue; }
       const mbs = Number(m[1]);
-      if (mbs >= minMb) rows.push({ p: m[2], mb: mbs });
+      if (mbs >= minMb && !rows.some((x) => x.p === m[2])) rows.push({ p: m[2], mb: mbs });
     }
+    if (!got) failed.push(`${dir}: ${r.error ?? `exit ${r.status}`}${r.stderr ? ` ${r.stderr.trim().split('\n').pop()!.slice(0, 120)}` : ''}`);
   }
-  // A parent whose children are listed too counts only what its listed children don't hold.
   rows.sort((a, b) => b.mb - a.mb);
   const short = (p: string) => p.startsWith(PROJECTS + path.sep) ? p.slice(PROJECTS.length + 1) : p;
-  const leaves = rows.filter((r) => !rows.some((o) => o !== r && o.p.startsWith(r.p + path.sep)));
-  return leaves.slice(0, max).map((r) => `${short(r.p)} ${r.mb}`).join(', ');
+  // A parent whose children are listed too is left out (its children say where its size is).
+  const leaves = rows.filter((r) => r.p === '(whole disk)' || !rows.some((o) => o !== r && o.p.startsWith((r.p === '/' ? '' : r.p) + path.sep)));
+  const line = leaves.slice(0, max).map((r) => `${short(r.p)} ${r.mb}`).join(', ');
+  return [line, failed.length ? `du failed: ${failed.join('; ')}` : ''].filter(Boolean).join('; ');
 }
 
 /** What Studio is in the middle of, one short line (each part optional: a module not loaded yet is not running anything). */
@@ -137,10 +149,12 @@ export function installCrashLog(): string | null {
     const system = sysLine(sys);
     const low = sys.freeMb !== undefined && sys.limitMb ? sys.freeMb < sys.limitMb * 0.3 : false;
     // What fills the disk: read again at most every 5 minutes while memory is low (du walks the whole tree).
-    if (low && !diskBusy && Date.now() - diskAt > 5 * 60_000 && process.env.STUDIO_DISK_TOP !== 'off') {
+    // Also once, a minute after start: an instance killed within minutes otherwise leaves no reading at all.
+    const first = !diskAt && process.uptime() > 60;
+    if ((low || first) && !diskBusy && Date.now() - diskAt > 5 * 60_000 && process.env.STUDIO_DISK_TOP !== 'off') {
       diskBusy = true;
       diskAt = Date.now();
-      void diskTop().then((d) => { disk = d; if (d) console.warn(`[crashlog] disk holds: ${d} MB`); }).catch(() => {}).finally(() => { diskBusy = false; });
+      void diskTop().then((d) => { disk = d; console.warn(`[crashlog] disk holds: ${d || 'nothing over 10 MB'} (MB)`); }).catch((e) => console.warn(`[crashlog] disk holds: couldn't read (${String(e?.message ?? e).slice(0, 200)})`)).finally(() => { diskBusy = false; });
     }
     writeBoot({ pid: process.pid, rev: process.env.K_REVISION ?? null, lastSeen: Date.now(), running, system: disk ? `${system}; disk holds ${disk} MB` : system, ...memoryNow() });
     // Low on memory: said in the log every beat (at most once a minute), so the last state before a kill is on record.

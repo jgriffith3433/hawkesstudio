@@ -58,5 +58,7 @@ test('what fills the in-memory disk: the biggest folders, deepest listed, in MB'
   assert.match(line, /big\/inner [34]\b/, 'du counts whole MB, rounded up');
   assert.doesNotMatch(line, /small/, 'folders under the floor are left out');
   assert.doesNotMatch(line, /(^|, )\S*big \d/, 'a parent whose child is listed is not listed again');
+  assert.match(await diskTop([{ dir: path.join(root, 'small'), depth: 1 }], 10, 2), /^$/, 'nothing over the floor: empty, not an error');
   fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(await diskTop([{ dir: path.join(root, 'gone'), depth: 1 }]), '', 'a folder that is not there is skipped');
 });
