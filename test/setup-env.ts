@@ -5,3 +5,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 process.env.STUDIO_J_PRODUCTS ||= path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixture', 'j-products.json');
+// The memory gate (src/memgate.ts) reads the test machine's free memory; tests that count starts or checkouts would
+// depend on it. test/memgate.test.ts turns it back on with a memory source of its own.
+process.env.STUDIO_MEM_GATE ||= 'off';

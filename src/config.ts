@@ -223,12 +223,19 @@ export function loadProducts(): Product[] {
     if (customerMemo?.sig !== sig) customerMemo = { sig, out: (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[]).map(asAddedGame).map(withPhones) };
     return customerMemo.out.map((p) => ({ ...p }));
   }
-  const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
-  // J's Studio: products.json first; a game added here never shadows one of its ids.
-  const ids = new Set(all.map((p) => p.id));
-  const over = buildOverrides();
-  return [...all.map((p) => withPhones(withBuildOverrides(p, over))), ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame).map(withPhones)];
+  // J's Studio: read once per version of products.json, the added games and the build overrides (2026-11-10: every
+  // call parsed them, many times per PM pass).
+  const sig = [paths.products, fileSig(paths.products), paths.games, fileSig(paths.games), paths.buildOverrides, fileSig(paths.buildOverrides)].join('|');
+  if (jMemo?.sig !== sig) {
+    const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
+    // products.json first; a game added here never shadows one of its ids.
+    const ids = new Set(all.map((p) => p.id));
+    const over = buildOverrides();
+    jMemo = { sig, out: [...all.map((p) => withPhones(withBuildOverrides(p, over))), ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame).map(withPhones)] };
+  }
+  return jMemo.out.map((p) => ({ ...p }));
 }
+let jMemo: { sig: string; out: Product[] } | null = null;
 
 // ------------------------------------------------------------------ settings Studio learned for a build
 
@@ -282,7 +289,8 @@ export function setBuildMachine(productId: string, buildId: string, machine: Bui
 // re-reading and parsing the products file each time blocked a customer's Studio for up to 4 s at a time, and Cloud Run
 // stopped sending it requests (2026-11-01).
 let foldersMemo: { sig: string; out: Record<string, string> } | null = null;
-const fileSig = (f: string) => { try { const s = fs.statSync(f); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return '-'; } };
+/** A file's identity and version (inode, mtime, size): '-' when it's missing. Memos key on it. */
+export const fileSig = (f: string) => { try { const s = fs.statSync(f); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return '-'; } };
 
 /** The folder an added game's repo is cloned into (beside the others), and its GitHub repo, for repos.ts repoMap. */
 export function addedRepoFolders(): Record<string, string> {
@@ -719,8 +727,13 @@ export type Infra = {
   baselineBranch?: string;
 };
 
+let infraMemo: { sig: string; out: Infra[] } | null = null;
+/** products.json "infra", read once per version of the file (2026-11-10: isInfra per task read and parsed it every call,
+ *  120-265 ms of each event-loop freeze). Each call gets its own copies. */
 export function loadInfra(): Infra[] {
-  return JSON.parse(fs.readFileSync(paths.products, 'utf8')).infra ?? [];
+  const sig = `${paths.products}|${fileSig(paths.products)}`;
+  if (infraMemo?.sig !== sig) infraMemo = { sig, out: JSON.parse(fs.readFileSync(paths.products, 'utf8')).infra ?? [] };
+  return infraMemo.out.map((x) => ({ ...x }));
 }
 export const isInfra = (id: string) => loadInfra().some((x) => x.id === id);
 export function getInfra(id: string): Infra {

@@ -17,7 +17,8 @@
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
+import { spawnLight } from './spawner.ts';
 import { PROJECTS, DATA, abs, type Product } from './config.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer, repoMap, syncRepo } from './repos.ts';
@@ -98,8 +99,18 @@ export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_
 export const gitNeedsAuth = (args: string[]) => ['fetch', 'push', 'pull', 'lfs', 'ls-remote', 'worktree', 'checkout', 'switch', 'sparse-checkout'].includes(args[0]);
 
 /** The token header for a checkout's GitHub repo (its origin), fetched first; {} for J's repos and anything else. */
+const originUrls = new Map<string, string>();
+/** A checkout's origin URL, asked once per folder and without blocking Studio's main thread (2026-11-10: a spawnSync
+ *  per fetch, push and worktree add showed in the event-loop freezes with 12 agents). */
+async function originUrl(cwd: string) {
+  const known = originUrls.get(cwd);
+  if (known !== undefined) return known;
+  const url = await new Promise<string>((ok) => execFile('git', ['config', '--get', 'remote.origin.url'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30_000 }, (_e, out) => ok(String(out ?? '').trim())));
+  if (url) originUrls.set(cwd, url);
+  return url;
+}
 async function authEnvFor(cwd: string): Promise<Record<string, string>> {
-  const url = spawnSync('git', ['config', '--get', 'remote.origin.url'], { cwd, encoding: 'utf8', windowsHide: true }).stdout?.trim() ?? '';
+  const url = await originUrl(cwd);
   const slug = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   if (!slug) return {};
   const { primeRepoToken, gitAuthEnv } = await import('./ghtoken.ts');
@@ -155,7 +166,8 @@ function runGit(cwd: string, args: string[], timeoutMs: number, extraEnv: Record
       done();
       resolve({ ok: r.ok, out: r.out.trim(), err: r.err.trim() });
     };
-    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...gitEnv(), ...extraEnv } });
+    // Started by the spawner (spawner.ts): forking Studio itself blocked its main thread tens of ms per git command.
+    const child = spawnLight('git', args, { cwd, env: { ...gitEnv(), ...extraEnv } });
     child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
     child.stderr.on('data', (d) => { err += d; if (err.length > 1_000_000) err = err.slice(-500_000); });
     child.on('error', (e) => finish({ ok: false, out, err: e.message }));
