@@ -119,15 +119,6 @@ function appendLog(entry: Record<string, unknown>) {
   } catch { /* no data folder */ }
 }
 
-/** The crash log's entries since a time (the self-healing supervisor files a fix for crashes: selfheal-checks.ts). */
-export function crashEntries(since: number): { at: number; event: string; error?: string }[] {
-  try {
-    return fs.readFileSync(LOG, 'utf8').trim().split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((e) => e && e.at >= since);
-  } catch {
-    return [];
-  }
-}
-
 /** The verdict on the previous instance, from its boot.json. Pure, for tests. */
 export function verdictOn(prev: any, now = Date.now()): string | null {
   if (!prev || typeof prev !== 'object') return null;

@@ -212,18 +212,6 @@
       ${cmds ? `<table><tr><th>Command Studio is waiting on</th><th class="n">For</th></tr>${cmds}</table>` : '<p class="meta">No commands running.</p>'}</details>`;
   }
 
-  // The self-healing supervisor (src/selfheal.ts): each check, its last breach and what Studio did about it.
-  function selfheal(r) {
-    const h = r.selfheal;
-    if (!h) return '';
-    const broken = h.invariants.filter((i) => i.since);
-    const rows = h.invariants.map((i) => `<tr class="${i.failing ? 'rs-red' : i.since ? 'rs-amber' : ''}"><td>${esc(i.label)}</td><td>${i.since ? `broken ${i.breachedMin} min<div class="meta">${esc(i.detail ?? '')}</div>` : i.lastBreach ? `holds · last broken ${esc(ago(i.lastBreach))}` : 'holds'}</td><td>${i.did ? `${esc(i.did)}<div class="meta">${esc(ago(i.didAt))}</div>` : '<span class="meta">nothing needed</span>'}${i.escalated ? `<div class="meta">fix filed: ${esc(i.escalated)}</div>` : ''}</td></tr>`).join('');
-    const log = h.log.slice(0, 12).map((l) => `<tr><td>${esc(ago(l.at))}</td><td>${esc(l.key)}</td><td>${esc(l.kind)}</td><td>${esc(l.detail ?? '')}</td></tr>`).join('');
-    return `<details class="rs-box more-details" data-k="selfheal" data-key="rs:selfheal"${broken.length ? ' open' : ''}><summary>Self-healing <span class="meta">· ${h.ok ? (broken.length ? `${broken.length} being fixed` : 'every check holds') : '<span class="rs-red">something it could not fix</span>'} · last look ${h.lastLook ? esc(ago(h.lastLook)) : 'not yet'}</span></summary>
-      <table><tr><th>Check</th><th>Now</th><th>What Studio did</th></tr>${rows}</table>
-      ${log ? `<table><tr><th>When</th><th>Check</th><th>What</th><th>Detail</th></tr>${log}</table>` : '<p class="meta">Nothing to record yet.</p>'}</details>`;
-  }
-
   function charts(r) {
     const pts = r.history.points;
     const box = CHARTS.map(([k, name, fmt, max]) => {
@@ -246,7 +234,7 @@
     const worst = r.attention[0]?.level ?? '';
     studioPatch(el, `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
       ${r.attention.length > 1 ? `<ul class="rs-att">${r.attention.slice(1).map((a) => `<li class="${a.level === 'bad' ? 'rs-red' : 'rs-amber'}">${a.level === 'bad' ? '⚠' : '•'} ${esc(a.text)}</li>`).join('')}</ul>` : ''}
-      ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${providersNow(r)}${speed(r)}${work(r)}${selfheal(r)}${loop(r)}${charts(r)}
+      ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${providersNow(r)}${speed(r)}${work(r)}${loop(r)}${charts(r)}
       <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time, the portal failing ${r.settings.portalMinutes} min, event-loop p99 over ${r.settings.loopP99Ms} ms for ${r.settings.loopMinutes} min, WebSockets over ${r.settings.wsPct}%, a backup older than ${r.settings.backupHours} h, a relay node down` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`);
     for (const [k, o] of open) { const d = el.querySelector(`details[data-k="${k}"]`); if (d) d.open = o; }
   }

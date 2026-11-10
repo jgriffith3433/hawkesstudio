@@ -254,10 +254,7 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') {
       const ops = await import('./ops.ts');
-      // ok is false while a self-healing invariant has been broken past its grace with nothing done (selfheal.ts). The
-      // answer stays 200: deploys and the edge's wake page read the status as "Studio is up", which it is.
-      const selfheal = await import('./selfheal.ts').then((S) => S.selfHealHealth()).catch(() => null);
-      return send(res, 200, { ok: selfheal?.ok ?? true, selfheal, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
+      return send(res, 200, { ok: true, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
     }
     // Background operations (ops.ts): the go-live queue, rollbacks and merges, the commands running now, the event loop.
     if (route === '/api/ops' && method === 'GET') {
