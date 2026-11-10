@@ -15,7 +15,7 @@
 import { db } from './db.ts';
 import { tokenLost, infraLost, buildsOf, UNITY_FAILED } from './builds.ts';
 import { getProduct } from './config.ts';
-import { accessCause, accessFix, retryPending } from './buildaccess.ts';
+import { QUOTA, accessCause, accessFix, retryPending } from './buildaccess.ts';
 import { fixerNow, fixedWording, fixSentence, type FixerNow } from './buildfix.ts';
 
 export type FailClass = 'rejected' | 'script' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
@@ -50,7 +50,7 @@ export function genRefusal(error: unknown): string | null {
  */
 export function digestLog(log: string, command = ''): { errors: string[]; step: string | null } {
   const lines = String(log ?? '').split(/\r?\n/).map((l) => l.trimEnd()).filter(Boolean);
-  const bad = /\berror\b|\bERR!|ERR_|No such file|cannot (stat|create|open|access)|not found|Permission denied|ENOENT|EEXIST|failed to|Cannot find|\bfatal\b|Exit status|exited with/i;
+  const bad = /quota exceeded|RESOURCE_EXHAUSTED|Could not create or update|\berror\b|\bERR!|ERR_|No such file|cannot (stat|create|open|access)|not found|Permission denied|ENOENT|EEXIST|failed to|Cannot find|\bfatal\b|Exit status|exited with/i;
   const noise = /^\s*(\(!\)|warning|npm warn)|manualChunks|chunk(s)? (is|are) larger|Some chunks|dynamic import|Consider:|build\.rollupOptions|chunkSizeWarningLimit/i;
   const hit: number[] = [];
   lines.forEach((l, i) => { if (bad.test(l) && !noise.test(l)) hit.push(i); });
@@ -80,6 +80,12 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
   // came ("Not recognised: customer builds take github ..." hid it behind "Cause unclear" on 2026-11-03).
   const refused = genRefusal(e);
   if (refused) return { class: 'rejected', kind: 'infrastructure', plain: `Hawkes Gen refused the build request: ${refused}. The request Studio sent doesn't fit what Gen takes, so it is a Studio/Gen mismatch, not your code, and building again won't change it until one of them is fixed.` };
+  // Google Cloud had no room (hawkes-games build 113, 2026-11-10: "Quota exceeded for total allowable CPU per project per
+  // region" while a function deployed, the CPU going to Studio's own agent jobs): not the code, so no fix agent; built again.
+  if (QUOTA.test(both)) {
+    const line = new RegExp(`[^\\n]*(${QUOTA.source})[^\\n]*`, 'i').exec(both)?.[0].trim().slice(0, 200);
+    return { class: 'other', kind: 'infrastructure', plain: `Google Cloud ran out of room for this deploy for a moment${line ? ` (${line})` : ''}. That's capacity, not the code.${retried} Studio builds again by itself.` };
+  }
   if ((/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|Scripts have compiler errors/i.test(both) || UNITY_FAILED.test(both)) && !tokenLost(e)) {
     const first = /error CS\d+[^\n]{0,160}/i.exec(both)?.[0];
     return { class: 'compile', kind: 'code', plain: `The project's code doesn't build${first ? ` (${first.trim()})` : ''}. Studio can't fix this by building again: someone has to fix the code first.` };
