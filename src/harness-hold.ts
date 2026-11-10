@@ -19,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { adapterOf, brainId, brainSettings, failover, fallbackChain, harnessConfigured, harnessStopOf, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
+import { adapterOf, brainId, brainSettings, failover, fallbackChain, harnessConfigured, harnessStopOf, NOT_THE_PROVIDER, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS harness_holds (
   harness TEXT PRIMARY KEY, kind TEXT NOT NULL, why TEXT NOT NULL, line TEXT, account TEXT, since INTEGER NOT NULL,
@@ -51,7 +51,9 @@ export const harnessHeld = (harness: Harness = brainId()) => Boolean(activeHold(
 export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity', codex: 'Codex' };
 /** A minute, in ms (STUDIO_HARNESS_MINUTE_MS: tests run the backoff in milliseconds). */
 const minute = () => (Number(process.env.STUDIO_HARNESS_MINUTE_MS) > 0 ? Number(process.env.STUDIO_HARNESS_MINUTE_MS) : 60_000);
-const BACKOFF = [10, 20, 40, 60];
+// A stop that named no reset time is looked at again soon (a probe is one tiny Haiku turn): 5, 10, 15, then every 30
+// minutes (J, 2026-11-10: work sat on a stand-in for hours while Claude had usage).
+const BACKOFF = [5, 10, 15, 30];
 const SEVERITY: Record<HarnessKind, number> = { transient: 0, usage: 1, auth: 2, billing: 3 };
 /** J has to act (pay, sign in): his phone hears, once per hold. */
 export const needsJ = (kind: HarnessKind) => kind === 'billing' || kind === 'auth';
@@ -305,6 +307,12 @@ export async function reviewHolds(now = Date.now()) {
   reviewing = true;
   try {
     for (const h of activeHolds()) {
+      // A hold whose line Studio no longer reads as the provider stopping (Studio's own machinery, Google Cloud's quota:
+      // brains.ts NOT_THE_PROVIDER) was never the provider's: it lifts now, and the stand-in ends.
+      if (h.line && NOT_THE_PROVIDER.test(h.line)) {
+        liftHold(`it wasn't ${LABEL[h.harness]}: ${h.line}`.slice(0, 200), h.harness);
+        continue;
+      }
       if (now >= h.until) {
         const p = await holdDeps.probe(h.harness).catch((e: any) => ({ ok: false, note: String(e?.message ?? e) }));
         if (p.ok) {

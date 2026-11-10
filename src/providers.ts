@@ -9,6 +9,11 @@
 //   order  the order providers are tried in (failover's chain and spread's tie-break).
 //   off    providers J switched off: never used, even as a stand-in.
 //   roles  a provider per role (builder on Codex, scouts on Cursor...): used while it answers, else the spread picks.
+//   caps   the most passes each provider runs at once (J, 2026-11-10: "use multiple providers at once as to not get
+//          throttled by any one provider"). Code work (builder, fixer, content, reviewer) goes to the best provider in J's
+//          order that has room under its cap and wasn't throttled in the last minutes, so Claude takes the deep work
+//          first and the rest overflows to the others; scouts and unnamed work go to the least busy. A provider that
+//          throttles (a hold) loses only its own slots, and gets them back by itself when it answers.
 // A provider is ready when it is set up here (a sign-in or key: brains.ts harnessConfigured), its CLI is installed, J
 // hasn't switched it off and no hold is on it (harness-hold.ts: a usage limit, billing, a lost sign-in, an outage).
 // Talk and Hawkes Gen's calls stay on the chosen harness (and its stand-in): one voice in Talk.
@@ -18,7 +23,7 @@ import path from 'node:path';
 import { db, J, parse } from './db.ts';
 import { StudioError } from './config.ts';
 import { DEFAULT_ORDER, HARNESSES, HARNESS_IDS, brainId, brainSettings, harnessConfigured, isHarness, setOrderSource, type Harness } from './brains.ts';
-import { activeHold, activeHolds, LABEL, needsJ, setSpreadOthers, type Hold } from './harness-hold.ts';
+import { activeHold, activeHolds, getHold, LABEL, needsJ, setSpreadOthers, type Hold } from './harness-hold.ts';
 import { TUNED_ROLES, type TunedRole } from './tuning.ts';
 // @ts-ignore: plain .mjs adapters, no types
 import { agentBin } from '../bin/cursor-agent.mjs';
@@ -32,7 +37,18 @@ import { agyBin } from '../bin/antigravity-agent.mjs';
 import { geminiBin } from '../bin/gemini-agent.mjs';
 
 export type ProviderMode = 'spread' | 'one';
-export type ProviderSettings = { mode: ProviderMode; order: Harness[]; off: Harness[]; roles: Partial<Record<TunedRole, Harness>> };
+export type ProviderSettings = { mode: ProviderMode; order: Harness[]; off: Harness[]; roles: Partial<Record<TunedRole, Harness>>; caps: Record<Harness, number> };
+/** How many passes each provider runs at once unless J sets it (Copilot counts premium requests, so it runs few). */
+export const DEFAULT_CAPS: Record<Harness, number> = { claude: 4, codex: 3, cursor: 6, copilot: 2, antigravity: 3, gemini: 3 };
+const capsOf = (v: unknown): Record<Harness, number> => {
+  const out = { ...DEFAULT_CAPS };
+  for (const [h, n] of Object.entries((v && typeof v === 'object' ? v : {}) as Record<string, unknown>)) if (isHarness(h) && Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 50) out[h] = n as number;
+  return out;
+};
+/** Roles whose work is code that quality matters most for: they go to the best provider with room, not the least busy. */
+const QUALITY_ROLES = new Set(['builder', 'fixer', 'content', 'reviewer', 'pm']);
+/** A provider whose hold lifted this recently is tried after the others (it may still be throttling). */
+const COOL_MS = () => (Number(process.env.STUDIO_PROVIDER_COOL_MS) >= 0 && process.env.STUDIO_PROVIDER_COOL_MS ? Number(process.env.STUDIO_PROVIDER_COOL_MS) : 15 * 60_000);
 const KEY = 'providers';
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 
@@ -48,7 +64,7 @@ export function providerSettings(): ProviderSettings & { saved: number | null } 
     mode: envMode === 'one' || envMode === 'spread' ? envMode : v?.mode === 'one' ? 'one' : 'spread',
     order: fullOrder(v?.order ?? (process.env.STUDIO_HARNESS_ORDER ?? '').split(',').map((s) => s.trim())),
     off: (Array.isArray(v?.off) ? v!.off : []).filter(isHarness),
-    roles, saved: row?.updated ?? null,
+    roles, caps: capsOf(v?.caps), saved: row?.updated ?? null,
   };
 }
 // The failover chain (brains.ts fallbackChain) follows J's order, without the providers he switched off.
@@ -63,7 +79,7 @@ setOrderSource(() => {
 
 export function saveProviders(patch: Record<string, any>, by = 'J') {
   const cur = providerSettings();
-  const next: ProviderSettings = { mode: cur.mode, order: cur.order, off: cur.off, roles: { ...cur.roles } };
+  const next: ProviderSettings = { mode: cur.mode, order: cur.order, off: cur.off, roles: { ...cur.roles }, caps: { ...cur.caps } };
   for (const [k, v] of Object.entries(patch ?? {})) {
     if (k === 'mode') {
       if (v !== 'spread' && v !== 'one') throw new StudioError('providers.mode: spread | one');
@@ -87,7 +103,14 @@ export function saveProviders(patch: Record<string, any>, by = 'J') {
         else if (isHarness(h)) next.roles[r as TunedRole] = h;
         else throw new StudioError(`providers.roles.${r}: ${HARNESS_IDS.join(' | ')} (or empty: any)`);
       }
-    } else throw new StudioError(`providers.${k}: not a setting (mode, order, off, use, roles)`);
+    } else if (k === 'caps') {
+      // { caps: { claude: 6 } }: the most passes a provider runs at once (1 to 50).
+      for (const [h, n] of Object.entries(v ?? {})) {
+        if (!isHarness(h)) throw new StudioError(`providers.caps.${h}: ${HARNESS_IDS.join(' | ')}`);
+        if (!Number.isInteger(n) || (n as number) < 1 || (n as number) > 50) throw new StudioError(`providers.caps.${h}: a whole number, 1 to 50`);
+        next.caps[h] = n as number;
+      }
+    } else throw new StudioError(`providers.${k}: not a setting (mode, order, off, use, roles, caps)`);
   }
   if (next.off.length >= HARNESS_IDS.length) throw new StudioError('Leave at least one provider on.');
   db.prepare('INSERT INTO settings (key, value, updated, by) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated, by = excluded.by')
@@ -111,6 +134,8 @@ export const providerDeps = {
   installed: (h: Harness) => (h === 'claude' ? true : onPath(BINS[h]?.() ?? h)),
   configured: (h: Harness) => harnessConfigured(h),
   held: (h: Harness): Hold | null => activeHold(h),
+  /** When the provider's last hold lifted (null: never held, or still held). */
+  lifted: (h: Harness): number | null => getHold(h)?.lifted ?? null,
 };
 
 /** Why a provider can't take work now, or null when it can. */
@@ -140,14 +165,23 @@ export const busyOn = (h: Harness) => load.get(h) ?? 0;
  * provider holding its session (prefer) while it answers, else the role's own provider, else the least busy ready one.
  * Nothing ready: the harness in use (it is held, so the work parks and waits, as before).
  */
-export function pickHarness({ role, prefer }: { role?: string | null; prefer?: Harness | null } = {}, s: ProviderSettings = providerSettings()): Harness {
+export function pickHarness({ role, prefer }: { role?: string | null; prefer?: Harness | null } = {}, s: ProviderSettings = providerSettings(), now = Date.now()): Harness {
   if (s.mode === 'one') return brainId();
   const ready = readyHarnesses(s);
   if (!ready.length) return brainId();
   if (prefer && ready.includes(prefer)) return prefer;
   const pin = role ? s.roles[role as TunedRole] : undefined;
   if (pin && ready.includes(pin)) return pin;
-  return [...ready].sort((a, b) => busyOn(a) - busyOn(b) || ready.indexOf(a) - ready.indexOf(b))[0];
+  const room = (h: Harness) => busyOn(h) < (s.caps[h] ?? DEFAULT_CAPS[h]);
+  const cool = (h: Harness) => { const l = providerDeps.lifted(h); return l !== null && now - l < COOL_MS(); };
+  // Code work: the best provider in J's order with room, one that just throttled after the rest.
+  if (role && QUALITY_ROLES.has(role)) {
+    const best = [...ready.filter((h) => room(h) && !cool(h)), ...ready.filter((h) => room(h) && cool(h))][0];
+    if (best) return best;
+  }
+  // Otherwise (and when every provider is at its cap): the least busy for its cap, J's order on a tie.
+  const fill = (h: Harness) => busyOn(h) / (s.caps[h] ?? DEFAULT_CAPS[h]);
+  return [...ready].sort((a, b) => Number(room(b)) - Number(room(a)) || fill(a) - fill(b) || ready.indexOf(a) - ready.indexOf(b))[0];
 }
 
 // A hold's Talk line names the providers that carry on (harness-hold.ts announce).
@@ -173,12 +207,12 @@ export function providerStatus() {
   const s = providerSettings();
   const b = brainSettings();
   return {
-    mode: s.mode, order: s.order, off: s.off, roles: s.roles, saved: s.saved, chosen: b.chosen, inUse: b.harness,
+    mode: s.mode, order: s.order, off: s.off, roles: s.roles, caps: s.caps, saved: s.saved, chosen: b.chosen, inUse: b.harness,
     providers: s.order.map((h) => {
       const hold = providerDeps.held(h);
       return {
         id: h, label: HARNESSES.find((x) => x.id === h)?.label ?? h, configured: providerDeps.configured(h), installed: providerDeps.installed(h),
-        on: !s.off.includes(h), ready: !notReady(h, s), why: notReady(h, s), busy: busyOn(h),
+        on: !s.off.includes(h), ready: !notReady(h, s), why: notReady(h, s), busy: busyOn(h), cap: s.caps[h],
         hold: hold ? { kind: hold.kind, why: hold.why, line: hold.line, until: hold.until, resets: hold.reset, needsYou: needsJ(hold.kind) } : null,
       };
     }),
