@@ -35,8 +35,17 @@ export type OAuthHost = {
 };
 export type Access = { userId: string; connectionId: string; app: string };
 
-const ACCESS_TTL = 3600;
+// An access token lasts a day, so an editor refreshes rarely and a short outage (a deploy, a busy server) seldom lands on
+// a refresh (2026-11-10: claude.ai's refreshes met 429s while Studio's event loop was blocked, and it signed out).
+// Disconnect still ends it at once: verify() checks the connection on every call.
+export const ACCESS_TTL = 24 * 3600;
 const REFRESH_TTL = 90 * 24 * 3600;
+/**
+ * A refresh token that was just swapped still works this long, so an editor that never got the answer (the connection
+ * dropped, the server was slow, a deploy cut it off) can retry with it instead of being signed out. After that it's
+ * gone: rotation still stops a stolen old token from working for long.
+ */
+export const REFRESH_GRACE = 10 * 60;
 const CODE_TTL = 5 * 60;
 const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 const rand = (n = 32) => crypto.randomBytes(n).toString('base64url');
@@ -190,8 +199,8 @@ ${hidden}<div class="row"><button class="no" name="action" value="deny" type="su
       if (!row || row.kind !== 'refresh' || row.expires < now) throw new OAuthError('invalid_grant', 'The refresh token is invalid or expired');
       const conn = h.db.prepare(`SELECT * FROM ${t}_connections WHERE id = ?`).get(row.connection_id);
       if (!conn || conn.revoked) throw new OAuthError('invalid_grant', 'This connection was disconnected');
-      // Rotated: the old refresh token works once.
-      h.db.prepare(`DELETE FROM ${t}_tokens WHERE hash = ?`).run(row.hash);
+      // Rotated: the old refresh token works only for the grace window from its first use (a retry whose answer was lost).
+      h.db.prepare(`UPDATE ${t}_tokens SET expires = ? WHERE hash = ? AND expires > ?`).run(now + REFRESH_GRACE * 1000, row.hash, now + REFRESH_GRACE * 1000);
       return issue(conn.id);
     }
     throw new OAuthError('unsupported_grant_type', 'grant_type must be authorization_code or refresh_token');

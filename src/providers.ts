@@ -103,7 +103,16 @@ export function saveProviders(patch: Record<string, any>, by = 'J') {
 const BINS: Partial<Record<Harness, () => string>> = {
   cursor: () => String(agentBin()), copilot: () => String(copilotBin()), codex: () => String(codexBin()), antigravity: () => String(agyBin()), gemini: () => String(geminiBin()),
 };
-const onPath = (bin: string) => (path.isAbsolute(bin) ? fs.existsSync(bin) : (process.env.PATH ?? '').split(path.delimiter).some((d) => d && fs.existsSync(path.join(d, bin))));
+const lookPath = (bin: string) => (path.isAbsolute(bin) ? fs.existsSync(bin) : (process.env.PATH ?? '').split(path.delimiter).some((d) => d && fs.existsSync(path.join(d, bin))));
+// A CLI is installed or not for minutes at a time: one look at the disk per 30 s, not one per call (the picker runs often).
+const pathSeen = new Map<string, { at: number; on: boolean }>();
+const onPath = (bin: string) => {
+  const seen = pathSeen.get(bin);
+  if (seen && Date.now() - seen.at < 30_000) return seen.on;
+  const on = lookPath(bin);
+  pathSeen.set(bin, { at: Date.now(), on });
+  return on;
+};
 
 /** What the picker reads (tests replace them). */
 export const providerDeps = {

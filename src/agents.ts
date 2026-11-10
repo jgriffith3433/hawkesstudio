@@ -1904,16 +1904,22 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
 }
 
 /** A change parked by the harness waits out its gap and stops at the cap (resumeGate); the cap asks J once. */
-function resumeAllowed(c: Change) {
+function resumeAllowed(c: Change, free: () => Harness | null = freeHarness) {
   const ph = phaseOf(c.id);
   const h = ph?.harness;
   // Parked by one provider and another answers now (providers.ts, or a stand-in): it moves there at once. The gap and
   // the cap are for resuming on the provider that just stopped it.
-  if (h && h.kind !== 'revive' && isHarness(h.on) && pickHarness({ prefer: null }) !== h.on && !harnessHeld(pickHarness({ prefer: null }))) return true;
+  if (h && h.kind !== 'revive' && isHarness(h.on)) {
+    const other = free();
+    if (other && other !== h.on) return true;
+  }
   const g = resumeGate(h);
   if (g.go) return true;
   if (!g.capped) {
-    setTimeout(() => void pump(), g.waitMs + 1000).unref();
+    // One timer for the earliest wake, not one per parked change per pass (2026-11-10: ~200 parked changes each set a
+    // timer on every pass; they all came due together and ran thousands of pumps back to back, blocking the event
+    // loop for 224 s, so Cloud Run refused claude.ai's token refreshes and Studio's connector was signed out).
+    pumpAt(Date.now() + g.waitMs + 1000);
   } else if (h && !h.capped) {
     update(c.id, { phase: { ...phaseOf(c.id)!, harness: { ...h, capped: true } }, status: 'needs answer', detail: `the AI harness stopped it ${RESUME_CAP} times in an hour: it waits for you` });
     addLog(c.id, `harness stops ${RESUME_CAP} times in an hour: no more resumes by itself, asked J`);
@@ -2027,7 +2033,51 @@ export function checkQueue(now = Date.now()): string | null {
   return `${why}; held by: ${reasons}`;
 }
 
-async function pump() {
+/** The provider new work would go to now, when it isn't held; null when none is free. One look per pump pass. */
+function freeHarness(): Harness | null {
+  const h = pickHarness({ prefer: null });
+  return harnessHeld(h) ? null : h;
+}
+
+/**
+ * The pump, coalesced: a call while a pass runs asks for one more pass after it, never a second pass beside it. Every
+ * part of Studio calls pump() when something may have freed a slot (25 callers), so on a busy day they arrive in
+ * bursts; each pass reads every queued change, so passes must never pile up (2026-11-10: a 224 s event-loop block).
+ */
+let pumping: Promise<void> | null = null;
+let pumpAgain = false;
+export let pumpPasses = 0;
+function pump(): Promise<void> {
+  if (pumping) { pumpAgain = true; return pumping; }
+  pumping = (async () => {
+    try {
+      do {
+        pumpAgain = false;
+        pumpPasses++;
+        await pumpPass().catch((e) => console.warn(`[studio] queue pass failed: ${e?.message ?? e}`));
+        // Let requests (health, OAuth, MCP) in between passes.
+        if (pumpAgain) await new Promise((r) => setImmediate(r));
+      } while (pumpAgain);
+    } finally {
+      pumping = null;
+    }
+  })();
+  return pumping;
+}
+/** One timer for the pump's next wake: the earliest asked for (resume gaps). Later asks are made again by the passes. */
+let pumpTimer: { at: number; t: NodeJS.Timeout } | null = null;
+export function pumpAt(at: number) {
+  if (pumpTimer && pumpTimer.at <= at) return;
+  if (pumpTimer) clearTimeout(pumpTimer.t);
+  const t = setTimeout(() => { pumpTimer = null; void pump(); }, Math.max(0, at - Date.now()));
+  t.unref?.();
+  pumpTimer = { at, t };
+}
+/** Test hooks: the pump's pending wake time (or null), and a pump call as the rest of Studio makes it. */
+export const pumpWakeAt = () => pumpTimer?.at ?? null;
+export const pumpNow = () => pump();
+
+async function pumpPass() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return void (pumpNote = 'a Studio deploy is pending (the drain flag is set)');
   // No provider can run (harness-hold.ts holds, providers.ts): nothing starts; the hold's own look resumes the queue.
@@ -2046,12 +2096,18 @@ async function pump() {
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
   const active = new Map(listChanges({ status: ACTIVE, limit: 500 }).map((c) => [c.id, c]));
   for (const id of running) { const r = getChange(id); if (r) active.set(r.id, r); }
-  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c));
+  // One look at the providers for the whole pass, not two per queued change (each reads every provider's hold and PATH).
+  let free: Harness | null | undefined;
+  const freeOnce = () => (free === undefined ? (free = freeHarness()) : free);
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce));
+  // Each change's shape (its task, earlier changes and files: git) once per pass, however many candidates it sits beside.
+  const shapes = new Map<string, WorkShape>();
+  const shape = (c: Change) => shapes.get(c.id) ?? (shapes.set(c.id, shapeOf(c)), shapes.get(c.id)!);
   const fit = (id: string, picked: string[]) => {
     const c = getChange(id)!;
     if (isVideoTask(c.task)) return true;
     const beside = [...[...active.values()].filter((r) => r.product === c.product && !isVideoTask(r.task)), ...picked.map((x) => getChange(x)!)];
-    const why = overlapWith(shapeOf(c), beside.map(shapeOf), { unity: isUnity(c.product) });
+    const why = overlapWith(shape(c), beside.map(shape), { unity: isUnity(c.product) });
     if (why && !c.detail?.includes(why)) update(id, { detail: `queued: waits for ${beside[0]?.id ?? 'the running change'} (${why})`.slice(0, 300) });
     return !why;
   };
