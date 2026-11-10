@@ -715,18 +715,25 @@ export const TOKEN_RETRIES = 3;
  * under a secret only Studio holds, so it opens that one build's one repo and nothing else.
  */
 /**
- * OFF until Hawkes Gen accepts it: Gen's admitCustomer (src/providers/builder/customer.ts) rejects any github key other
- * than repo, commit, token and ref ("customer builds take github { repo, commit, token, ref? } (not refresh)"), so
- * sending github.refresh failed every customer Unity build since #211. The endpoint and genTokenFor stay; turn this on
- * (STUDIO_GEN_REFRESH=1) once Gen has a handler for it.
+ * ON (2026-11-10): Hawkes Gen takes github.refresh now (hawkesgen customer.ts admitCustomer, freshCustomerToken), so a
+ * Unity build that waits in Gen's queue past its token's hour, or whose token GitHub refuses (401), gets a fresh one from
+ * Studio right before Gen reads the repo. Without it Place Department's builds failed all day on 2026-11-10 ("token is 49
+ * minutes old", "GitHub refused ProjectSettings/ProjectVersion.txt (401)") and an Inbox card asked J to refresh it by hand.
+ * STUDIO_GEN_REFRESH=0 turns it off; a Gen that refuses it (an older one) is remembered (refreshRefused) and the build
+ * is sent again without it, so a refusal never fails a build.
  */
-export const SEND_GITHUB_REFRESH = process.env.STUDIO_GEN_REFRESH === '1';
+export const SEND_GITHUB_REFRESH = process.env.STUDIO_GEN_REFRESH !== '0';
+/** Hawkes Gen refused github.refresh once ("customer builds take github { … } (not refresh)"): sent without it from then on. */
+let refreshRefused = false;
+export const genRefusedRefresh = (error: unknown) => /\(not [^)]*\brefresh\b[^)]*\)|github\.refresh\b/i.test(String(error ?? ''));
+/** For the tests. */
+export const resetRefreshRefused = () => { refreshRefused = false; };
 const refreshSecret = () => process.env.STUDIO_BUILD_KEY || process.env.STUDIO_OWNER_KEY || process.env.HAWKESGEN_KEY || '';
 export const refreshKey = (build: string) => crypto.createHmac('sha256', refreshSecret()).update(`gen-github-token|${build}`).digest('hex');
 export const refreshUrl = () => `${(process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/+$/, '')}/api/builds/gen-token`;
 
 /** The fresh token Gen asked for (null: refused, with the reason). Minted now, never taken from what was sent at submit. */
-export async function genTokenFor(body: any, mint: (slug: string) => Promise<string | null> = async (slug) => { const T = await import('./ghtoken.ts'); T.forgetRepoToken(slug); return T.repoToken(slug); }): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function genTokenFor(body: any, mint: (slug: string) => Promise<string | null> = async (slug) => { const T = await import('./ghtoken.ts'); T.forgetRepoToken(slug); (await import('./cellside.ts')).forgetCellToken(slug); return T.repoToken(slug); }): Promise<{ status: number; body: Record<string, unknown> }> {
   const build = String(body?.build ?? '');
   if (!refreshSecret() || !build || !/^[0-9a-f]{64}$/.test(String(body?.key ?? '')) || !crypto.timingSafeEqual(Buffer.from(String(body.key)), Buffer.from(refreshKey(build)))) return { status: 401, body: { error: 'not a build Studio started' } };
   const row = db.prepare('SELECT product, sha, status, gen_job FROM builds WHERE id = ?').get(build) as any;
@@ -741,24 +748,24 @@ export async function genTokenFor(body: any, mint: (slug: string) => Promise<str
   return { status: 200, body: { token, repo: slug, commit: row.sha, expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() } };
 }
 
-/** The github object a Unity build submit carries: repo, commit, token, ref (plus refresh only when SEND_GITHUB_REFRESH). */
-export function githubFor(repo: string, commit: string, token: string, ref: string, row?: string, withRefresh = SEND_GITHUB_REFRESH): Record<string, unknown> {
+/** The github object a Unity build submit carries: repo, commit, token, ref, and refresh (when on and the build has a row). */
+export function githubFor(repo: string, commit: string, token: string, ref: string, row?: string, withRefresh = SEND_GITHUB_REFRESH && !refreshRefused): Record<string, unknown> {
   return { repo, commit, token, ref, ...(withRefresh && row && refreshSecret() ? { refresh: { url: refreshUrl(), build: row, key: refreshKey(row) } } : {}) };
 }
 
 /** The only github keys Hawkes Gen's customer builds accept (hawkesgen src/providers/builder/customer.ts admitCustomer). */
-export const GEN_GITHUB_KEYS = ['repo', 'commit', 'token', 'ref'] as const;
+export const GEN_GITHUB_KEYS = ['repo', 'commit', 'token', 'ref', 'refresh'] as const;
 
 /**
  * Everything a customer Unity build submit sends Gen (unity.build params), in the one shape admitCustomer takes: github
- * { repo, commit, token, ref } and nothing else under it (never refresh unless SEND_GITHUB_REFRESH), out "artifact".
+ * { repo, commit, token, ref, refresh? } and nothing else under it, out "artifact".
  * Anything Gen would refuse is refused here first, in plain words, so a bad shape can't ride to Gen and fail in 0 s.
  * Exported for the tests.
  */
 export function genBuildParams(b: BuildSpec, slug: string, sha: string, ref: string, token: string, row?: string): Record<string, unknown> {
   const github = githubFor(slug, sha, token, ref, row);
   const extra = Object.keys(github).filter((k) => !(GEN_GITHUB_KEYS as readonly string[]).includes(k));
-  if (extra.length) throw new Error(`Studio would send Hawkes Gen github.${extra.join(', github.')}, which customer builds don't take (repo, commit, token, ref): not sent`);
+  if (extra.length) throw new Error(`Studio would send Hawkes Gen github.${extra.join(', github.')}, which customer builds don't take (repo, commit, token, ref, refresh): not sent`);
   return { github, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), ...(b.machine ? { machine: b.machine } : {}), target: 'web', out: 'artifact' };
 }
 
@@ -868,6 +875,13 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   const firstWait = resume.job && resume.started ? Math.max(5 * 60_000, limit - (Date.now() - resume.started)) : limit;
   let job: any = await submit(first, { job: resume.job, onSubmit: resume.onSubmit }, firstWait);
   note(job);
+  // An older Gen that refuses github.refresh: remembered, and the same build sent again at once without it.
+  if (job.status === 'failed' && !refreshRefused && genRefusedRefresh(job.error)) {
+    refreshRefused = true;
+    say('Hawkes Gen does not take a token refresh yet: Studio is sending the build again without it');
+    job = await submit(first, { row: resume.row, onSubmit: resume.onSubmit }, limit);
+    note(job);
+  }
   // Cancelled (the run was, or someone cancelled the Gen job): its own outcome, never a failure, and never retried.
   const cancelled = async (j: any) => {
     if (j?.halted) throw new BuildCancelled(String(j.error ?? 'cancelled'));

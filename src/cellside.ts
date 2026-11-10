@@ -97,6 +97,8 @@ export async function cellGithubProbe(repo: string): Promise<{ installed: boolea
 
 /** Forgets this cell's cached repo tokens (they carry the permissions they were made with): after permissions change. */
 export const forgetCellTokens = () => cellTokens.clear();
+/** Forgets this cell's cached token for one repo (Gen asked for a fresh one: GitHub refused the last, or it is old). */
+export const forgetCellToken = (repo: string) => { cellTokens.delete(repo.toLowerCase()); };
 
 const cellTokens = new Map<string, { token: string; until: number }>();
 /**
