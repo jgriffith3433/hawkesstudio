@@ -21,7 +21,8 @@ export type BlockCause = { top: Hot[]; studio: Hot[]; samples: number; profile: 
 
 const WINDOW_MS = 60_000;
 const INTERVAL_US = 10_000;
-const KEEP = 20;
+/** Newest profiles kept here; disksweep.ts also caps by total size (STUDIO_PROFILES_KEEP / _MB). */
+const KEEP = () => Math.max(1, Number(process.env.STUDIO_PROFILES_KEEP) || 8);
 export const PROFILE_DIR = () => path.join(DATA, 'profiles');
 
 let session: Session | null = null;
@@ -158,8 +159,10 @@ export async function captureBlock(ms: number): Promise<BlockCause | null> {
   return { ...cause, profile: file };
 }
 
-/** The newest KEEP profiles stay. */
+/** The newest KEEP profiles stay; then disksweep applies the byte cap. */
 async function prune(dir: string) {
   const names = (await fs.promises.readdir(dir)).filter((n) => n.endsWith('.cpuprofile')).sort();
-  for (const n of names.slice(0, Math.max(0, names.length - KEEP))) await fs.promises.rm(path.join(dir, n), { force: true });
+  const keep = KEEP();
+  for (const n of names.slice(0, Math.max(0, names.length - keep))) await fs.promises.rm(path.join(dir, n), { force: true });
+  try { const { sweepProfiles } = await import('./disksweep.ts'); sweepProfiles(dir); } catch { /* optional */ }
 }

@@ -1281,6 +1281,8 @@ void import('./stream.ts').then(({ setProbes }) => setProbes({
 // Breadcrumbs for the next unexplained restart (crashlog.ts).
 void import('./oomguard.ts').then((m) => m.installOomGuard());
 void import('./crashlog.ts').then((m) => m.installCrashLog());
+// Cloud Run's disk is memory: clear ended worktrees, profiles, tmp and packs before they fill it (disksweep.ts).
+void import('./disksweep.ts').then((m) => m.startDiskSweep());
 
 // On Cloud Run the platform's port on every address (its front end is the only way in; cloudauth.ts gates it).
 const cloud = cloudMode();

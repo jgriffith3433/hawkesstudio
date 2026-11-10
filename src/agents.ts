@@ -492,7 +492,11 @@ function readSummary(worktree: string) {
 }
 /** A failed change with no commits and a clean tree: the worktree is only a copy of the base. Remove it. */
 async function dropEmptyWorktree(id: string, commits: string[]) {
-  if (commits.length) return;
+  if (commits.length) {
+    // Commits are on the branch (savework pushed them): the worktree still fills Cloud Run's memory disk until removed.
+    await endChangeDisk(id);
+    return;
+  }
   const c = getChange(id);
   if (!c?.worktree || !fs.existsSync(c.worktree)) return;
   try {
@@ -500,7 +504,7 @@ async function dropEmptyWorktree(id: string, commits: string[]) {
   } catch {
     return;
   }
-  await cleanup(id).catch((e) => addLog(id, `worktree cleanup: ${String(e?.message ?? e).slice(0, 200)}`));
+  await endChangeDisk(id);
 }
 
 /**
@@ -2008,6 +2012,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         }
         fs.mkdirSync(WORK(), { recursive: true });
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
+        await import('./disksweep.ts').then((d) => d.ensureDiskRoom(100 * 1024 * 1024, { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).catch((e) => {
+          if (/in-memory disk is full/.test(String(e?.message ?? e))) throw e;
+        });
         await checkoutSlot(() => critical(`making the worktree of ${id}`, async () => {
           // Studio on Cloud Run starts with no checkouts: the product's repo is cloned the first time it's needed.
           await ensureCloned(c.repo, c.slug);
@@ -2149,6 +2156,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         addLog(id, `${CUT_OFF_LEFTOVERS} (${commits.join('; ').slice(0, 160)}); last words: ${summary.slice(0, 160).replace(/\s+/g, ' ')}`);
         reopenTaken(id, findings.map((f) => f.id), CUT_OFF_LEFTOVERS);
         update(id, { status: 'failed', detail: CUT_OFF_LEFTOVERS, summary, commits, phase: null });
+        await endChangeDisk(id);
         return;
       }
       // A conflict pass that couldn't resolve safely (its list, or markers left in): never a broken merge; the PM decides.
@@ -2208,6 +2216,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
           addLog(id, `guard rails: ${list}`);
           update(id, { status: 'failed', detail: `not pushed: it changes protected files: ${list}`.slice(0, 300), summary, commits, phase: null });
+          await endChangeDisk(id);
           return;
         }
       }
@@ -2230,6 +2239,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
             const detail = `the Unity check still fails after ${UNITY_FIXES} fix passes, no pull request: ${issueLines(u, 3).join('; ')}`.slice(0, 300);
             reopenTaken(id, findings.map((f) => f.id), detail);
             update(id, { status: 'failed', detail, summary, commits, phase: { ...ph, failed: true } });
+            await endChangeDisk(id);
             return;
           }
         }
@@ -2252,6 +2262,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const detail = `blocked: it still breaks the game quality rules after ${QUALITY_FIXES} fix passes: ${scanLines(q, 3).join('; ')}`.slice(0, 300);
           reopenTaken(id, findings.map((f) => f.id), detail);
           update(id, { status: 'failed', detail, summary, commits, phase: { ...ph, failed: true, quality: q } });
+          await endChangeDisk(id);
           return;
         }
       }
@@ -2290,6 +2301,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const detail = `blocked from merging: the branch still doesn't compile after ${COMPILE_FIXES} fix passes: ${cc.issues.slice(0, 3).map((i) => `${i.file}:${i.line} ${i.code} ${i.message}`).join('; ')}`.slice(0, 300);
           reopenTaken(id, findings.map((f) => f.id), detail);
           update(id, { status: 'failed', detail, summary, commits, phase: { ...ph, failed: true, compile: cc } });
+          await endChangeDisk(id);
           return;
         }
       }
@@ -2379,6 +2391,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     // update() opens the bugs it still holds again (reopenTaken); ones triaged while it ran stay as they are.
     const tail = ph.step === 'prepare' && tried ? ` (Studio already tried the run again ${tried}×; the PM tries it again later)` : '';
     update(id, { status: 'failed', detail: (String(e.message).slice(0, 300 - tail.length) + tail), phase: { step: ph.step, jobs: ph.jobs, failed: true } });
+    await endChangeDisk(id);
   }
 }
 
@@ -2975,6 +2988,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
         addLog(id, `guard rails: ${list}`);
         update(id, { status: 'failed', detail: `not pushed: it changes protected files: ${list}`.slice(0, 300), summary, commits, phase: null });
+        await endChangeDisk(id);
         return;
       }
       const diffstat = (await gitAsync(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`])).out;
@@ -3003,6 +3017,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, failed: true } });
+    await endChangeDisk(id);
   }
 }
 
@@ -4099,17 +4114,36 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
   const c = getChange(id)!;
   if (!c.infra) await removePreview(c.product, id).catch(() => {});
   const repoDir = path.join(PROJECTS, c.repo);
-  await gitAsync(repoDir, ['worktree', 'remove', '--force', c.worktree]);
-  await gitAsync(repoDir, ['branch', '-D', c.branch]);
+  await gitAsync(repoDir, ['worktree', 'remove', '--force', c.worktree]).catch(() => {});
+  // Always drop the folder (and its -site / .repos siblings): a failed `worktree remove` used to leave the tree on
+  // Cloud Run's in-memory disk (2026-11-10: disk 2.0–2.7 GB of 4 GB before each kill).
+  try {
+    assertWorktreeRoot(c.worktree);
+    const { removeChangeDirs } = await import('./disksweep.ts');
+    removeChangeDirs(c.worktree);
+  } catch { /* not under .work, or already gone */ }
+  await gitAsync(repoDir, ['worktree', 'prune']).catch(() => {});
+  await gitAsync(repoDir, ['branch', '-D', c.branch]).catch(() => {});
   // A Unity change's website copy (its build).
   const copy = changeSiteDir(id);
   if (fs.existsSync(copy)) {
     const p = getProduct(c.product);
-    await gitAsync(path.join(PROJECTS, p.site.split('/')[0]), ['worktree', 'remove', '--force', copy]);
+    await gitAsync(path.join(PROJECTS, p.site.split('/')[0]), ['worktree', 'remove', '--force', copy]).catch(() => {});
     await fs.promises.rm(copy, { recursive: true, force: true });
   }
   fs.rmSync(`${copy}.json`, { force: true });
   if (deleteBranch) await github(`/repos/${c.slug}/git/refs/heads/${c.branch}`, { method: 'DELETE' }).catch(() => {});
+  void import('./disksweep.ts').then((d) => d.sweepNow({ say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).catch(() => {});
+}
+
+/**
+ * A change that has ended (failed with or without commits, or already cleaned when empty): free its worktree. Commits
+ * stay on the branch on GitHub (savework.ts); a revive remakes the worktree from that branch.
+ */
+async function endChangeDisk(id: string) {
+  const c = getChange(id);
+  if (!c?.worktree || !fs.existsSync(c.worktree)) return;
+  await cleanup(id, { deleteBranch: false }).catch((e) => addLog(id, `worktree cleanup: ${String(e?.message ?? e).slice(0, 200)}`));
 }
 
 /**
