@@ -572,7 +572,21 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   }
   if (mergeMain) return { ok: true, product: p.id, ...(await mergeMainIntoBeta(p, by)), note: `Nothing went live. Playtest ${BETA} again before going live.` };
   opLog(`making the plan for ${p.name}`);
-  const plan = await deployPlan(p.id, { io });
+  let plan = await deployPlan(p.id, { io });
+  // Going live on green CI where playtests are skipped: CI passed on `expect`, an older commit of beta than its tip
+  // (merges kept landing while CI ran, so beta's tip is rarely the commit whose CI is done). Main goes to that commit,
+  // not the tip: the plan is cut down to it (its own commits, it as beta), and only what it lists goes live.
+  if (ciPassed && expect && ciPassed.sha === expect && plan.beta?.sha && plan.beta.sha !== expect) {
+    const i = (plan.commits ?? []).findIndex((c: any) => c?.sha === expect);
+    if (i > 0) {
+      const at = plan.commits[i] as any;
+      plan = { ...plan, beta: { ...(plan.beta as any), sha: at.sha, short: at.short ?? at.sha.slice(0, 7), title: at.title }, played: plan.beta as any, commits: plan.commits.slice(i), blockers: (plan.blockers ?? []).filter((b: string) => !/^Nothing to go live/.test(b)), ancestorOk: true } as any;
+      opLog(`going live at ${expect.slice(0, 7)}, the newest ${BETA} commit with green CI (${BETA}'s tip ${String((plan as any).played?.short ?? '')} is newer and goes live once its own CI passes)`);
+    } else if (i < 0) {
+      // Already live (a later go live took main past it) or not on beta any more: nothing to move.
+      return { ok: true, product: p.id, nothing: true, main: plan.main?.short ?? null, beta: plan.beta?.short ?? null, release: null, note: `Nothing to go live: ${expect.slice(0, 7)} is no longer ahead of ${MAIN}` };
+    }
+  }
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
   // A person's "Go live anyway" on an Approve card (playtestSkipFor) goes past beta not being playtested and the quality
   // rules its playtests broke (isOverridable), and nothing else.

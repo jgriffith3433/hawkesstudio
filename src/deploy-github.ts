@@ -162,12 +162,18 @@ export async function syncBetaWithLive(slug: string, io: GitHubIO = {}): Promise
   return { how: 'merged', sha: m.j?.sha ? String(m.j.sha) : null, message: `Merged ${live}'s ${behind.length} commit(s) into ${BETA}; ${BETA} is built and playtested next, then it can go live.` };
 }
 
-export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; short: string } | null; main: { sha: string } | null; commits: unknown[]; github?: { targets: Target[]; rollbacksOnly?: boolean; liveMergesOnly?: boolean } }, io: GitHubIO = {}) {
+export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; short: string } | null; main: { sha: string } | null; commits: unknown[]; ancestorOk?: boolean; github?: { targets: Target[]; rollbacksOnly?: boolean; liveMergesOnly?: boolean } }, io: GitHubIO = {}) {
   const slug = githubSlugOf(p)!;
   const f = fetchOf(io);
   const token = await tokenFor(slug, io);
   const head = await gh(f, token, 'GET', `/repos/${slug}/commits/${BETA}`);
-  if (!plan.beta || !head.ok || head.j.sha !== plan.beta.sha) throw new StudioError(`${BETA} moved since the plan was made; look at the plan again.`, 409);
+  // ancestorOk (a go live on green CI at an older beta commit, deploy.ts): beta may be ahead of it, but it has to be on beta.
+  const onBeta = async () => {
+    if (!plan.ancestorOk || !plan.beta || !head.ok) return false;
+    const c = await gh(f, token, 'GET', `/repos/${slug}/compare/${plan.beta.sha}...${head.j.sha}`);
+    return c.ok && ['ahead', 'identical'].includes(String(c.j.status));
+  };
+  if (!plan.beta || !head.ok || (head.j.sha !== plan.beta.sha && !(await onBeta()))) throw new StudioError(`${BETA} moved since the plan was made; look at the plan again.`, 409);
   const log: string[] = [];
   // Live had only rollbacks: recorded in beta first (same files), and live then fast-forwards to that commit.
   if (plan.github?.rollbacksOnly) {
