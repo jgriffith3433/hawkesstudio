@@ -47,6 +47,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, managedElsewhere, managedNote, type Product, type Infra, type Playtest } from './config.ts';
@@ -267,6 +268,9 @@ export function listChanges(q: { status?: string; product?: string; limit?: numb
   return (db.prepare(`SELECT * FROM changes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ? OFFSET ?`).all(...args, q.limit ?? 100, Math.max(0, q.offset ?? 0)) as any[]).map(toChange);
 }
 function update(id: string, patch: Partial<Record<string, any>>) {
+  // A pass the stuck-work watchdog gave up on (checkStuck) writes nothing more: it ends here, and the pass that took over owns the change.
+  const ctx = passCtx.getStore();
+  if (ctx && ctx.id === id && ctx.gen !== passGen(id)) throw new PassAbandoned(id);
   const cur = db.prepare('SELECT * FROM changes WHERE id = ?').get(id) as any;
   // A cancelled change stays cancelled until someone resumes (queued) or closes it: a pass still winding down can only log (cancelChange).
   if (cur?.status === 'cancelled' && !['queued', 'closed'].includes(patch.status) && Object.keys(patch).some((k) => !['log', 'notes', 'cost'].includes(k))) return;
@@ -568,6 +572,8 @@ export type Phase = {
   harness?: { kind: string; line: string; at: number; on: string; /** When each park happened (the last hour's, for the resume cap). */ parks?: number[]; /** Asked J after the cap: no more resumes by itself. */ capped?: boolean };
   /** Restarts that resumed it at this step in a row (resumeChanges): a step that keeps ending Studio isn't resumed again. */
   restarts?: { step: string; n: number; at: number };
+  /** Times the stuck-work watchdog (checkStuck) took this change over at one step, and when. */
+  watch?: { step: string; n: number; at: number };
   /** A change stopped for restarts that was carried on once Studio had stayed up (reviveRestartStopped): not again. */
   revived?: boolean;
   /** Whole-run retries after a Studio checkout failure in prepare (AUTO_RETRIES at most): Studio tries again by itself. */
@@ -899,6 +905,23 @@ async function worktreeForAgentStep(id: string, ph: Phase, save: (patch: Partial
     return;
   }
   await remakeWorktree(id).catch((e: any) => addLog(id, `couldn't make the worktree again yet: ${String(e?.message ?? e).slice(0, 300)} (the job's work stays in the bucket until it can be applied)`));
+}
+
+/**
+ * Resumed past the agent (publish, verify, finish) with the worktree gone (a restart on Cloud Run loses every worktree):
+ * it is made again from the branch saved on GitHub before the step goes on, so a build never starts from a folder that
+ * isn't there (2026-11-10: two Yooba Land changes sat 12 hours at "building the branch in the cloud" after restarts).
+ * When it can't be made and the pull request is open with the work committed, the change is ready as it stands.
+ * Returns true when the pass is over (carried to ready).
+ */
+async function worktreeForLaterSteps(id: string, ph: Phase): Promise<boolean> {
+  if (!['publish', 'verify', 'finish'].includes(ph.step)) return false;
+  const c = getChange(id)!;
+  if (!c.worktree || fs.existsSync(path.join(c.worktree, '.git'))) return false;
+  const ok = await remakeWorktree(id).catch((e: any) => { addLog(id, `couldn't make the worktree again: ${String(e?.message ?? e).slice(0, 300)}`); return false; });
+  if (ok) return false;
+  if (carryFinishedToReady(getChange(id)!, ph, `its worktree is gone and couldn't be made again from ${c.branch}`)) return true;
+  throw new Error(`worktree missing after a restart and it couldn't be made again from ${c.branch} on GitHub`);
 }
 
 // --------------------------------------------------------------- GitHub
@@ -1660,6 +1683,47 @@ const running = new Set<string>();
 /** Changes whose work has started in this process (pump, launchResume): what memRoom weighs memory against. */
 let inFlight = 0;
 
+/**
+ * Each change's pass generation. The stuck-work watchdog (checkStuck) gives up on a pass that hangs (a build that never
+ * started, a wait nobody will end) by moving its change to the next generation: the old pass can't write any more
+ * (update() throws PassAbandoned in its async context) and the change is carried on by a new pass.
+ */
+const gens = new Map<string, number>();
+const passGen = (id: string) => gens.get(id) ?? 0;
+const passCtx = new AsyncLocalStorage<{ id: string; gen: number }>();
+export class PassAbandoned extends Error {
+  constructor(id: string) { super(`${id}: this pass was given up on as stuck; a new one carries the change on`); }
+}
+/** The release of each change's pass in this process (abandonPass frees it). */
+const flightOf = new Map<string, () => void>();
+/**
+ * Takes a change for a pass in this process: it is `running` (and, with flight, counted in inFlight for memRoom). The
+ * returned release is safe to call more than once, and once the watchdog moved the change on it leaves the new pass alone.
+ */
+function claim(id: string, o: { flight?: boolean } = {}) {
+  running.add(id);
+  const gen = passGen(id);
+  if (o.flight) inFlight++;
+  let done = false;
+  const land = () => {
+    if (done) return;
+    done = true;
+    if (o.flight) { inFlight--; memFreed(); }
+    if (passGen(id) === gen) running.delete(id);
+    if (flightOf.get(id) === land) flightOf.delete(id);
+  };
+  flightOf.set(id, land);
+  return land;
+}
+/** Gives up on a change's pass in this process (checkStuck): its slot and memory count are freed and it can write no more. */
+function abandonPass(id: string) {
+  gens.set(id, passGen(id) + 1);
+  const land = flightOf.get(id);
+  flightOf.delete(id);
+  land?.();
+  running.delete(id);
+}
+
 export function costToday() {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
@@ -1880,17 +1944,14 @@ async function pump() {
   }
   for (const id of picks) {
     const c = getChange(id)!;
-    running.add(c.id);
-    inFlight++;
+    const land = claim(c.id, { flight: true });
     // Back from waiting on Gen: its own session continues with the jobs' results (same worktree, same branch).
     const ph = phaseOf(c.id);
     // Back from a harness hold: the same, from the step it parked at (harnessResume).
     const back = (ph?.genDone || ph?.harness) && !ph.failed ? ph : null;
     if (back) update(c.id, { status: 'working', detail: ph!.harness ? `${brainLabel()} carries on after the harness hold` : `its Gen jobs finished: ${brainLabel()} continues with them` });
     void work(c.id, undefined, undefined, back, Boolean(back)).finally(() => {
-      running.delete(c.id);
-      inFlight--;
-      memFreed();
+      land();
       remember(c.id);
       void pump();
     });
@@ -1977,7 +2038,19 @@ export const AUTO_RETRY_WAIT_MS = [30_000, 120_000];
 /** Whether a failure at the prepare step is Studio's checkout machinery (retried by itself, never a try). */
 export const checkoutFailure = (message: string) => isInfraText(message);
 
-async function work(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false) {
+/**
+ * A pass on a change, in its own async context (passCtx), so the watchdog can give up on it (abandonPass). A pass the
+ * watchdog gave up on ends quietly. Passes started from inside a pass (a fix pass, a retry) keep the outer one's generation.
+ */
+function work(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false): Promise<void> {
+  const cur = passCtx.getStore();
+  const gen = cur?.id === id ? cur.gen : passGen(id);
+  return passCtx.run({ id, gen }, () => workPass(id, note, answer, resumed, asked)).catch((e) => {
+    if (e instanceof PassAbandoned) { console.warn(`[studio] ${e.message}`); return; }
+    throw e;
+  });
+}
+async function workPass(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false) {
   if (getChange(id)!.infra) return workInfra(id, note, resumed, false, asked);
   let c = getChange(id)!;
   const p = getProduct(c.product);
@@ -1998,6 +2071,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     if ((!resumed || ph.step === 'prepare' || ph.step === 'agent') && needsGpu(c)) void ensureGpuFor(c).then((r) => addLog(id, `GPU server: ${r}`)).catch(() => {});
     const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
     await worktreeForAgentStep(id, ph, save);
+    if (await worktreeForLaterSteps(id, ph)) return;
 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
@@ -2372,6 +2446,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     // Ready means merged into beta now (autoMergeBeta); with it off, a person merges it (or the PM, pm.ts).
     if (auto) await autoMergeBeta(id);
   } catch (e: any) {
+    if (e instanceof PassAbandoned) throw e;
     addLog(id, `error: ${e.message}`);
     // A playtest on request that went wrong leaves the change as it was: ready, with what happened.
     if (ph.requested) {
@@ -2525,9 +2600,9 @@ export function playtestChange(id: string, by = 'J') {
   const ph: Phase = { step: 'verify', tip: c.verify?.sha ?? git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, requested: by };
   update(id, { status: 'verifying', detail: 'playtesting the change', phase: ph, notes: [...c.notes, { at: Date.now(), by, text: 'asked for a playtest' }] });
   addLog(id, `playtest asked for by ${by}`);
-  running.add(id);
+  const land = claim(id);
   void work(id, undefined, undefined, ph, true).finally(() => {
-    running.delete(id);
+    land();
     void pump();
   });
   return getChange(id);
@@ -2658,12 +2733,21 @@ export function changeBuildPlan(p: Pick<Product, 'name' | 'engine' | 'build' | '
 
 /** Builds a change's pushed branch through the project's builds list (builds.ts, change mode) and says where it was published. */
 async function buildChangeInCloud(c: Change, p: Product, buildId: string): Promise<ChangeBuild & { url?: string }> {
-  const sha = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
+  const sha = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out || phaseOf(c.id)?.tip || '';
   const B = await import('./builds.ts');
-  addLog(c.id, `build: ${sha.slice(0, 7)} through ${p.name}'s builds list (${buildId}), published for this change only`);
+  addLog(c.id, `build: ${sha.slice(0, 7) || c.branch} through ${p.name}'s builds list (${buildId}), published for this change only`);
   update(c.id, { detail: 'building the branch in the cloud' });
   const r = await B.startBuild(p.id, { build: buildId, change: c.id, ref: c.branch });
-  await r?.done;
+  // Never waited on longer than a build may take (2026-11-10: a change waited 12 hours on a build that never ran): past
+  // that, the run is cancelled and the change goes on without it (a verify that couldn't build never fails a change).
+  const limit = B.BUILD_MAX_MS() + 15 * 60_000;
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = await Promise.race([(r?.done ?? Promise.resolve()).then(() => false), new Promise<boolean>((ok) => { timer = setTimeout(() => ok(true), limit); timer.unref?.(); })]);
+  clearTimeout(timer);
+  if (timedOut && r) {
+    addLog(c.id, `build: no result after ${Math.round(limit / 60_000)} min: cancelling it and going on without it`);
+    await import('./cancel.ts').then((m) => m.cancelRun(r.id, 'Studio', `the change's build gave no result in ${Math.round(limit / 60_000)} min`)).catch(() => {});
+  }
   const row = db.prepare("SELECT status, url, detail FROM builds WHERE product = ? AND change = ? ORDER BY started DESC LIMIT 1").get(p.id, c.id) as { status: string; url: string | null; detail: string | null } | undefined;
   const ok = row?.status === 'ready' && Boolean(row.url);
   const error = ok ? undefined : String(row?.detail ?? (r ? 'build failed' : 'the build did not start')).slice(0, 500);
@@ -2899,6 +2983,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
     else if (!resumed) save({}, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
 
     await worktreeForAgentStep(id, ph, save);
+    if (await worktreeForLaterSteps(id, ph)) return;
 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
@@ -3015,6 +3100,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       setTimeout(go, 0).unref();
     }
   } catch (e: any) {
+    if (e instanceof PassAbandoned) throw e;
     addLog(id, `error: ${e.message}`);
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, failed: true } });
     await endChangeDisk(id);
@@ -3758,9 +3844,9 @@ export function resolveConflicts(id: string, files: string[]) {
   // Called from the end of its own pass (work() merging it): the conflict pass starts once that one has let go.
   const go = () => {
     if (running.has(id)) return void setTimeout(go, 200).unref();
-    running.add(id);
+    const land = claim(id);
     void syncToRemoteHead(id).catch((e) => addLog(id, `conflict pass: could not check the remote head (${String(e.message ?? e).slice(0, 120)})`)).then(() => work(id, note, undefined, ph, true)).finally(() => {
-      running.delete(id);
+      land();
       remember(id);
       void pump();
     });
@@ -4013,10 +4099,10 @@ export function revise(id: string, note: string, by = 'J') {
   // A person's revision: the conflict passes start over, and an approval waiting to merge (Studio/Gen) is for what was.
   db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL, revisions = COALESCE(revisions, 0) + 1 WHERE id = ?').run(id);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
-  running.add(id);
+  const land = claim(id);
   // When it's done, the queue goes on (a revision holds a slot like any change).
   void work(id, note).finally(() => {
-    running.delete(id);
+    land();
     remember(id);
     void pump();
   });
@@ -4030,9 +4116,9 @@ export function answerChange(id: string, answer: string, by = 'J') {
   if (c.status !== 'needs answer') throw new Error(`The change is ${c.status}, not waiting for an answer`);
   if (!answer.trim()) throw new Error('Say the answer');
   update(id, { status: 'queued', detail: 'answered; the agent continues', notes: [...c.notes, { at: Date.now(), by, text: `answer: ${answer.slice(0, 500)}` }] });
-  running.add(id);
+  const land = claim(id);
   void work(id, undefined, `${by}: ${answer}`).finally(() => {
-    running.delete(id);
+    land();
     remember(id);
     void pump();
   });
@@ -4063,7 +4149,22 @@ export async function cancelChange(id: string, by = 'J', reason?: string | null)
   }
   // Its verification's Gen jobs go too (queued or running; a finished one is left alone).
   for (const j of Object.values(ph?.jobs ?? {})) if (j) await gen.cancel(String(j)).catch(() => {});
+  await cancelChangeBuilds(id, `its change was cancelled by ${by}`);
   return getChange(id);
+}
+
+/**
+ * A cancelled or closed change's own builds (c/<id>) are cancelled too, so they don't hold Hawkes Gen's builders for a
+ * change nobody will play (2026-11-10: the builds of two cancelled Yooba Land changes still waited in Gen's queue).
+ */
+async function cancelChangeBuilds(id: string, why: string) {
+  try {
+    const runs = db.prepare(`SELECT DISTINCT b.run FROM builds b JOIN runs r ON r.id = b.run WHERE b.change = ? AND b.status = 'building' AND r.status = 'running'`).all(id) as { run: string }[];
+    if (!runs.length) return;
+    const { cancelRun } = await import('./cancel.ts');
+    for (const r of runs) await cancelRun(r.run, 'Studio', why).catch(() => {});
+    addLog(id, `its build${runs.length > 1 ? 's' : ''} (${runs.map((r) => r.run).join(', ')}) cancelled too`);
+  } catch { /* no builds table in some tests */ }
 }
 
 /** Carries on a cancelled change in its own worktree (the agent's session when it can); the PM never does this by itself. */
@@ -4099,6 +4200,7 @@ async function closeNow(c: Change, by: string) {
     addLog(id, 'stopping the agent before the worktree is removed');
   }
   if (c.pr) await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { state: 'closed' } }).catch(() => {});
+  await cancelChangeBuilds(id, `its change was closed by ${by}`);
   update(id, { status: 'closed', detail: `closed by ${by}`, notes: [...c.notes, { at: Date.now(), by, text: 'closed' }] });
   remember(id);
   for (const f of c.findings) {
@@ -4225,7 +4327,7 @@ export { RESTART_LOOP };
  * failed (2026-11-01: c_28347ae3cb6d had committed and opened phoriginswebsite PR 36, then failed after 3 restarts).
  * Returns whether it did. approve() still refuses a head that moved, so nothing unchecked merges.
  */
-export function carryFinishedToReady(c: Change, ph: Phase): boolean {
+export function carryFinishedToReady(c: Change, ph: Phase, why?: string): boolean {
   if (!c.pr || !['verify', 'finish'].includes(ph.step) || ph.requested) return false;
   let tip = ph.tip ?? '';
   if (!tip && c.worktree && fs.existsSync(c.worktree)) tip = git(c.worktree, ['rev-parse', 'HEAD']).out;
@@ -4233,28 +4335,39 @@ export function carryFinishedToReady(c: Change, ph: Phase): boolean {
   const done = { ...(c.verify ?? {}), ...(ph.verify ?? {}), sha: tip, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null };
   const auto = agentSettings().autoMergeBeta;
   update(c.id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null, auto_merge: auto ? 'trying' : null });
-  addLog(c.id, `Studio restarted ${RESTART_LOOP}+ times in its ${ph.step} step, but its pull request #${c.pr} is open and the work committed (${tip.slice(0, 7)}): ready${auto ? ', merging into beta' : ''}`);
+  addLog(c.id, `${why ?? `Studio restarted ${RESTART_LOOP}+ times in its ${ph.step} step`}, but its pull request #${c.pr} is open and the work committed (${tip.slice(0, 7)}): ready${auto ? ', merging into beta' : ''}`);
   if (auto) void autoMergeBeta(c.id).catch((e) => console.warn(`[studio] auto-merge ${c.id}: ${e.message ?? e}`));
   return true;
 }
 
 /** Carries a change on from its recorded step after `wait` ms (a failure outside work()'s own handling is logged, never an unhandled rejection). */
 function launchResume(c: Change, ph: Phase, wait: number) {
-  running.add(c.id);
-  let started = false;
+  let land = claim(c.id);
+  const gen = passGen(c.id);
+  waitingStart.add(c.id);
   void new Promise((r) => setTimeout(r, wait))
     // After a restart every change comes back: each carries on only when there is memory for it (memgate.ts).
     .then(() => memRoom(() => inFlight, () => addLog(c.id, `waiting for memory before carrying on (${memSummary()})`)))
-    .then(() => { started = true; inFlight++; return work(c.id, undefined, undefined, ph); }).catch((e) => {
-    update(c.id, { status: 'failed', detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
-    console.warn(`[studio] resume ${c.id}: ${e?.message ?? e}`);
-  }).finally(() => {
-    running.delete(c.id);
-    if (started) { inFlight--; memFreed(); }
-    remember(c.id);
-    void pump();
-  });
+    .then(() => {
+      waitingStart.delete(c.id);
+      // Given up on while it waited (checkStuck): the pass that took over owns the change.
+      if (passGen(c.id) !== gen) return;
+      land();
+      land = claim(c.id, { flight: true });
+      return work(c.id, undefined, undefined, ph);
+    }).catch((e) => {
+      if (passGen(c.id) !== gen) return;
+      update(c.id, { status: 'failed', detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
+      console.warn(`[studio] resume ${c.id}: ${e?.message ?? e}`);
+    }).finally(() => {
+      waitingStart.delete(c.id);
+      land();
+      remember(c.id);
+      void pump();
+    });
 }
+/** Resumed changes still waiting for their turn (resumeGapMs) or for memory (memRoom): queued in effect, not stuck. */
+const waitingStart = new Set<string>();
 
 /** Changes that resumeChanges stopped for restarting Studio too often ("stopped: Studio restarted N times in a row"). */
 export const restartStopped = (c: Pick<Change, 'status' | 'detail'>) => c.status === 'failed' && /^stopped: Studio restarted \d+ times in a row/.test(String(c.detail ?? ''));
@@ -4275,6 +4388,124 @@ export function reviveRestartStopped(): string[] {
     out.push(c.id);
   }
   return out;
+}
+
+/** How long a step may go with no sign of life (a log line, a status change, a build or Gen job of its own) before the watchdog takes it over. */
+export const STALL_MS: Record<Phase['step'], number> = { prepare: 30 * 60_000, agent: 90 * 60_000, publish: 30 * 60_000, verify: 45 * 60_000, finish: 60 * 60_000, gen: 24 * 3600_000 };
+const stallMs = (step: Phase['step']) => {
+  const n = Number(process.env.STUDIO_STALL_MS);
+  return n > 0 ? n : STALL_MS[step] ?? 45 * 60_000;
+};
+/** A change with no pass in this process that still says it's being worked on: left this long before the watchdog carries it on (a pass may be just starting). */
+const ORPHAN_MS = () => Number(process.env.STUDIO_ORPHAN_MS) > 0 ? Number(process.env.STUDIO_ORPHAN_MS) : 10 * 60_000;
+/** Times the watchdog carries a change on at the same step before it settles it instead (ready with its pull request, or failed for the PM to try again). */
+export const WATCH_TRIES = 2;
+
+/**
+ * Whether something outside the pass is still working for the change: a build of its branch that is building in a
+ * running run (builds.ts, up to its maximum), or a Hawkes Gen job its verification waits on (up to the queue's limit).
+ */
+function workingElsewhere(id: string, ph: Phase, now: number): string | null {
+  try {
+    const { BUILD_MAX_MS } = buildsLimits;
+    const b = db.prepare("SELECT b.build, b.started FROM builds b JOIN runs r ON r.id = b.run WHERE b.change = ? AND b.status = 'building' AND r.status = 'running' ORDER BY b.started DESC LIMIT 1").get(id) as { build: string; started: number } | undefined;
+    if (b && now - b.started < BUILD_MAX_MS() + 30 * 60_000) return `its ${b.build} build is going`;
+  } catch { /* no builds table in some tests */ }
+  if (['verify', 'gen'].includes(ph.step) && Object.values(ph.jobs ?? {}).some(Boolean) && now - (ph.since ?? now) < VERIFY_QUEUE_MS + 3600_000) return 'its Hawkes Gen jobs are going';
+  return null;
+}
+const buildsLimits = { BUILD_MAX_MS: () => Number(process.env.STUDIO_BUILD_MAX_MS) > 0 ? Number(process.env.STUDIO_BUILD_MAX_MS) : 4 * 3600_000 };
+
+export type StuckAction = { id: string; step: string; was: 'orphan' | 'stalled'; idleMin: number; did: 'resumed' | 'ready' | 'failed' | 'requeued' };
+
+/**
+ * The stuck-work watchdog (J, 2026-11-10: "that is a terrible studio bug", after changes sat 12 hours at "building the
+ * branch in the cloud" and "pushing and opening the pull request" with nothing behind them). Every change that says it's
+ * being worked on (working, verifying, revising) has either a pass in this process that is still moving, or work of its
+ * own elsewhere (a build, Gen jobs). Otherwise:
+ * - no pass here at all (orphan: a restart, a pass that died without settling it): it carries on from its step, its
+ *   worktree made again from its branch on GitHub when it's gone;
+ * - a pass here with no sign of life for longer than its step's STALL_MS (stalled: a wait nobody ends): that pass is
+ *   given up on (abandonPass) and a new one carries the change on from its step.
+ * The same step taken over WATCH_TRIES times: a verify or finish step with its pull request open and work committed is
+ * ready as it stands (the playtest or preview is what hung); anything else fails with why, and the PM tries it again.
+ * Runs at start-up and on a long timer; it reads the database only.
+ */
+export function checkStuck(now = Date.now()): StuckAction[] {
+  const out: StuckAction[] = [];
+  const rows = db.prepare("SELECT id, status, updated, phase FROM changes WHERE status IN ('working', 'verifying', 'revising')").all() as { id: string; status: string; updated: number | null; phase: string | null }[];
+  for (const r of rows) {
+    const ph: Phase | null = parse(r.phase);
+    const idle = now - (r.updated ?? 0);
+    const here = running.has(r.id);
+    if (!ph?.step || ph.failed) {
+      if (here || idle < ORPHAN_MS()) continue;
+      update(r.id, { status: 'queued', detail: 'requeued: it said it was being worked on, but nothing was working on it' });
+      addLog(r.id, `watchdog: nothing was working on it for ${Math.round(idle / 60_000)} min and it had no step to carry on from: back in the queue`);
+      out.push({ id: r.id, step: '?', was: 'orphan', idleMin: Math.round(idle / 60_000), did: 'requeued' });
+      continue;
+    }
+    if (here ? idle < stallMs(ph.step) : idle < ORPHAN_MS()) continue;
+    // Waiting its turn to start, or for memory beside running work: that ends when the work beside it ends (or is taken over here).
+    if (here && (remaking.has(r.id) || waitingStart.has(r.id))) continue;
+    const elsewhere = workingElsewhere(r.id, ph, now);
+    if (elsewhere) continue;
+    const was: StuckAction['was'] = here ? 'stalled' : 'orphan';
+    const mins = Math.round(idle / 60_000);
+    if (here) abandonPass(r.id);
+    const prev = ph.watch;
+    const n = prev?.step === ph.step ? prev.n + 1 : 1;
+    const c = getChange(r.id)!;
+    const what = here ? `no sign of life for ${mins} min at the ${ph.step} step` : `nothing working on it for ${mins} min at the ${ph.step} step (a restart or a pass that ended without settling it)`;
+    console.warn(`[stuckwatch] ${r.id}: ${what} (${n} of ${WATCH_TRIES})`);
+    if (n > WATCH_TRIES) {
+      if (carryFinishedToReady(c, ph, `watchdog: stuck at the ${ph.step} step ${n - 1} times`)) { out.push({ id: r.id, step: ph.step, was, idleMin: mins, did: 'ready' }); continue; }
+      if (ph.requested) {
+        const v = { ...(c.verify ?? {}), outcome: 'not played', error: `the playtest got stuck at the ${ph.step} step ${n - 1} times; ask for it again` };
+        update(r.id, { status: 'ready', detail: readyDetail(v), verify: v, phase: null });
+        addLog(r.id, `watchdog: the playtest asked for got stuck ${n - 1} times: ready again as it was`);
+        out.push({ id: r.id, step: ph.step, was, idleMin: mins, did: 'ready' });
+        continue;
+      }
+      update(r.id, { status: 'failed', detail: `stuck: it hung at the ${ph.step} step ${n - 1} times (the PM tries it again)`, phase: { ...ph, failed: true, watch: { step: ph.step, n, at: now } } });
+      addLog(r.id, `watchdog: hung at the ${ph.step} step ${n - 1} times: failed so it starts over (not a try against the work)`);
+      out.push({ id: r.id, step: ph.step, was, idleMin: mins, did: 'failed' });
+      continue;
+    }
+    // A finish or verify step with the pull request open and the work committed: carry on from the step, but the
+    // second time it hangs it is ready as it stands (above).
+    const next: Phase = { ...ph, watch: { step: ph.step, n, at: now }, restarts: undefined };
+    update(r.id, { phase: next, detail: `carrying on: ${here ? 'it hung' : 'nothing was working on it'} at the ${ph.step} step` });
+    addLog(r.id, `watchdog: ${what}: carrying on from the ${ph.step} step (${n} of ${WATCH_TRIES})`);
+    launchResume(getChange(r.id)!, next, out.length * resumeGapMs());
+    out.push({ id: r.id, step: ph.step, was, idleMin: mins, did: 'resumed' });
+  }
+  return out;
+}
+
+/** For the tests: a pass's claim, the watchdog's give-up, and code run as a pass of a change. */
+export const passInternals = {
+  claim, abandonPass, isRunning: (id: string) => running.has(id), inFlight: () => inFlight,
+  asPass: <T>(id: string, fn: () => T) => passCtx.run({ id, gen: passGen(id) }, fn),
+};
+
+let stuckTimer: NodeJS.Timeout | null = null;
+/** How often the watchdog looks (STUDIO_STUCK_EVERY_MS; 5 minutes). */
+const STUCK_EVERY_MS = () => Number(process.env.STUDIO_STUCK_EVERY_MS) > 0 ? Number(process.env.STUDIO_STUCK_EVERY_MS) : 5 * 60_000;
+/** Starts the watchdog (server.ts, after resumeChanges): a first look once start-up has settled, then every STUCK_EVERY_MS. */
+export function startStuckWatch() {
+  if (stuckTimer) return;
+  const look = () => {
+    try {
+      const did = checkStuck();
+      if (did.length) console.log(`[stuckwatch] took over ${did.length}: ${did.map((d) => `${d.id} ${d.step} ${d.was} ${d.idleMin}m -> ${d.did}`).join('; ')}`);
+    } catch (e: any) {
+      console.warn(`[stuckwatch] ${e?.message ?? e}`);
+    }
+  };
+  setTimeout(look, 3 * 60_000).unref();
+  stuckTimer = setInterval(look, STUCK_EVERY_MS());
+  stuckTimer.unref();
 }
 
 export function resumeChanges() {

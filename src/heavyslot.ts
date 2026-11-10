@@ -14,6 +14,13 @@ const limit = () => {
 let used = 0;
 const waiting: (() => void)[] = [];
 
+/**
+ * The longest one holder keeps the slot (STUDIO_HEAVY_MAX_MS; 40 minutes): a holder that hangs (a download that never
+ * ends) would otherwise hold every build, preview and beta publish in Studio behind it for good (2026-11-10: work sat for
+ * hours). Past it the slot goes to the next in line, said in the log; the holder's own release later does nothing.
+ */
+const maxHold = () => Number(process.env.STUDIO_HEAVY_MAX_MS) > 0 ? Number(process.env.STUDIO_HEAVY_MAX_MS) : 40 * 60_000;
+
 /** Takes a slot (waiting in line for one) and returns its release, which is safe to call more than once. */
 export async function heavySlot(say?: (s: string) => void): Promise<() => void> {
   if (used < limit()) used++;
@@ -22,13 +29,21 @@ export async function heavySlot(say?: (s: string) => void): Promise<() => void> 
     await new Promise<void>((ok) => waiting.push(ok)); // the releaser hands its slot straight over
   }
   let done = false;
-  return () => {
+  const release = () => {
     if (done) return;
     done = true;
+    clearTimeout(timer);
     const next = waiting.shift();
     if (next) next();
     else used--;
   };
+  const timer = setTimeout(() => {
+    if (done) return;
+    console.warn(`[heavyslot] a holder kept the heavy slot past ${Math.round(maxHold() / 60_000)} min: passing it to the next in line (${waiting.length} waiting)`);
+    release();
+  }, maxHold());
+  timer.unref?.();
+  return release;
 }
 
 /** Runs fn holding a slot. */
