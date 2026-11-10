@@ -1,9 +1,10 @@
 // More than one agent per product (settings agents.perProduct, agents.productLimits; J, 2026-10-18: "2 agents for
 // Sick Of It"). A second change of a product starts only alongside changes it is unlikely to collide with: never the
-// same task, never one its task depends on, and only when their likely files don't overlap (different areas: art vs
-// levels vs story vs engine, or known files with nothing in common). Unknown is not "different": when either side's
-// area can't be told, they wait their turn as before. A conflict that happens anyway is resolved by its agent
-// (agents.ts resolveConflicts), as with any change that beta moved under.
+// same task, never one its task depends on, and never two that touch the same known file (or, in Unity, the same
+// one-at-a-time file: a scene, ProjectSettings, the package manifest, Addressables). Anything else runs side by side
+// (J, 2026-11-10: free slots sat idle while work waited behind changes it shared only a word like "engine" with, or
+// whose footprint couldn't be told): a conflict that happens anyway is resolved by its agent (agents.ts
+// resolveConflicts), as with any change that beta moved under. areasOf still says what a change is about.
 
 /** What is known about a change (running) or a piece of work (about to start) for the overlap test. */
 export type WorkShape = {
@@ -48,7 +49,6 @@ const shared = (a: Set<string>, b: Set<string>) => [...a].filter((x) => b.has(x)
  */
 export function overlapWith(next: WorkShape, running: WorkShape[], { unity = false }: { unity?: boolean } = {}): string | null {
   const nf = new Set([...(next.files ?? []), ...filesIn(next.text)]);
-  const na = areasOf(next.text, [...nf]);
   const ns = serialOf(next, unity);
   for (const r of running) {
     if (next.task && r.task && next.task === r.task) return `the same task (${next.task}) is already running`;
@@ -60,12 +60,6 @@ export function overlapWith(next: WorkShape, running: WorkShape[], { unity = fal
     // Unity's one-at-a-time files (a scene, ProjectSettings, the package manifest, Addressables): even different scenes wait.
     const serial = shared(ns, serialOf(r, unity));
     if (serial.length) return `both would touch ${serial.join(', ')} (Unity: one change at a time)`;
-    // Known files on both sides, none in common: different places, whatever the words say.
-    if (nf.size && rf.size) continue;
-    const ra = areasOf(r.text, [...rf]);
-    if (!na.size || !ra.size) return "can't tell what it would touch";
-    const common = shared(na, ra);
-    if (common.length) return `both work on ${common.join(', ')}`;
   }
   return null;
 }

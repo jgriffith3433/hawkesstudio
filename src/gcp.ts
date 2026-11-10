@@ -183,7 +183,7 @@ export function executionNameOf(op: any): string | null {
   return null;
 }
 
-export type ExecutionState = { done: boolean; succeeded: boolean; cancelled: boolean; running: boolean; message: string };
+export type ExecutionState = { done: boolean; succeeded: boolean; cancelled: boolean; running: boolean; started: boolean; message: string };
 
 export function executionState(e: any): ExecutionState {
   const done = Boolean(e?.completionTime);
@@ -191,7 +191,7 @@ export function executionState(e: any): ExecutionState {
   const failedTask = (e?.conditions ?? []).find((c: any) => c.state === 'CONDITION_FAILED');
   return {
     done, succeeded: done && Number(e?.succeededCount ?? 0) > 0, cancelled: Number(e?.cancelledCount ?? 0) > 0,
-    running: Number(e?.runningCount ?? 0) > 0, message: String(failedTask?.message ?? completed?.message ?? ''),
+    running: Number(e?.runningCount ?? 0) > 0, started: Boolean(e?.startTime) || Number(e?.runningCount ?? 0) > 0 || done, message: String(failedTask?.message ?? completed?.message ?? ''),
   };
 }
 
