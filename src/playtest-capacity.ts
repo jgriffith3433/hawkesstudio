@@ -184,6 +184,11 @@ export async function waitReason(job: string): Promise<string | null> {
     const waiting: any[] = now?.waiting ?? [];
     const i = waiting.findIndex((w) => w.job === job);
     if (i < 0) return null;
+    // Gen's own reason for this job comes first: it names the lane the job really waits on (a Cloud Run or RunPod
+    // lane, a project's share). `lanes` is only Gen's generic playtest lane, which on 2026-11-10 read "1 of 1" while the
+    // jobs waited on another lane, so the step named the wrong cause for an hour.
+    const own = String(waiting[i]?.detail ?? '').trim();
+    if (/^waiting\b/i.test(own) && own.length > 'waiting'.length + 2) return `${own.replace(/^waiting:?\s*/i, 'waiting for a free browser: ').replace(/\.$/, '')}, ${i} ahead in the queue`;
     const lanes = now?.lanes, cap = now?.capacity;
     const limit = Number(lanes?.limit ?? cap?.browsers ?? cap?.limit), used = Number(lanes?.used ?? (now?.playing ?? []).length);
     const tabs = Number.isFinite(limit) && limit > 0 ? `${Math.min(used, limit)} of ${limit} browser tabs are in use` : `${(now?.playing ?? []).length} playtests are playing`;
