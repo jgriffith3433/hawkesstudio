@@ -20,12 +20,22 @@ test('free slots, a queue, and no start for longer than the stall time: stalled,
   assert.match(String(queueStalled({ ...base, memLow: true })), /memory is low/);
 });
 
-test('not stalled: nothing queued, no free slot, a recent start, a fresh queue, or a hold that is meant (deploy, no provider)', () => {
+test('not stalled: nothing queued, no free slot, a recent start, or a fresh queue', () => {
   assert.equal(queueStalled({ ...base, queued: 0 }), null);
   assert.equal(queueStalled({ ...base, free: 0 }), null);
   assert.equal(queueStalled({ ...base, lastStartAt: now - 5 * min }), null);
   assert.equal(queueStalled({ ...base, oldestQueuedAt: now - 5 * min }), null);
-  assert.equal(queueStalled({ ...base, held: true }), null);
+});
+
+test('a hold that lasts past the stall time is reported too, never silent', () => {
+  assert.match(String(queueStalled({ ...base, held: true })), /held: a deploy is pending or no provider is ready/);
+});
+
+test("the pump says why it started nothing, and the watchdog logs it", () => {
+  const src = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const pump = src.slice(src.indexOf('async function pump()'), src.indexOf('/** Pushes a change'));
+  for (const ret of pump.match(/\n  (if \([^\n]*\) )?return[^\n]*/g) ?? []) assert.match(ret, /pumpNote/, `every early return records why: ${ret.trim()}`);
+  assert.match(src, /queue stalled: \$\{why\}; the pump's last look: \$\{pumpNote\}/);
 });
 
 test('what holds the queue, counted by reason, most first', () => {

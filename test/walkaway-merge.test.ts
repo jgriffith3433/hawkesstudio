@@ -116,7 +116,8 @@ process.env.FAKE_AGENT_MS = '50';
 process.env.STUDIO_PM = 'off';
 for (const k of ['STUDIO_SERVER', 'HAWKESGEN_KEY', 'STUDIO_BETA_LANE', 'NTFY_TOPIC']) delete process.env[k];
 fs.writeFileSync(path.join(tmp, 'data', 'notify.json'), JSON.stringify({ enabled: false, topic: 'test' }));
-fs.writeFileSync(path.join(tmp, 'data', 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+// One slot: a fix pass (a revision) waits its turn in the queue like any other pass (2026-11-10), so the pump needs room to start it.
+fs.writeFileSync(path.join(tmp, 'data', 'agents.json'), JSON.stringify({ maxConcurrent: 1 }));
 // Walk-away mode on (the default), and no counted tries: one free fix pass, then J.
 fs.writeFileSync(path.join(tmp, 'data', 'pm.json'), JSON.stringify({ walkAway: true, maxTries: 0 }));
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({
