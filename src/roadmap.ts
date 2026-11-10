@@ -24,7 +24,7 @@
 import { db, newId, J, parse } from './db.ts';
 import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 import { walkAwaySettings, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
-import { cancelDropped, TASK_GONE } from './queue-follow.ts';
+import { refreshTaskChanges } from './queue-follow.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -473,9 +473,9 @@ export function updateTask(id: string, patch: Partial<{ title: string; request: 
     ...patch, criteria: patch.criteria !== undefined ? list(patch.criteria) : undefined, depends: patch.depends !== undefined ? list(patch.depends) : undefined,
     ...(fresh ? { tries: 0, change: null, checks: null } : {}),
   });
-  // Dropped (or back to idea, or done) with a change still queued: that change is cancelled now, never run (queue-follow.ts).
-  // A rewritten request or criteria reach a queued change as it starts (refreshFromTask).
-  if (patch.status && TASK_GONE.includes(patch.status)) cancelDropped(id).catch((e: any) => console.warn(`[roadmap] cancelling the queued changes of ${id} failed: ${e?.message ?? e}`));
+  // Edited while its change is still queued (not started): the change takes the new request and criteria now, and a task
+  // that is gone keeps it from starting (queue-follow.ts; the queue checks again as it starts).
+  if (['request', 'criteria', 'title', 'status'].some((k) => k in patch)) refreshTaskChanges(id);
   return t;
 }
 
