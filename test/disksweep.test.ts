@@ -12,7 +12,7 @@ process.env.STUDIO_DISK_SWEEP = 'on';
 
 const {
   capByCountAndSize, sweepProfiles, sweepTmp, sweepWorktrees, liveWorkNames, sweepDisk, ensureDiskRoom,
-  setDiskSource, diskHigh, diskBudget, PROFILE_KEEP, removeChangeDirs, TMP_MAX_AGE_MS,
+  setDiskSource, diskHigh, diskFull, diskBudget, PROFILE_KEEP, removeChangeDirs, TMP_MAX_AGE_MS,
 } = await import('../src/disksweep.ts');
 const { setMemSource } = await import('../src/memgate.ts');
 
@@ -108,6 +108,24 @@ test('ensureDiskRoom sweeps then refuses when still over the budget', async () =
   );
   assert.ok(said.some((s) => /disk high/.test(s)));
   assert.ok(!fs.existsSync(path.join(work, 'c_gone')));
+  setDiskSource(null);
+  setMemSource(null);
+});
+
+test('over the share budget with memory to spare: sweeps, then lets the write through (no hold on a disk at rest)', async () => {
+  // 2026-11-10: 2.05 GB at rest on a 1.72 GB budget with ~1 GB of memory free held every change for hours.
+  setMemSource(() => ({ limit: 4000 * 1024 * 1024, available: 1000 * 1024 * 1024 }));
+  setDiskSource(() => ({ used: 2050 * 1024 * 1024, free: 1950 * 1024 * 1024, size: 4000 * 1024 * 1024, pct: 51, path: '/' }));
+  assert.equal(diskHigh(100 * 1024 * 1024), true, 'over the budget: it sweeps');
+  assert.equal(diskFull(100 * 1024 * 1024), false, 'but memory holds the write');
+  const said: string[] = [];
+  const r = await ensureDiskRoom(100 * 1024 * 1024, { keep: new Set(), say: (s) => said.push(s) });
+  assert.match(String(r), /GB of memory free/);
+  assert.ok(!said.some((s) => /hard/.test(s)), 'no hard sweep while memory has room');
+  // Memory short: refused, with the reason.
+  setMemSource(() => ({ limit: 4000 * 1024 * 1024, available: 450 * 1024 * 1024 }));
+  assert.equal(diskFull(100 * 1024 * 1024), true);
+  await assert.rejects(() => ensureDiskRoom(100 * 1024 * 1024, { keep: new Set() }), /in-memory disk is full/);
   setDiskSource(null);
   setMemSource(null);
 });

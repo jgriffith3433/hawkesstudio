@@ -62,10 +62,29 @@ export function diskHigh(need = 0): boolean {
   return d.used + need > diskBudget();
 }
 
+/**
+ * Memory that must stay free after a write (the disk is RAM on Cloud Run): STUDIO_DISK_FLOOR_MB, else a tenth of the
+ * limit and at least 384 MB. Below this the kernel starts killing processes.
+ */
+export const diskFloor = (limit = memInfo().limit) => {
+  const set = Number(process.env.STUDIO_DISK_FLOOR_MB);
+  return set > 0 ? set * MB : Math.max(384 * MB, Math.floor(limit / 10));
+};
+
+/**
+ * Too little memory for a write of `need` bytes. The share budget (diskHigh) only says when to sweep: on 2026-11-10
+ * the disk held 2.05 GB at rest (repos, caches) against a 1.72 GB budget with about 1 GB of memory free, so every change
+ * waited for disk room for hours and Studio ran one agent. What can kill Studio is memory, so that is what refuses.
+ */
+export function diskFull(need = 0): boolean {
+  if (process.env.STUDIO_DISK_SWEEP === 'off') return false;
+  return memInfo().available - need < diskFloor();
+}
+
 export function diskSummary(): string {
   const d = diskInfo();
   const gb = (n: number) => (n / 1024 ** 3).toFixed(2);
-  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; budget ${gb(diskBudget())} GB)`;
+  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; budget ${gb(diskBudget())} GB; ${gb(memInfo().available)} GB of memory free)`;
 }
 
 export type SweepReport = {
@@ -254,16 +273,17 @@ export async function sweepDisk(opts: {
 }
 
 /**
- * Before a write that needs `need` more bytes: soft sweep if high, hard sweep if still high, then throw if the budget
- * still wouldn't hold it. Returns the disk summary when it had to sweep.
+ * Before a write that needs `need` more bytes: soft sweep if over the budget; if memory can't hold the write, a hard
+ * sweep; then throw only if memory still can't hold it (diskFull). Returns the disk summary when it had to sweep.
  */
 export async function ensureDiskRoom(need = 0, opts: { keep?: Set<string>; repos?: string[]; say?: (s: string) => void } = {}): Promise<string | null> {
   if (process.env.STUDIO_DISK_SWEEP === 'off' || !diskHigh(need)) return null;
   opts.say?.(`[disksweep] disk high before a write (${diskSummary()}; need ${Math.round(need / MB)} MB): sweeping`);
   await sweepDisk({ soft: true, keep: opts.keep, repos: opts.repos, say: opts.say });
   if (!diskHigh(need)) return diskSummary();
+  if (!diskFull(need)) return diskSummary();
   await sweepDisk({ hard: true, keep: opts.keep, repos: opts.repos, say: opts.say });
-  if (!diskHigh(need)) return diskSummary();
+  if (!diskHigh(need) || !diskFull(need)) return diskSummary();
   throw new Error(`in-memory disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). Cleared profiles, logs, tmp and ended worktrees; free space and try again.`);
 }
 
