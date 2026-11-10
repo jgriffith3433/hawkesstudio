@@ -179,7 +179,8 @@ export function reportMarkdown(run: string) {
 export function sinceLastReport(run: string) {
   const r = db.prepare('SELECT started FROM runs WHERE id = ?').get(run) as any;
   if (!r) return [];
-  const prev = db.prepare(`SELECT started FROM runs WHERE kind = 'daily' AND started < ? ORDER BY started DESC LIMIT 1`).get(r.started) as any;
+  // A daily run that never started (pipeline.ts recordDailySkip) isn't the one before: its window would hide runs.
+  const prev = db.prepare(`SELECT started FROM runs WHERE kind = 'daily' AND status != 'skipped' AND started < ? ORDER BY started DESC LIMIT 1`).get(r.started) as any;
   const rows = db.prepare(`SELECT * FROM runs WHERE kind != 'daily' AND started >= ? AND started < ? ORDER BY started`).all(prev?.started ?? 0, r.started) as any[];
   return rows.map((o) => {
     const steps = (db.prepare(`SELECT * FROM steps WHERE run = ? AND kind IN ('playtest', 'review') ORDER BY started`).all(o.id) as any[]).map(rowToStep);

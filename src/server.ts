@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PORT, DATA, ROOT, paths, loadProducts, getProduct, StudioError, localUrl, managedElsewhere } from './config.ts';
 import { db, rowToStep } from './db.ts';
-import { startRun, startBeta, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
+import { startRun, startScheduledDaily, recordDailySkip, startBeta, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
 import { pruneDetached } from './detach.ts';
 import { listFindings, getFinding, updateFinding } from './backlog.ts';
 import { reportMarkdown, reportVerdict, listReports } from './report.ts';
@@ -170,11 +170,16 @@ const server = http.createServer(async (req, res) => {
       if (!(await schedulerCall(req))) return send(res, 401, { error: 'Only Cloud Scheduler (or J\'s owner key) starts the daily run here.' });
       // A customer's nightly run is on their plan (entitlements.ts; the control plane's cron only asks paying cells).
       const up = await (await import('./entitlements.ts')).upgradeRefusal(route, method);
-      if (up) return send(res, 402, up);
-      const running = activeRun();
-      if (running) return send(res, 200, { ok: true, run: running.id, note: 'a run is already going' });
-      const { id } = startRun('daily', {});
-      return send(res, 202, { ok: true, run: id });
+      if (up) {
+        recordDailySkip(`not on this Studio's plan (${up.error.slice(0, 200)})`);
+        return send(res, 402, up);
+      }
+      // Beside the beta, build and playtest runs going now; only another daily run, or today's done one, stops it, and
+      // that refusal (or a failure to start) is a skipped daily run in Activity, never a silent 200 (pipeline.ts).
+      const d = startScheduledDaily();
+      if (d.started) return send(res, 202, { ok: true, run: d.id });
+      if (d.failed) return send(res, 500, { ok: false, error: d.why, skipped: d.id });
+      return send(res, 200, { ok: true, run: d.run, skipped: d.id, note: d.why });
     }
     // Stripe's webhook (billing.ts): open, its signature is the check. The portal, Gen and other Studios share the Stripe
     // account, so most events aren't ours: those get 200 untouched (an error makes Stripe retry, then disable the endpoint).
