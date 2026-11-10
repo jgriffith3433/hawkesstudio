@@ -201,7 +201,7 @@ export function registerChecks() {
       return { breach: `Gen answered busy ${busy.lastHour} times in the last hour (the region's CPU quota is full)`, did: `ran at most ${cap} agents for 30 minutes so Gen has room` };
     },
     card: (detail) => ({
-      text: `Google Cloud's CPU quota in us-east4 keeps running out (${detail}). Studio is running fewer agents at once so Gen keeps working, but raising the quota is yours: only you can ask Google Cloud for more. Raise it?`,
+      text: `Google Cloud's CPU quota in us-east4 keeps running out (${detail}). Studio is running fewer agents at once so Gen keeps working, but raising the quota is yours: only you can ask Google Cloud for more (the ops-admin workflow's run-cpu-quota action asks for it). Raise it?`,
       options: ['raise the quota', 'keep running fewer agents'], recommend: 'raise the quota',
     }),
   });
