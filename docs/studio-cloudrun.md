@@ -140,6 +140,24 @@ its environment, no access to `state/` in the bucket (studio-agent@ may touch on
 the AWS server (`deploy/agent-sandbox.mjs`, `HAWKES_AGENT_USER`, sudo, `/proc` peer checks) are off here; the agents' key
 takes the place of the peer check.
 
+### Room for Studio's own server (2026-11-11)
+
+Studio's service and every job (agents at 2 vCPU, Unity builds at 8, Gen's) share the region's Cloud Run CPU quota. On
+2026-11-10/11 about 26 job executions held all of us-east4's; J's Studio's new revision never got an instance, the roll
+went back, and the old revision lost its instance too: the site was down. Two parts now keep the server's share, each
+inside the path that takes the CPU, with no watcher:
+
+- **Before a job starts** (`cpuroom.ts cpuTurn`, in `cloudjob.ts startCloudJob`): the job goes ahead only if every open
+  execution in the region (`gcp.ts regionJobCpu`: queued ones count) plus this one leaves `STUDIO_CPU_RESERVE` vCPU
+  (default 8) for the services. Starts are admitted one at a time and counted at once. A held start wakes when one of
+  Studio's jobs ends (`cpuFreed`), else on a backoff look (1 to 10 min) only while it waits; after 2 hours it goes anyway.
+  The quota is Google's (`quota.ts quotaNow`), else `STUDIO_CPU_QUOTA`, else learned when Cloud Run last left a job
+  unstarted (`noteNoRoom`). Not knowing it, the gate holds nothing.
+- **In the roll** (`cellrun.ts rollCells`): a cell's new revision that fails for CPU (Google says so, or the region holds
+  executions it hasn't started) makes the jobs give way, Unity builds first, then the agents' (`yieldJobCpu`,
+  `STUDIO_CELLS_YIELD_JOBS`), and the same image is tried once more as a new revision. A cancelled agent pass starts
+  again (`cloudjob.ts` lost); the new cell's starts then go through `cpuTurn`.
+
 ## Cost
 
 - **Idle:** nothing for the service and job (scale to zero), plus a few cents a month of storage and Secret Manager.
