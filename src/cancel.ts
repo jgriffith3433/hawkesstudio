@@ -8,6 +8,7 @@
 import { db } from './db.ts';
 import { gen } from './gen.ts';
 import { kickFollowups } from './followup-kick.ts';
+import { nudgeUnitySlot } from './unityslot.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS cancellations (subject TEXT PRIMARY KEY, by TEXT NOT NULL, reason TEXT, at INTEGER NOT NULL);`);
 
@@ -69,6 +70,8 @@ export async function cancelRun(runId: string, by: string, reason?: string | nul
   if (!run) throw new Error(`No such run ${runId}`);
   if (run.status !== 'running') throw new Error(`Run ${runId} is ${run.status}, not running`);
   noteCancel(`run:${runId}`, by, reason);
+  // A build of this run still waiting for its product's Unity slot (unityslot.ts) leaves that wait now, not at its turn.
+  nudgeUnitySlot();
   const jobs = (db.prepare(`SELECT job FROM steps WHERE run = ? AND status = 'running' AND job IS NOT NULL`).all(runId) as { job: string }[]).map((s) => s.job);
   // A build's Gen job lives on its build row (builds.ts): before 2026-11-09 its step never carried it, so cancelling the run
   // cancelled nothing in Gen and the build kept running there.

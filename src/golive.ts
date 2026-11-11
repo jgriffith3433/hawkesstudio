@@ -85,7 +85,7 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       const projectDir = rel(path.join(src, path.relative(p.repo.split('/')[0], p.build.project)));
       const siteDir = rel(path.join(copy, path.relative(p.site.split('/')[0], p.site)));
       const job = await unityBuild(p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir, siteDir }, (j) => updateStep(s, { job: j.id, detail: j.detail }),
-        { job: prior?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }) });
+        { job: prior?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }), priority: 'person' });
       const r = job.result ?? {};
       if (job.status !== 'done') {
         updateStep(s, { status: 'failed', detail: `failed: ${job.error ?? job.detail}`, job: job.id, cost: job.cost ?? 0, finished: true });

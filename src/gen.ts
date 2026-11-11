@@ -8,6 +8,7 @@ import { GEN_URL, GEN_PUBLIC_URL, PROJECTS } from './config.ts';
 import { GenEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
 import { submitKnown } from './gen-params.ts';
 import { isGenBusy, noteGenBusy, submitTurn } from './genpace.ts';
+import { unitySlot, type UnityPriority } from './unityslot.ts';
 
 const isSubmit = (p: string, o: any) => String(p).split('?')[0] === '/jobs' && String(o?.method ?? 'GET').toUpperCase() === 'POST';
 /** How long a submit Gen answers busy (429, 503) is tried again before the build fails (STUDIO_GEN_BUSY_MS: tests). */
@@ -157,21 +158,14 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
   }
 }
 
-/**
- * Submits a Gen job (retrying a busy service) and waits for it. job: one submitted before (a Studio restart), waited on
- * instead of submitting again; onSubmit: the new job's id, as soon as Gen gives it (to record it for that).
- */
-export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit, halt }: { job?: string; onSubmit?: (id: string) => void; halt?: () => string | null } = {}) {
-  if (reuse) return genWait(reuse, onUpdate, timeoutMs, halt);
-  // Cancelled before it was submitted: nothing is submitted.
-  const before = halt?.();
-  if (before) return { id: null, status: 'cancelled', error: before, halted: true } as any;
-  let job: any;
+type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): Promise<any>; jobs(q: Record<string, string>): Promise<any[]>; cancel(id: string): Promise<any> };
+
+/** Submits one Gen job, retrying a busy or unreachable service; Gen's job. */
+async function submitGen(tool: string, project: string, params: Record<string, unknown>, api: GenApi) {
   const t0 = Date.now();
   for (let i = 0; ; i++) {
     try {
-      job = await submitKnown((t, b) => gen.submit(t, b), tool, { project, params });
-      break;
+      return await submitKnown((t, b) => api.submit(t, b), tool, { project, params });
     } catch (e: any) {
       // Busy (2026-11-10: Cloud Run had no room for Gen and Yooba Land's build failed on the first 429): nothing was
       // made and any credits were refunded, so it is sent again after the calm window, which the next submit waits out.
@@ -181,8 +175,66 @@ export async function genRun(tool: string, project: string, params: Record<strin
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
+}
+
+/**
+ * Gen's queued and running unity.build jobs of one product (unityslot.ts: the look at Gen before a submit), each with its
+ * params. Matched by the job's project, which is the product id genRun passes (a customer's cell: with its prefix).
+ */
+export async function outstandingUnityBuilds(product: string, api: Pick<GenApi, 'jobs' | 'job'> = gen as any): Promise<any[]> {
+  const projects = new Set([product, String(genProject(product))]);
+  const seen = new Map<string, any>();
+  for (const status of ['queued', 'running']) {
+    for (const x of ((await api.jobs({ tool: 'unity.build', status, limit: '50' })) ?? []) as any[]) {
+      if (!x?.id || seen.has(String(x.id))) continue;
+      if (x.tool && x.tool !== 'unity.build') continue;
+      if (x.status && x.status !== 'queued' && x.status !== 'running') continue;
+      if (x.project && !projects.has(String(x.project))) continue;
+      seen.set(String(x.id), x);
+    }
+  }
+  const out: any[] = [];
+  for (const x of seen.values()) {
+    const j = x.params && x.project ? x : await api.job(String(x.id)).catch(() => null);
+    if (!j || !projects.has(String(j.project ?? x.project ?? ''))) continue;
+    out.push(j);
+  }
+  return out;
+}
+
+/**
+ * Submits a Gen job (retrying a busy service) and waits for it. job: one submitted before (a Studio restart), waited on
+ * instead of submitting again; onSubmit: the new job's id, as soon as Gen gives it (to record it for that).
+ *
+ * Every unity.build (a player build, a package build, a compile check, a retry, a restart's) goes through its product's
+ * one slot (unityslot.ts): one outstanding in Gen per product, the same build joined, one waiting, nothing left behind.
+ * priority: 'person' for a build a person asked for (or the go-live release, a build-* tag), which no automatic request
+ * replaces while it waits; paramsNow: the params made again for a request that waited its turn (a fresh token).
+ * api, events, pollMs: test seams (Gen's client and its event stream by default).
+ */
+export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit, halt, priority, paramsNow, api = gen as any, events = genEvents, pollMs }: { job?: string; onSubmit?: (id: string) => void; halt?: () => string | null; priority?: UnityPriority; paramsNow?: () => Promise<Record<string, unknown>>; api?: GenApi; events?: JobFollower; pollMs?: number } = {}) {
+  const waitOpts = { api, events, ...(pollMs ? { pollMs } : {}) };
+  // Cancelled before it was submitted: nothing is submitted.
+  if (!reuse) {
+    const before = halt?.();
+    if (before) return { id: null, status: 'cancelled', error: before, halted: true } as any;
+  }
+  if (tool === 'unity.build') {
+    const cancel = api === (gen as any)
+      ? async (id: string, why: string) => (await import('./cancel.ts')).cancelJob(id, 'Studio', why)
+      : (id: string) => api.cancel(id);
+    return unitySlot({ product: project, params, priority, reuse, halt, onSubmit, paramsNow }, {
+      submit: (p) => submitGen(tool, project, p, api),
+      wait: (id, upd) => genWait(id, upd, timeoutMs, halt, waitOpts),
+      job: (id) => api.job(id),
+      outstanding: () => outstandingUnityBuilds(project, api),
+      cancel,
+    }, onUpdate);
+  }
+  if (reuse) return genWait(reuse, onUpdate, timeoutMs, halt, waitOpts);
+  const job = await submitGen(tool, project, params, api);
   onSubmit?.(job.id);
-  return genWait(job.id, onUpdate, timeoutMs, halt);
+  return genWait(job.id, onUpdate, timeoutMs, halt, waitOpts);
 }
 
 /** The bare link: Gen answers it with "Sign in first" to anyone without a session, so people get signedFileUrl. */

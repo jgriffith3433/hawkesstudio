@@ -197,7 +197,10 @@ export async function runCompileCheck(opts: { changeId: string; product: string;
     if (!token) return unavailable(`Studio has no GitHub access to ${opts.slug}`);
     const { genRun } = await import('./gen.ts');
     say('Hawkes Gen is compiling the branch (no player build)');
-    const job = await genRun('unity.build', opts.product, compileParams({ slug: opts.slug, sha: opts.sha, ref: opts.ref, token, path: opts.path }), (j) => { if (j?.progress?.step) say(`Hawkes Gen: ${j.progress.step}`); }, 30 * 60 * 1000);
+    // One Unity build of a product at a time in Gen (unityslot.ts): a check may wait its turn behind a build, so the token
+    // is minted again when its turn comes. A newer check replaces it while it waits (it ends `unavailable`, not a verdict).
+    const paramsNow = async () => { forgetRepoToken(opts.slug); const t = (await repoToken(opts.slug)) ?? token; return compileParams({ slug: opts.slug, sha: opts.sha, ref: opts.ref, token: t, path: opts.path }); };
+    const job = await genRun('unity.build', opts.product, compileParams({ slug: opts.slug, sha: opts.sha, ref: opts.ref, token, path: opts.path }), (j) => { if (j?.progress?.step) say(`Hawkes Gen: ${j.progress.step}`); }, 30 * 60 * 1000, { paramsNow });
     const r = compileResultOf(job, opts.sha);
     recordCompile(opts.changeId, opts.product, r);
     return r;
