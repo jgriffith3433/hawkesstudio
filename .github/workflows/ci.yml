@@ -43,6 +43,18 @@ jobs:
             echo "HEALTH=https://studio.hawkesgen.ai/api/health" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v4
+      # Only the branch's newest commit deploys. A re-run of an older run (2026-11-11: a retry of 3cb61ac after a CPU
+      # quota refusal) would otherwise put an older image over a newer one; the newer commit's own run deploys it.
+      - name: Still the newest commit on this branch
+        id: newest
+        run: |
+          head=$(git ls-remote origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)
+          if [ -n "$head" ] && [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::$GITHUB_REF_NAME is at ${head:0:7} now, newer than ${GITHUB_SHA:0:7}: not deploying an older commit"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -52,8 +64,10 @@ jobs:
           service_account: studio-deployer@${{ env.PROJECT }}.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v2
       - name: Build the image for this commit
+        if: steps.newest.outputs.go == 'true'
         run: node tools/studio-cloudrun/build.mjs --project "$PROJECT" --region "$REGION" --commit "$GITHUB_SHA" --apply
       - name: Deploy it, keeping the previous revision to fall back on
+        if: steps.newest.outputs.go == 'true'
         env:
           STARTUP_PROBE: tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=60
         run: |
@@ -68,6 +82,7 @@ jobs:
           gcloud run services update "$SERVICE" --image "$tag" --startup-probe "$STARTUP_PROBE" --region "$RUN_REGION" --project "$PROJECT" --format=none
           gcloud run jobs update "$JOB" --image "$tag" --region "$RUN_REGION" --project "$PROJECT" --format=none
       - name: Health check (back to the previous revision if it fails)
+        if: steps.newest.outputs.go == 'true'
         run: |
           for i in $(seq 1 18); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$HEALTH" || true)
