@@ -137,6 +137,19 @@ Both widenings are on by default. Settings `agents.access: { gen, repos }` turns
 project's `access` overrides that. Isolation between customers is the Studio's own: each cell's keys reach only its
 own org's Gen projects and repos.
 
+## What else is in flight (every pass)
+
+Every agent pass (a first pass, a resumed session, an answer, a conflict pass, a nudge; products and Studio/Gen) starts
+with a short section at the end of its prompt (`passPrompt` in `src/agents.ts`, `src/inflight.ts`): the product's other
+agent changes (status, branch, pull request, the files each touched so far), its roadmap tasks being worked or reviewed,
+and the builds and beta or daily runs going for it, with what started them. It is read from Studio's own tables as the
+pass starts: no git, no other service. The files come from `change_files`, recorded after each pass (`recordTouched`);
+the overlap rule (`shapeOf`, parallel.ts) uses them too, so an earlier change whose worktree is gone still counts.
+The section's rules: don't redo another change's work; keep an edit in a file another change is editing small and say
+so; never start a build or trigger one (Studio builds at a milestone's end); and when another change already does the
+whole task, commit nothing and write "Already done by <change id>", which `alreadyDone` treats like any already-done
+change (a fix's bugs are fixed; a task's claim is checked by the PM, `doneProof`). Bounded: 12 changes, 15 files each.
+
 ## The guards
 
 The guards are in the infrastructure, not in the prompt.

@@ -107,6 +107,7 @@ import { sessionGone, freshSessionPrompt } from './sessiongone.ts';
 import { memLow, memRoom, memFreed, memSummary } from './memgate.ts';
 import { queueHold, parkedOut } from './queue-heal.ts';
 import { refreshFromTask } from './queue-follow.ts';
+import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './inflight.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -397,6 +398,7 @@ export function cutOffLeftovers({ onlyStudio, stopped, hasSummaryFile }: { onlyS
 export const ALREADY = 'nothing to do: already done';
 /** An agent's summary (of a change with no commit) saying the work is already there. */
 export function alreadyDone(summary: string) {
+  if (doneByOf(summary)) return true;
   return /\b(already (been )?(done|merged|landed|shipped|implemented|in place|on (beta|main)|there|present|fixed|exists?|works?)|nothing (left|more|else) to (do|change|implement)|(work|task|change) (is|was) (already )?(done|merged|complete))\b/i.test(String(summary ?? ''));
 }
 /**
@@ -1559,6 +1561,20 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
 }
 /** What a fresh session reads first when the last pass was cut off mid-way (writeHandoff). */
 const HANDOFF = path.join('.hawkes', 'handoff.md');
+/**
+ * The prompt a pass's session starts with: `base` (the brief, or what a resumed session is told), the handoff note when
+ * a new session takes over a cut-off pass (writeHandoff), and what else is in flight on the product as it starts
+ * (inflight.ts: other changes and their files, tasks, builds and runs, from Studio's own tables). Every pass gets it:
+ * first, resumed, answer, conflict and nudge passes, products and Studio/Gen.
+ */
+export function passPrompt(c: Pick<Change, 'id' | 'product' | 'worktree' | 'infra'>, base: string, resumedSession = false) {
+  const handoff = !resumedSession && fs.existsSync(path.join(c.worktree, HANDOFF))
+    ? `${base}\n\nFirst read ${HANDOFF}: it says what the last pass was doing when it was cut off and what it had done. Carry on from there; don't redo finished work.`
+    : base;
+  const name = (() => { try { return c.infra ? getInfra(c.product).name : getProduct(c.product).name; } catch { return c.product; } })();
+  const others = inFlightPrompt(c, name);
+  return others ? `${handoff}\n\n${others}` : handoff;
+}
 function runAgentInner(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session?: string; prompt: string }, how: AgentRun = {}): Promise<AgentResult> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof launch>['child'];
@@ -1573,9 +1589,7 @@ function runAgentInner(c: Change, briefFile: string, s: AgentSettings, env = cla
       const base = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
       // A new session after a pass was cut off (another provider took over, or the same one after a hold): it reads where
       // the last one got to before anything else (writeHandoff), so it carries on instead of starting over.
-      const prompt = !resume?.session && fs.existsSync(path.join(c.worktree, HANDOFF))
-        ? `${base}\n\nFirst read ${HANDOFF}: it says what the last pass was doing when it was cut off and what it had done. Carry on from there; don't redo finished work.`
-        : base;
+      const prompt = passPrompt(c, base, Boolean(resume?.session));
       // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
       // tools and turn limit; the task itself is the brief.
       // The route (routing.ts): the category's tier, one up per failed attempt, Opus within the day's budget, Fable only on J's ask.
@@ -1752,6 +1766,8 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
     recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, reported: r.model ?? null, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome, category: route?.category ?? null, premium: route?.premium ?? null });
     // Finished: the handoff note did its job (a later cut-off writes a new one).
     if (outcome === 'done') fs.rmSync(path.join(c.worktree, HANDOFF), { force: true });
+    // The files it touched so far, for the other passes' in-flight section and the overlap test (inflight.ts).
+    await recordTouched(c);
   } catch { /* the ledger never stops a pass */ }
   return r;
 }
@@ -2014,7 +2030,7 @@ export function isUnity(product: string) {
 function neighboursOf(c: Change) {
   return listChanges({ status: `${ACTIVE},ready,needs answer,${WAITING_GEN}`, product: c.product, limit: 20 })
     .filter((o) => o.id !== c.id)
-    .map((o) => ({ id: o.id, status: o.status, title: o.title, request: o.request, files: changedFiles(o) }));
+    .map((o) => ({ id: o.id, status: o.status, title: o.title, request: o.request, files: touchedFiles(o.id) }));
 }
 
 /** A change as parallel.ts sees it: its task (and what that depends on), its title, the files it and its task's earlier changes touched. */
@@ -2022,7 +2038,8 @@ export function shapeOf(c: Change): WorkShape {
   const t = c.task ? getTask(c.task) : null;
   const earlier = (t?.changes ?? []).filter((x) => x !== c.id).map((x) => getChange(x)).filter((x): x is Change => Boolean(x));
   const findings = c.findings.map((f) => getFinding(f)?.title).filter(Boolean).join('; ');
-  const files = [...changedFiles(c), ...earlier.flatMap((x) => changedFiles(x)), ...filesIn(c.request ?? '')];
+  // What each recorded after its passes (inflight.ts) counts too: an earlier change's worktree is usually gone.
+  const files = [...changedFiles(c), ...touchedFiles(c.id), ...earlier.flatMap((x) => [...changedFiles(x), ...touchedFiles(x.id)]), ...filesIn(c.request ?? '')];
   return { task: c.task ?? null, depends: t?.depends ?? [], text: [t?.title ?? c.title ?? '', findings].filter(Boolean).join('; '), files: [...new Set(files)] };
 }
 
