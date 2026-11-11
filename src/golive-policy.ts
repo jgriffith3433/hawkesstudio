@@ -283,7 +283,10 @@ export async function playBeforeGoLive(productId: string, short: string, why: st
   if (playing) return { playing: playing.id };
   // A person asking to go live isn't answered by an earlier play whose Unity build was held: that one played nothing.
   const heldBuildRun = cause ? (await import('./unitybuild-policy.ts')).heldBuildRun : () => null;
-  const done = runs.find((r) => String(r.options ?? '').includes(`${BEFORE_GO_LIVE} ${short} `) && !heldBuildRun(r.id, productId));
+  // Nor by one that played another commit (a web app's deployed beta still on an older commit when it played: Hawkes Gen
+  // cab865a, 2026-11-11, played 2bcbc9b and then held every go live for good). Only a play of this commit answers it.
+  const playedThis = (run: string) => Boolean(db.prepare(`SELECT 1 FROM steps WHERE run = ? AND product = ? AND kind = 'playtest' AND json_extract(data, '$.played.sha') LIKE ? LIMIT 1`).get(run, productId, `${short}%`));
+  const done = runs.find((r) => String(r.options ?? '').includes(`${BEFORE_GO_LIVE} ${short} `) && !heldBuildRun(r.id, productId) && (r.status === 'failed' || playedThis(r.id)));
   if (done) return { played: done.id };
   try {
     const go = start ?? (await import('./pipeline.ts')).startBeta;
