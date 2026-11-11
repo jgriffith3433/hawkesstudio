@@ -226,3 +226,19 @@ test('4. a run whose scenarios were skipped as "no scenario" is not a milestone 
   step(built, 'playtest', 'smoke@local', 'done', { outcome: 'pass' });
   assert.equal(pm.brokenCheck(built, 'sou'), null);
 });
+
+test('5. a milestone run that built beta\'s head and still has no scenario sends the task that names it back, once (2026-11-11)', () => {
+  // The Place Department: "bot-animation" was skipped on beta 2ba6da4's own build, and the milestone was checked again and again.
+  const fresh = run();
+  step(fresh, 'build', 'web', 'done', { built: { sha: HEAD, version: 7 } });
+  step(fresh, 'playtest', 'bot-animation@local', 'skipped', { missingScenario: 'bot-animation', has: ['smoke', 'loading'] }, 'skipped: beta has no scenario "bot-animation"');
+  const tasks = [{ id: 'k_anim', product: 'sou' }, { id: 'k_other', product: 'sou' }];
+  const scen = (t: { id: string }) => (t.id === 'k_anim' ? 'bot-animation' : 'smoke');
+  const sent = pm.missingScenarioOwners([fresh], tasks, scen, () => false);
+  assert.deepEqual(sent, [{ task: 'k_anim', scenario: 'bot-animation', run: fresh, has: ['smoke', 'loading'] }]);
+  assert.deepEqual(pm.missingScenarioOwners([fresh], tasks, scen, () => true), [], 'once');
+  // A run that played an older build (nothing built): the next build may bring the scenario, so nobody is sent back.
+  const stale = run();
+  step(stale, 'playtest', 'bot-animation@local', 'skipped', { missingScenario: 'bot-animation', has: ['smoke'] });
+  assert.deepEqual(pm.missingScenarioOwners([stale], tasks, scen, () => false), []);
+});
