@@ -11,6 +11,7 @@ import { copilotEnv } from './tuning.ts';
 import { DATA, StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
 import { seal, unseal } from './cellkeys.ts';
+import { queueWake } from './queuewake.ts';
 
 export const usingSubscription = () => Boolean(activeToken());
 
@@ -49,6 +50,7 @@ export function setCustomerKey(key: string | null) {
   if (!customerStudio()) throw new StudioError("This is J's Studio: its Claude is Settings → Claude accounts.", 409);
   if (key === null || key === '') {
     fs.rmSync(KEY_FILE(), { force: true });
+    queueWake('the Claude key was removed');
     return customerClaude();
   }
   const k = String(key).trim();
@@ -56,6 +58,8 @@ export function setCustomerKey(key: string | null) {
   fs.mkdirSync(path.dirname(KEY_FILE()), { recursive: true, mode: 0o700 });
   // Sealed with the cell's own key (cellkeys.ts) where it has one: the state bucket holds only ciphertext.
   fs.writeFileSync(KEY_FILE(), JSON.stringify({ key: seal(k), at: Date.now() }), { mode: 0o600 });
+  // Work held for "connect your AI first" starts now (agents.ts customerAgentGate).
+  queueWake('a Claude key was linked');
   return customerClaude();
 }
 

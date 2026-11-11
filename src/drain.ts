@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA } from './config.ts';
+import { queueWake } from './queuewake.ts';
 
 const FLAG = path.join(DATA, 'deploy-pending');
 
@@ -30,6 +31,28 @@ export function clearStaleDeployFlag(maxMs = 20 * 60_000, now = Date.now()): str
   } catch {
     return null;
   }
+}
+
+/** When the drain flag was set (ms), or null when there is none. */
+export function deployFlagSince(): number | null {
+  try { return fs.statSync(FLAG).mtimeMs; } catch { return null; }
+}
+
+/**
+ * The queue hears when the drain flag goes (the deploy is done, or decided there was nothing to wait for), not on a
+ * timer: a watch on the data folder for that one file. A flag nobody takes away is the queue's own deadline (agents.ts
+ * pumpPass: clearStaleDeployFlag at the flag's age limit).
+ */
+let watching = false;
+export function watchDeployFlag() {
+  if (watching) return;
+  try {
+    fs.mkdirSync(DATA, { recursive: true });
+    const w = fs.watch(DATA, (_ev, name) => { if (String(name ?? '') === path.basename(FLAG) && !deployPending()) queueWake('the deploy drain ended'); });
+    w.on('error', () => {});
+    w.unref?.();
+    watching = true;
+  } catch { /* no watch here: the next pass that ends or the flag's deadline starts the queue */ }
 }
 
 /** Waits (checking every 2 s) until no deploy is pending, at most maxMs; resolves either way. */

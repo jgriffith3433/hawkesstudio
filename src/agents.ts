@@ -73,7 +73,8 @@ import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
 import { lfsPull, pushPendingLfs } from './lfs.ts';
 import { healSource, populateSource, probeSource, repairedError, sourceError, SOURCE_UNREADABLE_SAID } from './source-ready.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
-import { deployPending, critical, clearStaleDeployFlag } from './drain.ts';
+import { deployPending, critical, clearStaleDeployFlag, deployFlagSince, watchDeployFlag } from './drain.ts';
+import { onQueueWake } from './queuewake.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor, getTask, addItem, addTask } from './roadmap.ts';
 import { overlapWith, filesIn, othersSection, sortConflicts, UNITY_RULES, type WorkShape } from './parallel.ts';
@@ -2069,6 +2070,9 @@ export async function customerAgentGate(): Promise<string | null> {
  * is an event, not a timer (diskwait.ts): a pass ending, or a sweep that freed space (disksweep.ts diskFreed).
  */
 const diskWait = diskWaits(() => void pump());
+// Gates that hold the queue wake it when they open (queuewake.ts): the deploy drain ending, a customer's plan or AI link.
+onQueueWake(() => void pump());
+watchDeployFlag();
 void import('./disksweep.ts').then((d) => d.onDiskFreed((why) => diskWait.freed(why))).catch(() => {});
 const waitsForDisk = (id: string) => diskWait.holds(id);
 /** A change that couldn't get disk room for its worktree: queued again (not failed), tried again once room may have freed. */
@@ -2206,7 +2210,17 @@ export const pumpNow = () => pump();
 
 async function pumpPass() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
-  if (deployPending()) return void (pumpNote = 'a Studio deploy is pending (the drain flag is set)');
+  // Its end wakes the queue (drain.ts watchDeployFlag); a flag no deploy takes away goes at its age limit, by this
+  // pass's own deadline (pumpAt), not a watchdog.
+  if (deployPending()) {
+    const stale = clearStaleDeployFlag();
+    if (stale) console.warn(`[studio] ${stale}`);
+    else {
+      const since = deployFlagSince();
+      if (since != null) pumpAt(since + 20 * 60_000 + 1000);
+      return void (pumpNote = 'a Studio deploy is pending (the drain flag is set)');
+    }
+  }
   // No provider can run (harness-hold.ts holds, providers.ts): nothing starts; the hold's own look resumes the queue.
   if (noProviderFree()) {
     pumpNote = `no AI provider can take work (${providerSettings().order.map((h) => `${h}: ${notReady(h) ?? 'ready'}`).join(', ')})`;

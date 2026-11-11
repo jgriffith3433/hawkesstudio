@@ -11,6 +11,7 @@
 
 import { StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
+import { queueWake } from './queuewake.ts';
 
 // Talk is on every plan once the customer linked their own AI (J, 2026-10-30: "it's just an interface for talking with
 // LLMs anyways"): it is not a Feature; aiRefusal still waits for their AI.
@@ -57,6 +58,8 @@ export async function refreshPlan(): Promise<PlanState | null> {
     const j: any = await r.json();
     const had = cellPlan?.state;
     setCellPlan({ plan: String(j.plan ?? 'free'), status: j.status ?? null, maxGames: j.maxGames ?? null, from: 'control' });
+    // A plan that now has agents: work held for it (agents.ts customerAgentGate) starts now, not at a later look.
+    if (had && (had.plan !== cellPlan!.state.plan || had.status !== cellPlan!.state.status)) queueWake('the plan changed');
     // Cloud builds just came with the plan: builds that were refused for it start again, their Inbox cards go (inbox.ts).
     if (!featuresOf(had?.plan ?? 'free', had?.maxGames ?? null).features.includes('cloudBuilds') && featuresOf(cellPlan!.state.plan, cellPlan!.state.maxGames).features.includes('cloudBuilds')) {
       void import('./inbox.ts').then((m) => m.inbox()).catch(() => {});

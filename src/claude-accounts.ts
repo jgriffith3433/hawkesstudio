@@ -17,6 +17,7 @@
 // Only J's click on the dashboard changes accounts (server.ts, approvals.ts notJClick); the sandbox never (guards.ts).
 // Tests: STUDIO_CLAUDE_SETUP_ARGS (a JSON array: program and arguments) runs a stand-in instead of `script ... claude`.
 
+import { queueWake } from './queuewake.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,6 +66,8 @@ function write(store: Store) {
   if (customerStudio()) fs.rmSync(ACTIVE_ENV(), { force: true });
   else if (active) fs.writeFileSync(ACTIVE_ENV(), `CLAUDE_CODE_OAUTH_TOKEN=${active.token}\n`, { mode: 0o600 });
   else fs.rmSync(ACTIVE_ENV(), { force: true });
+  // A Claude account added or chosen: work held for want of an AI looks again now.
+  queueWake('a Claude account changed');
 }
 
 /**
