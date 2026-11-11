@@ -460,7 +460,31 @@ export async function newRevisionOutcome(service: string, image: string, c = cel
   return { ok: false, why: why ?? 'the new revision wasn\'t serving in time' };
 }
 
-export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void; outcome?: typeof newRevisionOutcome; shortOfCpu?: typeof regionShortOfCpu; yieldCpu?: typeof yieldJobCpu } = {}, c = cellsConfig()) {
+/**
+ * Deletes a cell service's revisions that failed and serve no traffic. Cloud Run keeps retrying a failed revision's
+ * instance about once a minute (2026-11-11: twelve of J's cell revisions, 00106 to 00118, retried at once while us-east4
+ * had no CPU), so a dead revision can take the room the new one needs. The serving revision, the latest one created
+ * (it may still be starting) and any revision with traffic are never touched; a delete Google refuses is skipped.
+ */
+export async function dropFailedRevisions(service: string, o: { dry?: boolean; log?: (s: string) => void } = {}, c = cellsConfig()): Promise<string[]> {
+  const url = `${base(c)}/services/${service}`;
+  const sv = await gapi(url, { missingOk: true }).catch(() => null);
+  if (!sv) return [];
+  const short = (n: unknown) => String(n ?? '').split('/').pop()!;
+  const keep = new Set([short(sv.latestReadyRevision), short(sv.latestCreatedRevision), ...((sv.trafficStatuses ?? sv.traffic ?? []) as any[]).map((t) => short(t.revision))].filter(Boolean));
+  const revs: any[] = (await gapi(`${url}/revisions?pageSize=200`).catch(() => null))?.revisions ?? [];
+  const failed = (r: any) => !r.reconciling && [r.terminalCondition, ...(r.conditions ?? [])].some((x: any) => x?.state === 'CONDITION_FAILED' && (!x.type || /^(Ready|ContainerHealthy|ResourcesAvailable)$/.test(String(x.type))));
+  const out: string[] = [];
+  for (const r of revs) {
+    const name = short(r.name);
+    if (keep.has(name) || !failed(r)) continue;
+    try { await call('DELETE', `${url}/revisions/${name}`, undefined, { ...o, missingOk: true }); out.push(name); } catch { /* in use or already going */ }
+  }
+  if (out.length) (o.log ?? ((s: string) => console.log(`[cells] ${s}`)))(`${service}: deleted ${out.length} failed revision${out.length === 1 ? '' : 's'} so they stop taking CPU (${out.join(', ')})`);
+  return out;
+}
+
+export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void; outcome?: typeof newRevisionOutcome; shortOfCpu?: typeof regionShortOfCpu; yieldCpu?: typeof yieldJobCpu; dropFailed?: typeof dropFailedRevisions } = {}, c = cellsConfig()) {
   const log = o.log ?? ((s: string) => console.log(`[cells] ${s}`));
   const health = o.health ?? (async (url: string) => {
     for (let i = 0; i < 20; i++) {
@@ -474,6 +498,8 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
   for (const cell of cells) {
     if (cell.image === image) continue;
     log(`${cell.service} → ${image}`);
+    // Revisions that failed earlier (a roll that went back) keep asking Cloud Run for an instance; gone first.
+    if (!dryRun(o)) await (o.dropFailed ?? dropFailedRevisions)(cell.service, { ...o, log }, c).catch(() => []);
     await setImage(cell.service, image, o, c);
     // Healthy means the NEW revision is ready and serving, then answering: the old one answers /api/health until it's
     // replaced, so a bad image used to pass every cell (2026-10-31 review). A cell that fails goes back to its image.
@@ -508,6 +534,8 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
     if (!dryRun(o) && !(out.ok && (await health(serviceUrl(cell.org, c))))) {
       log(`${cell.service} is not healthy on the new image${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
       await setImage(cell.service, cell.image, { ...o, disk }, c).catch((e) => log(`${cell.service}: couldn't put it back (${e.message})`));
+      // The new revisions that failed go too, so they don't hold the region's CPU against the next roll.
+      await (o.dropFailed ?? dropFailedRevisions)(cell.service, { ...o, log }, c).catch(() => []);
       return { image, done, failed: cell.service, left: cells.filter((x) => !done.includes(x.service) && x.service !== cell.service).map((x) => x.service) };
     }
     done.push(cell.service);
