@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-restart-loop-'));
-const { resumeChanges, getChange, RESTART_LOOP, autoFixBlock } = await import('../src/agents.ts');
+const { resumeChanges, getChange, RESTART_LOOP, autoFixBlock, restartCount, passInternals } = await import('../src/agents.ts');
 const { db } = await import('../src/db.ts');
 const { resumeRuns, runRestarts } = await import('../src/pipeline.ts');
 await import('../src/builds.ts'); // its table, which a stopped run's builds are failed in
@@ -93,4 +93,62 @@ test('a run restarted RESTART_LOOP times in a row at one step fails that step in
   const step = db.prepare(`SELECT status, detail FROM steps WHERE id = 's_loop'`).get() as { status: string; detail: string };
   assert.equal(step.status, 'failed');
   assert.match(step.detail, /isn't resumed again/);
+});
+
+// The resumed pass of these fake changes ends by itself (no such product); a restart comes after it has let go.
+async function settled(id: string) {
+  const end = Date.now() + 5000;
+  while (passInternals.isRunning(id) && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+}
+
+// A Cloud Run agent job outlives Studio: its output moving between restarts means progress, so the restart isn't counted.
+const cloudProc = (offset: number) => ({ rec: { unit: 'hawkes-agent-x', mode: 'cloudrun' as const, started: 1 }, offset });
+const cloudPhase = (offset: number, restarts?: Record<string, unknown>) => ({ step: 'agent', since: 1, proc: cloudProc(offset), ...(restarts ? { restarts } : {}) });
+
+const restartsOf = (id: string) => JSON.parse((db.prepare(`SELECT phase FROM changes WHERE id = ?`).get(id) as { phase: string }).phase).restarts;
+/** Studio restarts: the change is as the last restart left it (the same counter), its job's output at `offset`. */
+async function restartAt(id: string, offset: number, restarts: unknown) {
+  await settled(id);
+  db.prepare(`UPDATE changes SET phase = ?, status = 'working' WHERE id = ?`).run(JSON.stringify(cloudPhase(offset, restarts as any)), id);
+  return resumeChanges();
+}
+
+test('a Cloud Run agent reattached after 4 restarts with its output advancing each time keeps running', async () => {
+  seed('c_cr', cloudPhase(100));
+  let restarts: any;
+  for (let i = 1; i <= 4; i++) {
+    assert.ok((await restartAt('c_cr', 100 * (i + 1), restarts)).includes('c_cr'), `restart ${i} resumed`);
+    restarts = restartsOf('c_cr');
+    assert.equal(restarts.n, 1);
+    assert.equal(restarts.offset, 100 * (i + 1));
+    assert.notEqual(getChange('c_cr')!.status, 'failed');
+  }
+  assert.ok(getChange('c_cr')!.log.some((l: any) => /progress since last restart: not counted/.test(JSON.stringify(l))));
+});
+
+test('a Cloud Run agent whose output does not move across restarts is stopped with the usual message', async () => {
+  seed('c_still', cloudPhase(500));
+  let restarts: any;
+  const lines: string[] = [];
+  for (let i = 1; i <= 4; i++) {
+    const resumed = await restartAt('c_still', 500, restarts);
+    if (i <= 3) {
+      assert.ok(resumed.includes('c_still'), `restart ${i} resumed`);
+      restarts = restartsOf('c_still');
+      lines.push(JSON.stringify(getChange('c_still')!.log.at(-1)));
+    }
+  }
+  const c = getChange('c_still')!;
+  assert.equal(c.status, 'failed');
+  assert.match(c.detail!, /restarted 3 times in a row during its agent step/);
+  assert.match(lines[1], /no progress: 2 of 3/);
+});
+
+test('restartCount: local agents never get the progress exemption; slow restarts start again', () => {
+  const now = Date.now();
+  const local = { step: 'agent', proc: { rec: { unit: 'u', mode: 'systemd' as const, started: 1 }, offset: 900 } };
+  assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 10 }, local, now).n, 3);
+  assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 10 }, cloudPhase(900), now).n, 1);
+  assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 900 }, cloudPhase(900), now).n, 3);
+  assert.equal(restartCount({ step: 'agent', n: 2, at: now - 3 * 3600_000, offset: 10 }, cloudPhase(900), now).n, 1);
 });
