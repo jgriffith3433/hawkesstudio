@@ -11,7 +11,7 @@ set -euo pipefail
 FROM=hawkes-staging
 REGION=us-east4
 JOBS="${1:-hawkes-studio-jobs}"
-CONTROL="studio-control@${FROM}.iam.gserviceaccount.com"
+CONTROL=$(gcloud run services describe studio --project="$FROM" --region="$REGION" --format='value(spec.template.spec.serviceAccountName)')
 
 echo "1. Project ${JOBS}"
 gcloud projects describe "$JOBS" --format='value(projectId)' >/dev/null 2>&1 || gcloud projects create "$JOBS" --name="Hawkes Studio jobs"
