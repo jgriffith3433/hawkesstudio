@@ -5,6 +5,7 @@
 // onDbWrite), never a timer; the one timer is the deadline.
 import { db, onDbWrite, parse } from './db.ts';
 import type { Product } from './config.ts';
+import { buildOutcome } from './outcomes.ts';
 
 type Spec = { id: string; tool?: string; target?: string };
 
@@ -179,3 +180,31 @@ export function missingScenarioSkips(run: string, product?: string): { name: str
 }
 
 export type { Product };
+
+/**
+ * A beta build under way that is newer than a failed one (J, 2026-11-11: Sick of It's 25 merged tasks said "beta's build
+ * failed (run r_cf94...)" every 30 minutes while the fix's build, run r_ec00..., was running): the newest beta run of the
+ * product that started after `failedRun` and still reads as `waiting` (outcomes.ts buildOutcome: going or queued; a held,
+ * cancelled or superseded run is not it). `sha` is the commit it builds when its build row or step says. null: nothing is
+ * building, so the failure stands.
+ */
+export function buildInProgress(product: string, failedRun: string | null | undefined): { run: string; sha: string | null } | null {
+  const since = failedRun ? ((db.prepare('SELECT started FROM runs WHERE id = ?').get(failedRun) as any)?.started ?? 0) : 0;
+  const runs = db.prepare("SELECT id, status FROM runs WHERE kind = 'beta' AND products LIKE ? AND started > ? ORDER BY started DESC, rowid DESC").all(`%"${product}"%`, since) as { id: string; status: string }[];
+  for (const r of runs) {
+    const failedBuild = (db.prepare("SELECT COUNT(*) AS n FROM steps WHERE run = ? AND product = ? AND status = 'failed' AND kind NOT IN ('playtest', 'review')").get(r.id, product) as any).n as number;
+    const held = Boolean(db.prepare("SELECT 1 FROM steps WHERE run = ? AND product = ? AND kind = 'build' AND (status = 'cancelled' OR data LIKE '%\"held\"%') LIMIT 1").get(r.id, product));
+    if (buildOutcome({ runStatus: r.status, failedBuildSteps: failedBuild, failedSteps: failedBuild, held }) !== 'waiting') continue;
+    let sha: string | null = null;
+    try { sha = (db.prepare("SELECT sha FROM builds WHERE product = ? AND run = ? AND sha IS NOT NULL ORDER BY started DESC LIMIT 1").get(product, r.id) as any)?.sha ?? null; } catch { /* no builds table here */ }
+    if (!sha) {
+      for (const st of db.prepare("SELECT data FROM steps WHERE run = ? AND product = ? AND kind = 'build' ORDER BY started DESC").all(r.id, product) as any[]) {
+        const d = parse(st.data);
+        sha = d?.built?.sha ?? d?.served?.sha ?? d?.sha ?? d?.beta ?? null;
+        if (sha) break;
+      }
+    }
+    return { run: r.id, sha: sha ? String(sha) : null };
+  }
+  return null;
+}

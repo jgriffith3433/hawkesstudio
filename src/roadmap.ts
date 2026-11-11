@@ -27,7 +27,7 @@ import { db, newId, J, parse } from './db.ts';
 import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 import { walkAwaySettings, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
 import { refreshTaskChanges } from './queue-follow.ts';
-import { unityBuildOf } from './betabuild.ts';
+import { unityBuildOf, buildInProgress } from './betabuild.ts';
 import { milestoneCriticStatus } from './critic-gate.ts';
 
 db.exec(`
@@ -261,6 +261,17 @@ export function genWaitOf(change: string | null | undefined): { done: number; to
 let startWaitHook: ((t: Task) => string | null) | null = null;
 export const setStartWaitHook = (f: typeof startWaitHook) => { startWaitHook = f; };
 
+/**
+ * A merged task whose last build failed or proved nothing, while a newer beta build is going: it waits on that build, and
+ * says so (the run and the commit), not on the older failure (betabuild.ts buildInProgress). null: nothing is building.
+ */
+export function buildUnderWay(t: Task): string | null {
+  if (t.status !== 'merged' || !t.build || t.build.ok) return null;
+  const going = buildInProgress(t.product, t.build.run);
+  if (!going) return null;
+  return `beta's build of ${going.sha ? going.sha.slice(0, 7) : 'its newest commit'} (run ${going.run}), which is building now; the earlier build (run ${t.build.run}) ${t.build.unproven ? "didn't count" : 'failed'}`;
+}
+
 /** What a task waits on, in plain words; null when nothing (it's on beta, verified or live). */
 export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null {
   if (asked.has(t.id) || (t.change && asked.has(t.change))) return 'you: a question in your Inbox';
@@ -287,7 +298,7 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
   }
   if (t.status === GPU_WAIT) return 'a GPU server: stand-ins are on beta; Studio runs it again for the real art when one is up';
   // A Unity project Studio builds builds beta once, at a milestone's end with nothing else queued (unitybuild-policy.ts).
-  if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})` : unityGated(t.product) ? "beta's build, which runs once the milestone is complete and nothing else is queued" : "beta's build";
+  if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? (buildUnderWay(t) ?? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})`) : unityGated(t.product) ? "beta's build, which runs once the milestone is complete and nothing else is queued" : "beta's build";
   return null;
 }
 

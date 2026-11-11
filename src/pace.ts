@@ -7,8 +7,9 @@
 // - "not reached": a criterion judged unclear because the bot never got to it (notReached), which goes back once as a
 //   scenario fix, never as a try (pm.ts scenarioFix);
 // - idle slots: free agent slots with nothing the PM may start for IDLE_MS, and products with no planned work: a scout
-//   per idle product, then ONE Inbox question for J with their proposals (idleWatch). Nothing goes on the roadmap
-//   without his yes, except in his own Studio in walk-away mode, where the PM answers it itself (causes.ts gateQuestion);
+//   per idle product (idleWatch). In J's own Studio in walk-away mode each scout's proposal goes to the PM the moment THAT
+//   scout reports (no batch, no question), and a product is scouted again as soon as it is idle again; elsewhere ONE
+//   Inbox question for the owner lists the proposals and nothing goes on the roadmap without his yes;
 // - "Where the time goes" (whereTimeGoes, in studio_pm status): today's median agent time, merge-to-verified, build and
 //   playtest time, time parked on Gen/GPU and idle slot-hours (the last two sampled by the PM's tick: samplePace).
 
@@ -139,20 +140,16 @@ export function whereTimeGoes(now = Date.now(), infra: (product: string) => bool
 
 /** Free slots with nothing the PM may start this long before the idle products are scouted (STUDIO_IDLE_MS, 30 min). */
 export const IDLE_MS = () => Number(process.env.STUDIO_IDLE_MS ?? 30 * 60_000);
-/** The scouts get this long to report; the question is filed with what's in by then. */
-const SCOUT_WAIT_MS = 3 * 3600_000;
+/** Where Studio fills the roadmap itself nobody needs to be given time to plan: this much idle time (at most IDLE_MS) is enough. */
+const SELF_IDLE_MS = 5 * 60_000;
+/** A scout gets this long to report (its own wall limit is 15 min); the batched question is filed with what's in by then. */
+const SCOUT_WAIT_MS = 30 * 60_000;
 /** The same idle products aren't asked about again for this long (a newly idle product is). */
 const REASK_MS = 7 * 86_400_000;
-/**
- * Where the PM answers the idle question itself (J's own Studio in walk-away mode), nobody is nagged, so the same
- * products are scouted again after this long instead of REASK_MS: with the week-long gate, the roadmap filled once and
- * then stayed empty for the rest of the week once that work was done (2026-11-11, stall-paths.md).
- */
-const SELF_REASK_MS = 4 * 3600_000;
 /** The question's subject: one card, merged by subject, never one per product. */
 export const IDLE_SUBJECT = 'idle-slots';
 
-type IdleState = { since: number | null; scouts: Record<string, { id: string; at: number }>; asked: number | null; askedFor: string[]; question: string | null };
+type IdleState = { since: number | null; scouts: Record<string, { id: string; at: number; empty?: boolean }>; asked: number | null; askedFor: string[]; question: string | null };
 const readIdle = (): IdleState => ({ since: null, scouts: {}, asked: null, askedFor: [], question: null, ...(parse((db.prepare(`SELECT value FROM pace_state WHERE key = 'idle'`).get() as any)?.value ?? null) ?? {}) });
 const saveIdle = (s: IdleState) => db.prepare(`INSERT INTO pace_state (key, value) VALUES ('idle', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(J(s));
 export const idleState = readIdle;
@@ -165,8 +162,12 @@ export type IdleDeps = {
   askJ: (text: string, o: { subject: string; options: string[]; recommend: string; topic: string; from: string; context: string }) => { id: string };
   log: (detail: string) => void;
   name?: (product: string) => string;
-  /** Whether the PM answers the idle question itself (walk-away in J's own Studio): then it may ask again sooner. */
+  /** Whether Studio fills the roadmap itself (walk-away in J's own Studio): each scout's proposal goes to `addProposal`, nobody is asked. */
   selfFills?: () => boolean;
+  /** Self-fill: puts one scout's proposal on the roadmap (the PM's way: it files the item with its tasks). */
+  addProposal?: (product: string, scout: string, proposal: string) => void;
+  /** Self-fill: how likely an idle product is to matter (open milestones, recent work); higher is scouted first. */
+  rank?: (product: string) => number;
 };
 
 /** A scout report's proposed roadmap item (its "## Proposed roadmap item" section), short. */
@@ -178,38 +179,99 @@ export function proposalOf(report: string | null | undefined, max = 450): string
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
+const QUESTION = (name: string) => `Agent slots are idle and ${name} has no planned roadmap work. What is the most valuable next roadmap item for it (small enough to start today), given its story, quality bar and what real players do?`;
+
+/**
+ * Self-fill (J's own Studio, walk-away): a scout that has reported puts its proposal on the roadmap at once (the scout
+ * finishing is the event: scout.ts wakes the PM). A scout that failed or proposed nothing keeps its product from being
+ * scouted again until the slots next go busy (no loop of failing scouts). Returns how many proposals went on.
+ */
+function harvest(st: IdleState, deps: IdleDeps, now: number): number {
+  const name = deps.name ?? ((p: string) => p);
+  let filed = 0;
+  for (const [p, rec] of Object.entries(st.scouts)) {
+    if (rec.empty) continue;
+    const sc = deps.getScout(rec.id);
+    if (sc?.status === 'running') continue;
+    const prop = sc?.status === 'done' ? proposalOf(sc.report, 4000) : null;
+    if (prop && deps.addProposal) {
+      deps.addProposal(p, rec.id, prop);
+      deps.log(`scout ${rec.id} read ${name(p)} and reported after ${Math.round((now - rec.at) / 60_000)} min: its proposed item went to the PM to plan`);
+      delete st.scouts[p]; // idle again later means scouted again
+      filed++;
+    } else {
+      deps.log(`scout ${rec.id} on ${name(p)} gave no proposal (${String(sc?.detail ?? sc?.status ?? 'lost').slice(0, 120)}): not scouted again until the slots next go busy`);
+      st.scouts[p] = { ...rec, empty: true };
+    }
+  }
+  return filed;
+}
+
 /**
  * Idle agent slots get work (J, 2026-10-19): when the PM has free slots and nothing it may start (`started` 0) for
- * IDLE_MS, and products have no planned work, a scout runs per idle product (two at a time: scout.ts), then ONE Inbox
- * question lists them with each scout's proposed next roadmap item. Asked once per set of idle products (again only
- * when another product falls idle, or after REASK_MS); an open question merges by subject. Returns what it did.
+ * IDLE_MS, and products have no planned work, a scout runs per idle product (two at a time: scout.ts).
+ *
+ * In J's own Studio in walk-away mode (`selfFills`; J, 2026-11-11: "fix all the root causes of the stalls through proper
+ * design") each scout's proposal goes to the PM as soon as that scout reports, the likeliest products are scouted first,
+ * and a product is scouted again the moment it is idle again: no batch, no question, no gate by the clock.
+ * Elsewhere ONE Inbox question lists them with each scout's proposed next roadmap item, asked once per set of idle
+ * products (again only when another product falls idle, or after REASK_MS); an open question merges by subject.
  */
-export function idleWatch({ free, started }: { free: number; started: number }, deps: IdleDeps, now = Date.now()): 'busy' | 'waiting' | 'scouting' | 'asked' | 'nothing idle' | 'already asked' {
+export function idleWatch({ free, started }: { free: number; started: number }, deps: IdleDeps, now = Date.now()): 'busy' | 'waiting' | 'scouting' | 'filed' | 'asked' | 'nothing idle' | 'already asked' {
+  const self = Boolean(deps.selfFills?.() && deps.addProposal);
   const st = readIdle();
+  // A scout that has reported is read the moment the PM looks, busy or not: its proposal doesn't wait for idle slots.
+  const filed = self ? harvest(st, deps, now) : 0;
+  if (self) saveIdle(st);
   if (free <= 0 || started > 0) {
-    if (st.since !== null) saveIdle({ ...st, since: null });
+    // Busy again: scouts that found nothing may be tried again the next time the slots idle.
+    for (const [p, rec] of Object.entries(st.scouts)) if (rec.empty) delete st.scouts[p];
+    if (st.since !== null || self) saveIdle({ ...st, since: null });
     endWait('idle-roadmap', 'idle-slots', 'event');
-    endWait('idle-roadmap', 'scouts', 'event');
+    if (!Object.keys(st.scouts).length || !self) endWait('idle-roadmap', 'scouts', 'event');
     return 'busy';
   }
   // Idle slots with nothing planned are a wait of the shared rule (waits.ts, point idle-roadmap): recorded with the
   // deadline (IDLE_MS), so the PM looks again when it passes even if nothing else wakes it, after a restart too.
+  const idleMs = self ? Math.min(IDLE_MS(), SELF_IDLE_MS) : IDLE_MS();
   if (st.since === null) {
     saveIdle({ ...st, since: now });
-    beginWait('idle-roadmap', 'idle-slots', { waitsOn: 'a task or item being planned', deadlineAt: now + IDLE_MS(), since: now, renew: true });
+    beginWait('idle-roadmap', 'idle-slots', { waitsOn: 'a task or item being planned', deadlineAt: now + idleMs, since: now, renew: true });
     return 'waiting';
   }
-  beginWait('idle-roadmap', 'idle-slots', { waitsOn: 'a task or item being planned', deadlineAt: st.since + IDLE_MS(), since: st.since });
-  if (now - st.since < IDLE_MS()) return 'waiting';
+  beginWait('idle-roadmap', 'idle-slots', { waitsOn: 'a task or item being planned', deadlineAt: st.since + idleMs, since: st.since });
+  if (now - st.since < idleMs) return 'waiting';
   const idle = deps.idleProducts();
+  const name = deps.name ?? ((p: string) => p);
+
+  if (self) {
+    const order = deps.rank ? [...idle].sort((a, b) => deps.rank!(b) - deps.rank!(a)) : idle;
+    for (const p of order) {
+      if (st.scouts[p]) continue; // reading it now, or it had nothing to say
+      try {
+        st.scouts[p] = { id: deps.startScout(p, QUESTION(name(p))).id, at: now };
+      } catch {
+        break; // two scouts already run (scout.ts): the next one's report wakes the PM and starts the rest
+      }
+    }
+    saveIdle(st);
+    const running = Object.entries(st.scouts).filter(([, r]) => !r.empty);
+    if (running.length) {
+      const first = Math.min(...running.map(([, r]) => r.at));
+      beginWait('idle-roadmap', 'scouts', { waitsOn: `the scouts of ${running.map(([p]) => p).join(', ')} reporting`, deadlineAt: first + SCOUT_WAIT_MS, since: first });
+      return 'scouting';
+    }
+    endWait('idle-roadmap', 'scouts', 'event');
+    return filed ? 'filed' : 'nothing idle';
+  }
+
   if (!idle.length) return 'nothing idle';
   const fresh = idle.some((p) => !st.askedFor.includes(p));
-  if (st.asked && now - st.asked < (deps.selfFills?.() ? SELF_REASK_MS : REASK_MS) && !fresh) return 'already asked';
-  const name = deps.name ?? ((p: string) => p);
+  if (st.asked && now - st.asked < REASK_MS && !fresh) return 'already asked';
   for (const p of idle) {
     if (st.scouts[p] && now - st.scouts[p].at < 86_400_000) continue;
     try {
-      const x = deps.startScout(p, `Agent slots are idle and ${name(p)} has no planned roadmap work. What is the most valuable next roadmap item for it (small enough to start today), given its story, quality bar and what real players do?`);
+      const x = deps.startScout(p, QUESTION(name(p)));
       st.scouts[p] = { id: x.id, at: now };
     } catch {
       break; // two scouts already run (scout.ts): the next tick starts the rest
@@ -227,7 +289,7 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
     const prop = proposalOf(sc?.report);
     return `- **${name(p)}**${st.scouts[p] ? ` (scout ${st.scouts[p].id})` : ''}: ${prop ?? (sc ? `no proposal (${String(sc.detail ?? sc.status).slice(0, 120)})` : 'not scouted yet')}`;
   });
-  const text = `Agent slots have been idle for ${Math.round((now - st.since) / 60_000)} min with nothing the PM may start, and ${idle.length} product(s) have no planned work. A scout read each one and proposes a next roadmap item:\n\n${lines.join('\n')}\n\nAdd these to the roadmap (the PM files them as items with their tasks), only some (say which), or not now? Nothing is added without your yes (in walk-away mode in your own Studio, the PM adds them itself).`;
+  const text = `Agent slots have been idle for ${Math.round((now - st.since) / 60_000)} min with nothing the PM may start, and ${idle.length} product(s) have no planned work. A scout read each one and proposes a next roadmap item:\n\n${lines.join('\n')}\n\nAdd these to the roadmap (the PM files them as items with their tasks), only some (say which), or not now? Nothing is added without your yes.`;
   const q = deps.askJ(text.slice(0, 3900), {
     subject: IDLE_SUBJECT, options: ['Yes: add them', 'Only some (say which)', 'Not now'], recommend: 'Yes: add them', topic: 'idle', from: 'idle agent slots',
     context: Object.values(st.scouts).map((x) => x.id).join(' '),

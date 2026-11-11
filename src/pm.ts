@@ -43,6 +43,7 @@ import {
   itemProgress, gpuCleared, setStartWaitHook, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf, waitingOn, STUCK_DEPENDENCY,
   pmLogVersion, unityGated, setBar,
+  buildUnderWay,
 } from './roadmap.ts';
 import { gateTask, PHONE, splitPlays, focusWithGoals } from './taskbar.ts';
 import { milestoneCriticStatus } from './critic-gate.ts';
@@ -1731,9 +1732,9 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
     const t = getTask(q.subject);
     if (t) await gpuAnswer(t, answer, by, q);
   }
-  // New roadmap work for idle products (pace.ts idleWatch): nothing is added without J's yes.
-  // In J's own Studio in walk-away mode the PM's own answer adds them (causes.ts gateQuestion; walkaway.ts idleWorkIsStudios).
-  if (q.topic === 'idle' && !byJ && !(idleWorkIsStudios() && by.startsWith(SELF_BY))) throw new StudioError(`New roadmap work for idle products is J's call (answered by ${by}). Leave it in his Inbox.`);
+  // New roadmap work for idle products (pace.ts idleWatch) asked as a question: nothing is added without J's yes. (In J's own
+  // Studio in walk-away mode it isn't asked: each scout's proposal goes to the PM when it reports.)
+  if (q.topic === 'idle' && !byJ) throw new StudioError(`New roadmap work for idle products is J's call (answered by ${by}). Leave it in his Inbox.`);
   setQuestion(id, { status: 'answered', answer, answered_by: by });
   // The answer on the subject's thread, when it has one: the PM files questions on slugs too ("deploy-safety-net"), and a
   // thread comment never fails an answer that is already recorded (the routing below still runs).
@@ -3091,6 +3092,7 @@ export function stallReasons(): StallReason[] {
     else if (t.status === 'working' && !hasLiveChange(t.id) && t.change && db.prepare(`SELECT 1 FROM changes WHERE id = ? AND status = 'cancelled'`).get(t.change)) why = `paused: its agent change ${t.change} was cancelled (Resume or Close it in Activity)`;
     else if (['working', 'needs answer', 'review'].includes(t.status) && !hasLiveChange(t.id)) why = 'stale status: no agent change is running for it (reconciled next pass)';
     else if (t.status === 'failed') why = heldFor(t.id) ? `held: investigation ${heldFor(t.id)!.change} fixes beta first` : rescues()[t.id]?.state === 'scouting' ? 'out of tries: a scout is investigating, then a fresh round' : `failed: ${String(t.note ?? '').slice(0, 200)}`;
+    else if (t.status === 'merged' && t.build && !t.build.ok && buildUnderWay(t)) why = `waits: ${buildUnderWay(t)}`;
     else if (t.status === 'merged' && t.build && !t.build.ok) why = `broken build: ${t.build.detail.slice(0, 200)}${blocker ? `; the fix in ${name(blocker.b.target)} (${blocker.fix}) is under way` : ''}`;
     else if (t.status === 'planned' && blockedBy(t).length) why = `blocked by ${waitingOn(t).replace(/^waiting on /, '')}`;
     else if (t.status === 'planned' && !blockedBy(t).length && !(t.gpu?.items?.length && !gpuCleared(t)) && startWaitReason(t)) why = `waits: ${startWaitReason(t)}`;
@@ -3370,6 +3372,13 @@ export function idleProducts() {
     && !db.prepare(`SELECT 1 FROM findings WHERE product = ? AND status = 'open' AND severity IN ('blocker', 'bug') LIMIT 1`).get(id));
 }
 
+/** How likely an idle product is to matter: products with open milestones first, then the most recent work on it. */
+function idleRank(product: string) {
+  const open = (db.prepare(`SELECT COUNT(*) AS n FROM milestones WHERE product = ? AND status = 'open'`).get(product) as any)?.n ?? 0;
+  const recent = (db.prepare('SELECT MAX(COALESCE(updated, created)) AS t FROM tasks WHERE product = ?').get(product) as any)?.t ?? 0;
+  return open * 1e14 + recent;
+}
+
 /** One pace sample, and the idle-slot watch (pace.ts). startedNow: what this tick's startWork started. */
 async function pace(startedNow: number, deps: Partial<IdleDepsLike> = {}) {
   const s = pmSettings();
@@ -3385,6 +3394,9 @@ async function pace(startedNow: number, deps: Partial<IdleDepsLike> = {}) {
     askJ: (text, o) => askJ(text, o),
     log: (detail) => logDecision('idle', IDLE_SUBJECT, null, detail.slice(0, 1500)),
     selfFills: idleWorkIsStudios,
+    // J's own Studio in walk-away mode: a scout's proposal is the PM's to plan the moment the scout reports.
+    addProposal: (product, scout, proposal) => pmEvent('idle-proposal', `agent slots are idle and ${name(product)} has no planned work. Scout ${scout} read it and proposes this next roadmap item. Nobody needs to be asked: add it now as an item with its tasks (studio_roadmap), with the scout's acceptance criteria, in the order it gives, so the first task starts straight away:\n${proposal}`, scout, product),
+    rank: idleRank,
     ...deps,
   });
 }

@@ -155,17 +155,77 @@ test('idle slots with nothing to start: a scout per idle product, then ONE quest
   assert.equal(asked.length, 1);
   // Nothing idle: nothing asked.
   assert.equal(pace.idleWatch({ free: 2, started: 0 }, deps([]), t1 + 4 * 3600_000), 'nothing idle');
-  // Where the PM answers it itself (walk-away in J's own Studio), the same products are scouted again hours later, not
-  // a week later: the roadmap that ran dry again after one fill stayed dry (2026-11-11).
-  const self = { ...d, selfFills: () => true };
-  assert.equal(pace.idleWatch({ free: 2, started: 0 }, self, t1 + 3 * 3600_000), 'already asked', 'not straight away');
-  for (const [id, s] of scouts) scouts.set(id, { ...s, status: 'done' });
-  assert.equal(pace.idleWatch({ free: 2, started: 0 }, self, t1 + 5 * 3600_000), 'scouting', 'scouted again');
-  for (let i = 1; i <= 3 && asked.length < 2; i++) {
-    for (const [id, s] of scouts) if (s.status === 'running') scouts.set(id, { ...s, status: 'done', report: '## Proposed roadmap item\n- Title: More' });
-    pace.idleWatch({ free: 2, started: 0 }, self, t1 + 5 * 3600_000 + i * 60_000);
-  }
-  assert.equal(asked.length, 2, 'and asked (answered by the PM) once the scouts are in');
+});
+
+test("self-fill (J's own Studio, walk-away): with 17 idle products a task is planned from the FIRST scout's report, and a product is scouted again once idle again", async () => {
+  const now0 = Date.now() + 10 * 86_400_000; // far from the tests above: their idle state is long gone
+  pace.idleWatch({ free: 0, started: 1 }, { idleProducts: () => [], startScout: () => ({ id: 'x' }), getScout: () => null, askJ: () => ({ id: 'q' }), log: () => {} }, now0); // clears the earlier state
+  const products = Array.from({ length: 17 }, (_, i) => `sf${String(i).padStart(2, '0')}`);
+  const scouts = new Map<string, { product: string; status: string; report: string | null; detail: string | null }>();
+  const planned: { product: string; scout: string; proposal: string }[] = [];
+  const asked: unknown[] = [];
+  let n = 0;
+  let idle = [...products];
+  const ranked: string[] = [];
+  const deps = {
+    idleProducts: () => idle,
+    startScout: (product: string) => {
+      if ([...scouts.values()].filter((s) => s.status === 'running').length >= 2) throw new Error('Two scouts are already running');
+      const id = `x_sf${++n}`;
+      scouts.set(id, { product, status: 'running', report: null, detail: 'reading' });
+      ranked.push(product);
+      return { id };
+    },
+    getScout: (id: string) => scouts.get(id) ?? null,
+    askJ: (...a: unknown[]) => { asked.push(a); return { id: 'q' }; },
+    log: () => {},
+    selfFills: () => true,
+    // The rank is the products' order backwards: the last one matters most.
+    rank: (p: string) => products.indexOf(p),
+    // What the PM does with it: the item and its tasks go on the roadmap.
+    addProposal: (product: string, scout: string, proposal: string) => {
+      planned.push({ product, scout, proposal });
+      const it = rm.addItem({ product: 'pcbusy', title: `Next for ${product}`, status: 'planned' });
+      rm.addTask({ item: it.id, request: proposal });
+    },
+  };
+  const t0 = now0 + 1;
+  assert.equal(pace.idleWatch({ free: 6, started: 0 }, deps, t0), 'waiting');
+  // Self-fill doesn't wait the half hour: a few minutes of idle slots is enough.
+  const t1 = t0 + 5 * 60_000;
+  assert.equal(pace.idleWatch({ free: 6, started: 0 }, deps, t1), 'scouting');
+  assert.deepEqual(ranked, ['sf16', 'sf15'], 'the likeliest products first, two at a time');
+  // Only the first scout reports: its proposal is planned at once, without the other 16.
+  scouts.set('x_sf1', { ...scouts.get('x_sf1')!, status: 'done', report: '## What\'s there now\nstuff\n## Proposed roadmap item\n- Title: More levels\n## Questions for J\nnone' });
+  assert.equal(pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 60_000), 'scouting');
+  assert.equal(planned.length, 1, 'a task is planned from the first report');
+  assert.equal(planned[0].product, 'sf16');
+  assert.match(planned[0].proposal, /Title: More levels/);
+  assert.doesNotMatch(planned[0].proposal, /Questions for J/);
+  assert.equal(ranked.length, 3, "its slot goes to the next product's scout");
+  assert.equal(asked.length, 0, 'nobody is asked');
+  // Its product has planned work, so it isn't idle; later it is idle again and scouted again, no 4 h or 24 h gate.
+  idle = idle.filter((p) => p !== 'sf16');
+  pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 2 * 60_000);
+  idle = [...idle, 'sf16'];
+  for (const [id, s] of scouts) if (s.status === 'running') scouts.set(id, { ...s, status: 'done', report: '## Proposed roadmap item\n- Title: x' });
+  pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 3 * 60_000);
+  assert.ok(ranked.filter((p) => p === 'sf16').length >= 2, 'the same product is scouted again as soon as it is idle again');
+  assert.equal(asked.length, 0);
+  // A scout with nothing to say isn't started again in a loop: only once the slots have been busy.
+  for (const [id, s] of scouts) if (s.status === 'running') scouts.set(id, { ...s, status: 'done', report: null });
+  idle = ['sf00'];
+  pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 4 * 60_000);
+  assert.equal(ranked.at(-1), 'sf00');
+  for (const [id, s] of scouts) if (s.status === 'running') scouts.set(id, { ...s, status: 'failed', report: null, detail: 'no report' });
+  const count = ranked.length;
+  pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 5 * 60_000);
+  pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 6 * 60_000);
+  assert.equal(ranked.length, count, 'no loop of scouts that found nothing');
+  pace.idleWatch({ free: 6, started: 1 }, deps, t1 + 7 * 60_000); // the slots were busy
+  pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 8 * 60_000);
+  pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 14 * 60_000);
+  assert.equal(ranked.length, count + 1, 'and again after the slots have been busy');
 });
 
 test("the idle products are those with no planned or running work; the idle question is J's alone to answer", async () => {

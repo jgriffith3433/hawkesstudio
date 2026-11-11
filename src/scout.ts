@@ -383,7 +383,8 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     ? `Scout ${id} reported on "${done.question}" (${done.product}):\n\n${done.report}\n\nTurn this into a proposal for J: the roadmap item and tasks with acceptance criteria, order, size and rough cost. Add them (studio_roadmap) only after J says yes.`
     : done.status === 'cancelled' ? `Scout ${id} on "${done.question}" (${done.product}) was ${done.detail}. It is not a failure; re-run it (studio_cancel { kind: "scout", id: "${id}", resume: true }, a new scout) or ask a follow-up (studio_scout { id, message }) if it's still wanted.${done.report ? `\n\nWhat it had:\n${done.report}` : ''}`
     : `Scout ${id} on "${done.question}" (${done.product}) failed: ${done.detail}`;
-  if (opts.quiet) return;
+  // A scout the PM reads (idle slots, rescues): its report is an event, so the PM looks now instead of at its next tick.
+  if (opts.quiet) { void import('./pm.ts').then((m) => m.kick(0)).catch(() => {}); return; }
   const talk: any = await import('./talk.ts');
   if (done.origin && typeof talk.studioSays === 'function' && talk.studioSays(done.origin, text)) return;
   talk.postNotice(`Scout: ${done.question.slice(0, 60)}`, text);
