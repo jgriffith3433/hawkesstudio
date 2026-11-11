@@ -1,5 +1,5 @@
-// The plays that already run judge merged tasks' criteria in the same review (acceptance.ts sweepFor): the daily run's
-// plays of beta (phone criteria on its phone play) and a bare beta play (the one before going live). Driven through
+// The one play that still runs, a milestone's play of its build (play-policy.ts), judges merged tasks' criteria in the
+// same review (acceptance.ts sweepFor). The daily run and a beta run no milestone started play nothing. Driven through
 // pipeline.ts's real play and review with Hawkes Gen standing in: no new play or review is asked of Gen for them.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -78,35 +78,36 @@ const run = (kind: string) => {
   return id;
 };
 
-test("the daily run's plays of beta judge merged tasks' criteria (the phone one on the phone play); live plays don't", async () => {
+test("the daily run plays nothing now (play-policy.ts, J 2026-11-11): no GPU play, no review", async () => {
   const r = run('daily');
   const before = jobs.filter((j) => j.tool === 'playtest.run').length;
   await P.runProduct(r, getProduct('tvplay'), { noChecks: true } as any);
-  assert.equal(jobs.filter((j) => j.tool === 'playtest.run').length - before, getProduct('tvplay').playtests.length, 'its own plays, nothing more');
-  const reviews = reviewsOf(r);
-  const desktop = reviews.find((x) => x.name === 'smoke@local')!;
-  const phone = reviews.find((x) => x.name === 'smoke@local:phone')!;
-  const live = reviews.find((x) => x.name === 'smoke@live')!;
-  assert.deepEqual(desktop.data.criteria.map((c: any) => c.criterion), [crit[0]]);
-  assert.deepEqual(phone.data.criteria.map((c: any) => [c.criterion, c.met]), [[crit[1], 'yes']]);
-  assert.deepEqual(desktop.data.sweep, [task.id]);
-  assert.equal(live.data.criteria, undefined, 'live is not beta');
-  // The review prompt carried them (one review per play, the criteria in it).
-  const sent = jobs.filter((j) => j.tool === 'playtest.review').map((j) => j.params.criteria ?? null);
-  assert.ok(sent.some((k) => k?.[0] === crit[0]) && sent.some((k) => k?.[0] === crit[1]));
+  assert.equal(jobs.filter((j) => j.tool === 'playtest.run').length - before, 0, 'no play outside a milestone');
+  assert.equal(reviewsOf(r).length, 0);
 });
 
-test('the play before going live (a bare beta play) judges them too; a task check of its own does not sweep', async () => {
+test('a beta run nobody started for a milestone plays nothing, even asked to (play-policy.ts)', async () => {
+  const before = jobs.filter((j) => j.tool === 'playtest.run').length;
+  const r = P.startBeta('tvplay', { focus: 'Checking after a merge', playtest: true, reverify: true });
+  await r.done;
+  assert.equal(jobs.filter((j) => j.tool === 'playtest.run').length - before, 0);
+  const steps = db.prepare(`SELECT kind, status, detail FROM steps WHERE run = ? AND kind = 'playtest'`).all(r.id) as any[];
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].status, 'skipped');
+  assert.match(steps[0].detail, /once on each milestone's build/);
+});
+
+test("the milestone's play judges merged tasks' criteria; a task check of its own does not sweep", async () => {
   const before = jobs.filter((j) => j.tool === 'playtest.review').length;
-  const r = P.startBeta('tvplay', { focus: 'Before go-live: playing beta abc1234 once', playtest: true, reverify: true });
+  const r = P.startBeta('tvplay', { focus: 'Milestone "Shop": play its build once', playtest: true, play: 'milestone', cause: 'milestone', reverify: true });
   await r.done;
   const reviews = reviewsOf(r.id);
   assert.equal(reviews.length, 1, 'its one play');
   assert.deepEqual(reviews[0].data.criteria.map((c: any) => c.criterion), crit, 'no phone play in a beta run: both on its play');
   assert.deepEqual(reviews[0].data.sweep, [task.id]);
   assert.equal(jobs.filter((j) => j.tool === 'playtest.review').length - before, 1);
-  // A beta run checking a task's own criteria judges only those.
-  const own = P.startBeta('tvplay', { focus: 'Checking a task', criteria: ['Its own criterion'], playtest: true });
+  // A milestone run checking a task's own criteria judges only those.
+  const own = P.startBeta('tvplay', { focus: 'Checking a task', criteria: ['Its own criterion'], playtest: true, play: 'milestone' });
   await own.done;
   const [rev] = reviewsOf(own.id);
   assert.deepEqual(rev.data.criteria.map((c: any) => c.criterion), ['Its own criterion']);

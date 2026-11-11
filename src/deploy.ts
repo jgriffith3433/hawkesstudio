@@ -8,7 +8,7 @@
 //                        when beta moved since it was played, or main has commits beta lacks (mergeMain() first).
 //                        Unity: the beta website copy (the website's beta, its page changes, plus the beta build's
 //                        Game/v<n>) is committed and fast-forwards the website repo's main (and its beta follows), and the
-//                        source repo's main is fast-forwarded to beta. Studio then playtests live.
+//                        source repo's main is fast-forwarded to beta.
 //   rollbackPlan / rollback(product, { confirm: "ROLLBACK <product>" })
 //                        puts main back to what was live before the last go live: a new commit with that commit's
 //                        files (never a force push). Beta keeps its commits: fix forward there.
@@ -17,11 +17,9 @@
 // Only J gives the confirmations; agents (and Talk) show the plan and wait for his exact words.
 
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { critical } from './drain.ts';
 import { getProduct, StudioError, managedElsewhere, managedNote, type Product } from './config.ts';
 import { git } from './local.ts';
-import { startPartial } from './pipeline.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
 import { noRuntimeChange } from './playplan.ts';
@@ -557,7 +555,7 @@ export function publisherOf(p: Product) {
   if (firebaseOf(p)) return { box: true as const, says: 'Studio deploys it to Firebase (hosting and functions) from its own cloud build, at', done: 'Studio deploys it to Firebase from its own cloud build within about 10 minutes (a build run shows it)' };
   if (p.deploy?.via === 'firebase') return { box: true as const, says: 'GitHub Actions deploys it to Firebase (hosting and functions)', done: 'GitHub Actions deploys it to Firebase within about 10 minutes' };
   // A customer's project is hosted wherever they host it (GitHub Pages, Netlify, Vercel, Cloudflare, a server): its host
-  // deploys its live branch, and Studio checks the live site once the host reports the commit (verifyLive).
+  // deploys its live branch (Studio doesn't play the live site after: play-policy.ts).
   if (p.deploy?.via !== 'ec2' && !p.deploy && customerStudio()) return { box: false as const, says: 'its host (GitHub Pages, Netlify, Vercel, Cloudflare or its own server) deploys it to', done: 'its host deploys it within a few minutes' };
   if (p.deploy?.via !== 'ec2') return { box: false as const, says: 'GitHub Pages publishes', done: 'GitHub Pages publishes within a few minutes' };
   const box = p.deploy.box ?? 'its own server';
@@ -675,12 +673,12 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     // Each repo a build went into is that project's go live too (its own rollback puts it back).
     for (const t of r.targets) insert.run(newId('d'), t.project, 'deploy', t.slug, t.before, t.after, t.after, r.slug, null, plan.beta!.sha, String(t.version), by, `build ${t.build} ${t.version} of ${p.name} (${plan.beta!.short})`, Date.now());
     await deployMain(p, after, origin).catch((e: any) => opLog(`couldn't start the Firebase deploy of ${MAIN}: ${String(e?.message ?? e).slice(0, 300)}`));
-    if (after !== r.before && p.live) void verifyLive(p.id, after, `Just went live (${BETA} ${plan.beta!.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
+    // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
     for (const t of r.targets) {
       const tp = (() => { try { return getProduct(t.project); } catch { return null; } })();
-      if (tp?.live) void verifyLive(tp.id, t.after, `Just went live: build ${t.build} ${t.version} of ${p.name} (${plan.beta!.short})`, origin);
+      // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
     }
-    return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, ciPassed, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site where there is one. If it went wrong: the rollback plan.` };
+    return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, ciPassed, note: `${publisherOf(p).done}; its milestone's play already played this build. If it went wrong: the rollback plan.` };
   }
   const { source, site, unity } = repoDirs(p);
   // A Unity game on Cloud Run: both mains move through GitHub's API (deploy-cloud.ts), fast-forward only.
@@ -690,8 +688,8 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, p.id, 'deploy', p.site, r.before, r.after, plan.beta!.sha, p.repo, r.sourceBefore, r.sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}${plan.siteCommits.length ? ` · website ${plan.siteCommits.length} commit(s): ${plan.siteCommits.slice(0, 8).map((c) => c!.title).join('; ')}` : ''}`.slice(0, 1000), Date.now());
-    if (r.after !== r.before) void verifyLive(p.id, r.after, `Just went live (${BETA} ${plan.beta!.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
-    return { ok: true, product: p.id, deploy: id, live: p.live, main: r.after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.` };
+    // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
+    return { ok: true, product: p.id, deploy: id, live: p.live, main: r.after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, note: `${publisherOf(p).done}; its milestone's play already played this build. If it went wrong: the rollback plan.` };
   }
   const beta = plan.beta!;
   const log: string[] = [];
@@ -774,9 +772,9 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, p.id, 'deploy', p.site, before, after, plan.played?.sha ?? beta.sha, unity ? p.repo : null, unity ? plan.main?.sha ?? null : null, sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}${plan.siteCommits.length ? ` · website ${plan.siteCommits.length} commit(s): ${plan.siteCommits.slice(0, 8).map((c) => c!.title).join('; ')}` : ''}`.slice(0, 1000), Date.now());
   await fetchOrigin(site);
-  if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
+  // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
   const rel = release && { version: release.version, title: release.title, notes: release.notes, build: release.build };
-  return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, release: rel, log, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.` };
+  return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, release: rel, log, note: `${publisherOf(p).done}; its milestone's play already played this build. If it went wrong: the rollback plan.` };
 }
 
 /** The go-live plan's players line: the live build's numbers from Hawkes Gen (builds, last 30 days), or null within 5 s. */
@@ -902,7 +900,7 @@ async function rollbackNow(productId: string, { confirm, by = 'J', origin, io }:
       db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(tid, t.product, 'rollback', t.repo, tr?.before ?? t.after, tr?.after ?? t.before, by, `with ${p.name}'s rollback, undoing ${t.id}`, Date.now());
       db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(tid, t.id);
       const tp = (() => { try { return getProduct(t.product); } catch { return null; } })();
-      if (tr && tp?.live) void verifyLive(tp.id, tr.after, `Just rolled back the build of ${p.name} (undoing ${t.id}). Check the live site works.`, origin);
+      // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
     }
     if (d.before === plan.main?.sha) {
       db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run('targets-only', d.id);
@@ -914,8 +912,8 @@ async function rollbackNow(productId: string, { confirm, by = 'J', origin, io }:
       .run(id, p.id, 'rollback', viaGitHub, r.before, r.after, by, `to ${d.before!.slice(0, 7)}, undoing ${d.id}`, Date.now());
     db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(id, d.id);
     await deployMain(p, r.after, origin).catch((e: any) => opLog(`couldn't start the Firebase deploy of the rollback: ${String(e?.message ?? e).slice(0, 300)}`));
-    if (p.live) void verifyLive(p.id, r.after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`, origin);
-    return { ok: true, product: p.id, rollback: id, live: p.live, main: r.after.slice(0, 7), to: d.before!.slice(0, 7), note: `${publisherOf(p).done}; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
+    // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
+    return { ok: true, product: p.id, rollback: id, live: p.live, main: r.after.slice(0, 7), to: d.before!.slice(0, 7), note: `${publisherOf(p).done}; check the live site. ${BETA} still has the rolled-back commits: fix forward there.` };
   }
   const { site } = repoDirs(p);
   const d = lastLive(p.id)!;
@@ -931,8 +929,8 @@ async function rollbackNow(productId: string, { confirm, by = 'J', origin, io }:
   db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(id, d.id);
   gitIn(site, ['worktree', 'remove', '--force', wt]);
   await fetchOrigin(site);
-  void verifyLive(p.id, after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`, origin);
-  return { ok: true, product: p.id, rollback: id, live: p.live, main: after.slice(0, 7), to: d.before!.slice(0, 7), note: `${publisherOf(p).done}; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
+  // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
+  return { ok: true, product: p.id, rollback: id, live: p.live, main: after.slice(0, 7), to: d.before!.slice(0, 7), note: `${publisherOf(p).done}; check the live site. ${BETA} still has the rolled-back commits: fix forward there.` };
 }
 
 // ------------------------------------------------------------------- live
@@ -944,88 +942,9 @@ export function repoSlug(site: string) {
   return m ? m[1] : null;
 }
 
-const gh = (args: string[]) => {
-  const r = spawnSync('gh', args, { encoding: 'utf8', windowsHide: true });
-  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
-};
 
 // Waiting never keeps a process alive by itself (the CLI and tests exit; the service runs anyway).
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms).unref());
-
-/** Waits for GitHub to publish a commit (its Pages or Actions runs, through gh when signed in), then playtests live. */
-export async function verifyLive(productId: string, sha: string, focus: string, origin?: string | null) {
-  const p = getProduct(productId);
-  if (!p.live) return;
-  // A project with a GitHub repo has no checkout to read its origin from (a customer's Studio): its repo is known.
-  const slug = githubSlugOf(p) ?? repoSlug(p.site);
-  const end = Date.now() + 15 * 60_000;
-  let published = false;
-  const own = publisherOf(p).box;
-  // A project that says which commit it runs (a web app with its own deploy: Product.versionPath): live answers with
-  // this commit once its CI has deployed it.
-  if (p.versionPath) {
-    const { deployedOf, sameCommit } = await import('./deployed.ts');
-    const until = Date.now() + 30 * 60_000;
-    while (Date.now() < until && !published) {
-      await sleep(20_000);
-      published = sameCommit((await deployedOf(p, 'live'))?.commit, sha);
-    }
-    const t = p.playtests.find((x) => x.where === 'live');
-    startPartial('playtest', p.id, { where: 'live', scenario: t?.scenario, mode: t?.mode, focus: `${focus} Check the live site works and nothing regressed.${published ? '' : ' (Live did not report the new commit within 30 minutes: say so.)'}`, origin });
-    return;
-  }
-  // GitHub's API with the repo's own token (ghtoken.ts: J's for his repos, the GitHub App's for a customer's): Pages has
-  // built this commit, or (sites that publish through a workflow, like Dose Of Destruction's pages.yml) every workflow
-  // run for it finished.
-  const token = slug ? (await (await import('./ghtoken.ts')).repoToken(slug).catch(() => null)) ?? process.env.GITHUB_TOKEN : process.env.GITHUB_TOKEN;
-  if (slug && token) {
-    const api = async (route: string) => {
-      const r = await fetch(`https://api.github.com/repos/${slug}/${route}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20_000) }).catch(() => null);
-      return r?.ok ? r.json() : null;
-    };
-    while (Date.now() < end && !published) {
-      await sleep(20_000);
-      if (own) {
-        // The product's own server: its CI (every workflow but Studio's hook) is done; its box pulls a passing commit
-        // on its own timer (2 minutes), so give it that and a little more before the live playtest.
-        const runs: any = await api(`actions/runs?head_sha=${sha}&event=push`);
-        const ci = (runs?.workflow_runs ?? []).filter((r: any) => !/hawkes-studio/i.test(`${r.name} ${r.path}`));
-        if (ci.length && ci.every((r: any) => r.status === 'completed')) { published = true; await sleep(3 * 60_000); }
-        continue;
-      }
-      const build: any = await api('pages/builds/latest');
-      if (build?.commit === sha && build.status === 'built') published = true;
-      // Hosts that report back on the commit (Netlify, Vercel, Cloudflare Pages, Firebase, Render: a commit status or a
-      // deployment): published once they say so, instead of waiting out the 15 minutes (2026-10-31 review).
-      const status: any = await api(`commits/${sha}/status`);
-      const hosts = (status?.statuses ?? []).filter((x: any) => /netlify|vercel|cloudflare|firebase|render|deploy/i.test(String(x.context ?? '')));
-      if (hosts.length && hosts.every((x: any) => x.state === 'success')) published = true;
-      const deps: any = await api(`deployments?sha=${sha}&per_page=5`);
-      for (const d of (Array.isArray(deps) ? deps : []).filter((x: any) => /prod|live|github-pages/i.test(String(x.environment ?? '')))) {
-        const st: any = await api(`deployments/${d.id}/statuses?per_page=1`);
-        if (Array.isArray(st) && st[0]?.state === 'success') published = true;
-      }
-      const runs: any = await api(`actions/runs?head_sha=${sha}&event=push`);
-      const pagesRuns = (runs?.workflow_runs ?? []).filter((r: any) => /pages/i.test(`${r.name} ${r.path}`));
-      if (pagesRuns.length && pagesRuns.every((r: any) => r.status === 'completed')) published = true;
-    }
-  } else if (slug && gh(['auth', 'status']).ok) {
-    while (Date.now() < end && !published) {
-      await sleep(20_000);
-      const runs = gh(['api', `repos/${slug}/actions/runs?head_sha=${sha}`, '--jq', '[.workflow_runs[] | {status, conclusion}]']);
-      try {
-        const list = JSON.parse(runs.out || '[]') as { status: string; conclusion: string | null }[];
-        if (list.length && list.every((r) => r.status === 'completed')) published = true;
-      } catch {
-        // Not readable yet.
-      }
-    }
-  } else {
-    await sleep((own ? 7 : 4) * 60_000);
-  }
-  const t = p.playtests.find((x) => x.where === 'live');
-  startPartial('playtest', p.id, { where: 'live', scenario: t?.scenario, mode: t?.mode, focus: `${focus} Check the live site works and nothing regressed.`, origin });
-}
 
 
 // ------------------------------------------------------------------- the queue
@@ -1057,7 +976,7 @@ export const MAX_PLAY_ROUNDS = 3;
  * then goes live if the play passed, waits again if beta moved meanwhile (up to MAX_PLAY_ROUNDS plays), or fails with
  * the play's own reason. `play` is for the tests.
  */
-type BetaPlayer = (product: string, short: string, why: string, start?: undefined, cause?: 'person') => Promise<{ started?: string; playing?: string; played?: string; error?: string }>;
+type BetaPlayer = (product: string, short: string, why: string, start?: undefined, cause?: 'person') => Promise<{ started?: string; playing?: string; played?: string; held?: string; error?: string }>;
 /** The tests' stand-in for starting beta's play (golive-policy.ts playBeforeGoLive). */
 export const goLiveHooks: { play?: BetaPlayer } = {};
 
@@ -1069,6 +988,8 @@ export async function waitForBetaPlay(op: Op, product: string, short: string, pl
   // (unitybuild-policy.ts). Studio's own go live (by "Studio ...") waits for the milestone's build like the rest.
   const asked = Boolean(op.by) && !/^Studio\b/.test(String(op.by));
   const r = await go(product, short, `going live was asked for (${op.by ?? 'someone'})`, undefined, asked ? 'person' : undefined);
+  // Studio's own go live doesn't play beta (play-policy.ts): it waits for the milestone's one play, whose run's end wakes it.
+  if (r.held) throw new OpWaits(`beta ${short} goes live after its milestone's play (${r.held}); goes live by itself if it passes`, null);
   if (r.started || r.playing) throw new OpWaits(`waiting for beta's playtest at ${short} (${r.started ? 'started' : 'already playing'}: run ${r.started ?? r.playing}); goes live by itself if it passes`, r.started ?? r.playing ?? null);
   if (r.played) {
     const run = db.prepare('SELECT status, detail FROM runs WHERE id = ?').get(r.played) as any;

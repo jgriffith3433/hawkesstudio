@@ -24,11 +24,9 @@ export function betaPlaytestsOn() {
   }
 }
 /**
- * When beta is playtested on its own (J, 2026-11-10: "Do that", to keeping the daily playtest and the one before go-live
- * and dropping the one on every beta merge). "go-live" (the default): no play follows a merge or a fix; a project on
- * go-live policy auto gets ONE beta playtest of beta's newest commit when that is all that holds it (golive-policy.ts
- * playBeforeGoLive), covering every merge since its last play. "merge": as before, the re-checks after fix merges and the
- * resumed waiting plays run too. Asking for a beta play (the Beta button, Talk, studio_deploy beta) always plays.
+ * Kept for the settings it was saved in. Since J, 2026-11-11 ("Do it during milestones") neither value starts a play:
+ * a beta run plays only when its milestone's check or a person's go live started it (play-policy.ts playsFor). "go-live"
+ * also keeps the PM from asking for re-checks after merges (verdictwork.ts), which would build and play nothing anyway.
  * Settings > Agents (agents.json betaPlayWhen).
  */
 export type BetaPlayWhen = 'go-live' | 'merge';

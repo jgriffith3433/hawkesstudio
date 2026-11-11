@@ -14,20 +14,12 @@ process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
 fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [] }));
 
-const { visibleFiles, unityVisibleFiles, showcaseFor, showcaseSection, withShowcase } = await import('../src/agents.ts');
+const { visibleFiles, unityVisibleFiles, showcaseSection, withShowcase } = await import('../src/agents.ts');
 
 test('visibleFiles keeps what a player sees', () => {
   const files = ['src/game.js', 'index.html', 'assets/hero.glb', 'README.md', 'test/game.test.js', 'docs/plan.md',
     'package.json', 'public/hawkes-feel.js', 'Assets/Scripts/Player.cs', '.github/workflows/ci.yml', 'types.d.ts'];
   assert.deepEqual(visibleFiles(files), ['src/game.js', 'index.html', 'assets/hero.glb', 'Assets/Scripts/Player.cs']);
-});
-
-test('showcaseFor is off for non-games, off mode and infra', () => {
-  const c = { worktree: '/nope', base: 'beta', repo: '/nope', task: 'Make the jump feel better' } as any;
-  assert.equal(showcaseFor(c, { engine: 'static', kind: 'site', repo: 'Site' } as any, 'web'), null);
-  assert.equal(showcaseFor(c, { engine: 'three', repo: 'G' } as any, 'off'), null);
-  assert.equal(showcaseFor({ ...c, infra: true }, { engine: 'three', repo: 'G' } as any, 'all'), null);
-  assert.equal(showcaseFor(c, { engine: 'unity', repo: 'MyGame', site: 'MyGameSite', build: 'x' } as any, 'web'), null);
 });
 
 test('showcaseSection lists shots, sheets and the video', () => {
@@ -64,8 +56,3 @@ test('unityVisibleFiles keeps what a player sees or feels, not pure code or data
     'Assets/Anim/Run.anim', 'Assets/Scripts/PlayerController.cs', 'Assets/Scripts/CameraFollow.cs', 'Assets/UI/HudView.cs', 'Assets/Audio/jump.wav']);
 });
 
-test('a Unity change is not played once the day\'s agent cost reaches the cap', () => {
-  const c = { worktree: '/nope', base: 'beta', repo: 'MyGame', task: 'Smoother camera' } as any;
-  const p = { engine: 'unity', repo: 'MyGame', site: 'MyGameSite', build: 'x' } as any;
-  assert.equal(showcaseFor(c, p, 'all', () => 1e9), null);
-});

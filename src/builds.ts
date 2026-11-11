@@ -591,9 +591,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     out = null;
     release();
     turn?.end();
-    stage = 'playtest';
-    if (movesBeta && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
-    else if (movesBeta && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
+    // A build is not played by itself (play-policy.ts, J 2026-11-11): the milestone's beta run that needed it plays it once.
     // The owner said to keep going live (golive-policy.ts): what just passed goes live by itself.
     if (!o.change && movesBeta) await (await import('./golive-policy.ts')).autoGoLive(p.id, `build ${b.id} ${version}`);
   } catch (e: any) {
@@ -1304,15 +1302,6 @@ async function commitInto(target: Product, at: string, files: import('./sitestor
 
 // ------------------------------------------------------------------ playing it
 
-/** A web build plays where it is beta now (its own site, or the site it is mounted into): the project's own scenario. */
-async function playIt(run: string, built: Product, site: Product) {
-  const { playtestProduct } = await import('./pipeline.ts');
-  const p = site;
-  const t = p.contract ? { scenario: 'smoke', where: 'local' as const } : { mode: 'site' as const, where: 'local' as const };
-  try { await playtestProduct(run, p, t as any, { review: true, mode: 'verify', focus: `the new build of ${built.name}` }); }
-  catch (e: any) { console.warn(`[builds] playtest of ${p.id}: ${e?.message ?? e}`); }
-}
-
 /**
  * A desktop build's playtest job, with the pipeline's limits (playtests.ts runGenJob): the scenario's run time once it
  * starts, PLAYTEST_IDLE_MS without progress is stuck (cancelled, failed "stuck: ..."), and at most 45 min in Gen's queue
@@ -1323,20 +1312,6 @@ async function playIt(run: string, built: Product, site: Product) {
 export async function playDesktopJob(project: string, params: Record<string, unknown>, onUpdate: (job: any) => void = () => {}, { api, pollMs }: { api?: any; pollMs?: number } = {}) {
   const { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } = await import('./playtests.ts');
   return runGenJob('playtest.run', project, params, onUpdate, { runMs: playtestRunMs({ where: 'local' }), queueMs: 45 * 60_000, idleMs: PLAYTEST_IDLE_MS(), priority: 0, share: true, ...(api ? { api } : {}), ...(pollMs ? { pollMs } : {}) });
-}
-
-/** A desktop build plays on Hawkes Gen's playtesters (windows, linux, proton), downloaded from its own address. */
-async function playDesktop(run: string, p: Product, b: BuildSpec, url: string) {
-  const { startStep, updateStep } = await import('./pipeline.ts');
-  const step = startStep(run, p.id, 'playtest', `${b.id}@${b.target}`, 'on a Hawkes Gen playtester');
-  try {
-    const { withPass } = await import('./sitekeys.ts');
-    const job: any = await playDesktopJob(p.id, { build: { url: `${url}${b.target}.zip` }, target: b.target === 'linux' ? 'linux' : 'windows', scenario: p.contract ? 'smoke' : undefined, ...withPass() },
-      (j) => updateStep(step, { job: j.id, detail: j.detail }));
-    updateStep(step, { status: job.status === 'done' ? 'done' : 'failed', detail: job.status === 'done' ? (job.result?.outcome ?? 'played') : String(job.error ?? job.status).slice(0, 300), job: job.id, finished: true });
-  } catch (e: any) {
-    updateStep(step, { status: 'failed', detail: String(e?.message ?? e).slice(0, 300), finished: true });
-  }
 }
 
 // ------------------------------------------------------------------ API
