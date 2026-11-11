@@ -25,6 +25,7 @@ The deadlines are in the database (`waits` table, synced with it), not in a time
 - **Builds** (`buildOutcome`, read by `pm.ts buildOf`): built, failed, unproven, held, cancelled, superseded, waiting, unread. Only `failed` goes back to an agent.
 - **Playtests** (`playOutcome`, read by `pm.ts brokenCheck`): played, stuck, failed, skipped, cancelled, running, unread. A play that checked nothing (stuck, failed, skipped, cancelled) is played again and is never a miss or a try.
 - **Agent passes** (`passState`, read by `agents.ts checkStuck`): moving, waiting-for-room, waiting-to-start, working-elsewhere, hung, orphaned. Only hung and orphaned are taken over.
+- **A pass that made no commit** (`noCommitOutcome`, read by `agents.ts sourceLost`): already-done, source-missing, source-unreadable, no-commit. "Source missing" is judged only for a pass that ran in Studio's own worktree. A pass that ran in a Cloud Run job (`phase.job`: its recorded mode, or the `[job]` lines it printed) worked in the job's own workspace, which its preflight already checked, so Studio's worktree (remade light after a restart) is never probed for it: the agent's own words decide, and "already done" reads as already done.
 
 ## What decides a wait point
 

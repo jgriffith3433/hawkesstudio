@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import * as O from '../src/outcomes.ts';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-source-'));
 process.env.STUDIO_DATA = path.join(tmp, 'data');
@@ -137,6 +138,21 @@ test('no commit + the source unreadable or missing is Studio\'s failure, not the
   assert.equal(A.sourceLost(c, 'The change is already done.'), null);
   assert.equal(A.sourceLost({ ...c, infra: true }, 'could not read Username'), null, 'Studio/Gen changes are not Unity repos');
   assert.ok(!I.isInfraText('the agent made no commit'));
+});
+
+test('a Cloud Run pass with a sparse server-side worktree and an agent saying "already done" ends already done, not source missing', () => {
+  const { wt } = lightWorktree('job');
+  const c = { worktree: wt, product: 'nope', infra: false } as any;
+  const said = 'The task is already done: the change is on beta, nothing to do.';
+  // Studio's remade worktree fails the probe, but the pass never worked in it.
+  assert.ok(A.sourceLost(c, 'I made no changes.'), 'a pass in Studio\'s own worktree still reads the probe');
+  assert.equal(A.sourceLost(c, said, true), null);
+  assert.equal(O.noCommitOutcome({ ranInJob: true, worktreeProbeOk: false, saidUnreadable: false, saidAlreadyDone: A.alreadyDone(said) }), 'already-done');
+  assert.ok(A.ranInCloudJob('[job] timing job_started=1\n[job] workspace x at abc1234 (beta)'));
+  assert.ok(!A.ranInCloudJob('', undefined));
+  // A job's agent that says it couldn't read the repo is still unreadable.
+  assert.match(A.sourceLost(c, "could not read Username for 'https://github.com'", true)!, /^source unreadable/);
+  for (const o of O.NO_COMMIT_OUTCOMES) assert.ok(o);
 });
 
 // ------------------------------------------------------------ a Unity project nested below the repo root (yoobaland)
