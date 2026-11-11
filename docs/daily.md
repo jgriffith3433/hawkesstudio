@@ -40,9 +40,9 @@ Talk tab → "Phone notifications" shows it, with a test button. J subscribes to
 
 An uncapped reviewer with no memory finds new polish forever. So (Hawkes Gen `playtest.review` v3, Studio
 `src/review.ts` and `src/backlog.ts`):
-- **Caps.** At most `STUDIO_REVIEW_MAX` (default 5) new findings per review, worst first. Polish and ideas only when
-  there is no blocker or bug. "Nothing new" is a valid answer; a "ship" verdict comes with at most 2 findings and never
-  a blocker. Gen enforces this on the answer (`settleReview`), not only in the prompt.
+- **Caps.** At most `STUDIO_REVIEW_MAX` (default 10) new findings per review, worst first. Polish and ideas stay
+  beside bugs (the critic's scores turn into tasks too: `pm.ts workFromCritic`). "Nothing new" is a valid answer; a
+  "ship" verdict is no longer cut to 2 findings, and never carries a blocker. Gen enforces this on the answer (`settleReview`), not only in the prompt.
 - **Known findings in, new ones out.** Each review gets the product's open, fixing, idea and won't-fix findings (ids and
   titles) and reports only problems not on that list. It says by id which known ones look fixed (an open finding or idea
   of the same scenario is then marked fixed with a note; if it's reported again later it comes back) or are still

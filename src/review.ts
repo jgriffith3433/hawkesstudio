@@ -1,5 +1,5 @@
 // How Studio asks Hawkes Gen's playtest.review, so reviews converge instead of refilling the backlog every run:
-// - a mode per run kind: the daily review is "full" (capped at STUDIO_REVIEW_MAX findings, default 5); beta runs and
+// - a mode per run kind: the daily review is "full" (capped at STUDIO_REVIEW_MAX findings, default 10); beta runs and
 //   agent verifications are "verify" (did the change work, did anything regress); live checks and the daily live
 //   desktop runs are "regression" (only what got worse, and blockers). Outside "full" only regressions and blockers
 //   reach the backlog (backlog.ts absorb).
@@ -19,7 +19,7 @@ import { rubricReviewText, effectiveBar } from './quality.ts';
 /** Reviews run on Sonnet: cents each. */
 export const reviewModel = () => process.env.STUDIO_REVIEW_MODEL ?? 'claude-sonnet-5-5';
 /** At most this many new findings per review. */
-export const reviewMax = () => Math.max(0, Number(process.env.STUDIO_REVIEW_MAX ?? 5) || 5);
+export const reviewMax = () => Math.max(0, Number(process.env.STUDIO_REVIEW_MAX ?? 10) || 10);
 
 export const barHash = (bar?: string) => (bar?.trim() ? crypto.createHash('sha1').update(bar.trim()).digest('hex').slice(0, 12) : null);
 

@@ -97,13 +97,13 @@ Fill "phone" with scores for these, and use area "mobile" for these findings.`;
 type Known = { id: string; title: string; severity?: string; status?: string };
 
 /** Gen's settleReview: findings worst first, mode and caps enforced, "known" only for ids given. */
-export function settleReview(review: any, { mode = 'full', maxFindings = 5, known = [] as Known[] } = {}) {
+export function settleReview(review: any, { mode = 'full', maxFindings = 10, known = [] as Known[] } = {}) {
   const all: any[] = (Array.isArray(review.findings) ? review.findings : []).filter((f: any) => f?.title);
   let list = [...all].sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
   if (mode !== 'full') list = list.filter((f) => f.severity === 'blocker' || f.regression === true);
-  if (list.some((f) => f.severity === 'blocker' || f.severity === 'bug')) list = list.filter((f) => f.severity === 'blocker' || f.severity === 'bug');
   if (review.verdict === 'ship' && list.some((f) => f.severity === 'blocker')) review.verdict = 'fix-first';
-  const cap = Math.max(0, Math.min(maxFindings, review.verdict === 'ship' ? 2 : maxFindings));
+  // Polish and ideas stay beside bugs (worst first), and a ship verdict is no reason to cut: only the cap trims.
+  const cap = Math.max(0, maxFindings);
   list = list.slice(0, cap);
   review.trimmed = all.length - list.length;
   review.findings = list;
@@ -159,7 +159,7 @@ export async function reviewViaClaudeCode(product: string, p: any, failedJob?: s
     };
     const known: Known[] = (Array.isArray(p.known) ? p.known : []).filter((k: any) => k?.id && k?.title).slice(0, 200);
     const mode = MODE_RULES[p.mode] ? p.mode : 'full';
-    const maxFindings = Number.isFinite(Number(p.maxFindings)) ? Number(p.maxFindings) : 5;
+    const maxFindings = Number.isFinite(Number(p.maxFindings)) ? Number(p.maxFindings) : 10;
     const criteria: string[] = (Array.isArray(p.criteria) ? p.criteria : []).map((c: any) => String(c ?? '').trim()).filter(Boolean).slice(0, 20);
     const prompt = [
       p.product ? `PRODUCT\n${p.product}` : '',

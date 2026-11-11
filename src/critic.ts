@@ -14,14 +14,12 @@ import { askClaude } from './llm.ts';
 import { parseAgentFile, PLUGIN_DIR } from './roles.ts';
 import { isGame } from './quality.ts';
 import { worldBibleOf } from './fun-review.ts';
-import { paths, getProduct, type Product } from './config.ts';
+import { paths, getProduct, CRITIC_DIMENSIONS, targetFor, releaseFloorOf, type Product } from './config.ts';
 import { db, rowToStep, parse } from './db.ts';
 import { knownScenarios } from './scenarios.ts';
 import { latestFtue, ftueLines } from './ftue.ts';
 
-export const DIMENSIONS = [
-  'fun', 'feel', 'clarity', 'first five minutes', 'menus and UI', 'sound', 'art cohesion', 'story through play', 'phone', 'reasons to come back',
-] as const;
+export const DIMENSIONS = CRITIC_DIMENSIONS;
 export type Dimension = (typeof DIMENSIONS)[number];
 /** One game gets one critic run per this long (a milestone beta run is the exception). */
 export const CRITIC_EVERY_MS = 7 * 86_400_000;
@@ -293,6 +291,8 @@ export async function afterRun(run: string, deps: { ask?: typeof askClaude } = {
       const mean = c.scores.length ? Math.round((c.scores.reduce((n, x) => n + (x.score ?? 0), 0) / c.scores.length) * 10) / 10 : null;
       updateStep(s, { status: 'done', detail: c.verdict === 'judged' ? `critic: ${mean}/10 on ${c.scenario ?? 'the run'}` : `unjudged: ${c.summary}`, data: c, finished: true });
       out.push(s);
+      // The same day, every dimension under its target becomes one planned task with the evidence (pm.ts workFromCritic).
+      try { (await import('./pm.ts')).workFromCritic(id, c, run); } catch (e: any) { console.warn(`[studio] critic work for ${id}: ${e?.message ?? e}`); }
     }
     if (out.length) { const { writeReport } = await import('./report.ts'); writeReport(run); }
     return out;
@@ -300,4 +300,24 @@ export async function afterRun(run: string, deps: { ask?: typeof askClaude } = {
     console.warn(`[studio] critic after ${run}: ${e?.message ?? e}`);
     return [];
   }
+}
+
+/**
+ * The game's latest judged critic review with each score beside its target (products.json `targets`, default 7) and the
+ * release floor (default 6), and the open task for each dimension under target: studio_project status. `lines` are short
+ * (one per dimension, no table) so they read at 390 px.
+ */
+export function criticStatus(p: Product) {
+  const floor = releaseFloorOf(p);
+  const row = db.prepare(`SELECT * FROM steps WHERE product = ? AND kind = 'critic' AND status = 'done' ORDER BY started DESC LIMIT 20`).all(p.id).map(rowToStep).find((s: any) => s.data?.verdict === 'judged');
+  const targets = Object.fromEntries(DIMENSIONS.map((d) => [d, targetFor(p, d)]));
+  if (!row) return { judged: false as const, releaseFloor: floor, targets, scores: [] as any[], lines: [] as string[], note: 'No judged critic review yet; the critic runs when a run of the game ends, at most weekly.' };
+  const d: any = row.data;
+  const scores = (d.scores as CriticScore[]).map((s) => {
+    const target = targetFor(p, s.dimension);
+    const under = (s.score ?? 0) < target;
+    return { dimension: s.dimension, score: s.score, target, under, underReleaseFloor: (s.score ?? 0) < floor, reference: s.reference, fix: s.fix };
+  });
+  const lines = scores.map((s) => `${s.dimension}: ${s.score}/10, target ${s.target}${s.underReleaseFloor ? ' (under the release floor)' : s.under ? ' (under)' : ''}`);
+  return { judged: true as const, at: row.started, scenario: d.scenario ?? null, releaseFloor: floor, targets, scores, lines };
 }
