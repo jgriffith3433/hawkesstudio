@@ -25,7 +25,6 @@ The deadlines are in the database (`waits` table, synced with it), not in a time
 - **Builds** (`buildOutcome`, read by `pm.ts buildOf`): built, failed, unproven, held, cancelled, superseded, waiting, unread. Only `failed` goes back to an agent.
 - **Playtests** (`playOutcome`, read by `pm.ts brokenCheck`): played, stuck, failed, skipped, cancelled, running, unread. A play that checked nothing (stuck, failed, skipped, cancelled) is played again and is never a miss or a try.
 - **Agent passes** (`passState`, read by `agents.ts checkStuck`): moving, waiting-for-room, waiting-to-start, working-elsewhere, hung, orphaned. Only hung and orphaned are taken over.
-- **A pass that made no commit** (`noCommitOutcome`, read by `agents.ts sourceLost`): already-done, source-missing, source-unreadable, no-commit. "Source missing" is judged only for a pass that ran in Studio's own worktree. A pass that ran in a Cloud Run job (`phase.job`: its recorded mode, or the `[job]` lines it printed) worked in the job's own workspace, which its preflight already checked, so Studio's worktree (remade light after a restart) is never probed for it: the agent's own words decide, and "already done" reads as already done.
 
 ## What decides a wait point
 
@@ -158,9 +157,9 @@ A background operation (go live, rollback, merge main into beta) parked on somet
 
 Free agent slots with nothing planned: an empty roadmap.
 
-- **Waits on (event):** A task or item being planned, or a change finishing (the PM's pass).
-- **Deadline:** 30 min of idle slots, then 3 h for the scouts to report (`STUDIO_IDLE_MS`; never more than 3 h)
-- **Fallback:** A scout per idle product, then (walk-away mode, J's Studio) the PM adds the scouts' next items itself; the owner is asked only outside walk-away mode.
+- **Waits on (event):** A task or item being planned, a change finishing (the PM's pass), or a scout reporting (each scout's report wakes the PM).
+- **Deadline:** 30 min of idle slots (5 min where Studio fills the roadmap itself), then 30 min for a scout to report (`STUDIO_IDLE_MS`; never more than 30 min)
+- **Fallback:** A scout per idle product, most likely first. Walk-away mode in J's Studio: each scout's proposal goes to the PM the moment that scout reports and a product is scouted again as soon as it is idle again, nobody is asked. Elsewhere the owner gets one question after the scouts report or their deadline.
 - **Where:** `src/pace.ts` (`idleWatch`)
 - **Test:** `test/wait-points.test.ts`
 - **Kind:** recorded in the `waits` table (durable, armed again at start-up)
