@@ -47,3 +47,14 @@ test('the strip follows the time; the nearest marker is found within reach', () 
   assert.equal(ptNearest(ms, 4.4, 1).t, 5);
   assert.equal(ptNearest(ms, 20, 1), null);
 });
+
+test('report embeds use the viewer, keep no signed link, and markers are 44px touch targets', () => {
+  const dash = (f: string) => fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', f), 'utf8');
+  const app = dash('app.js'), pts = dash('playtests.js'), css = dash('style.css');
+  assert.match(app, /class="pt-embed" data-step=/);
+  assert.match(app, /ptHydrateEmbeds/);
+  assert.match(app, /\/api\/playtests\/\$\{s\.id\}\/video/); // Studio's relay, never a signed Gen link
+  assert.doesNotMatch(pts, /sig=|signFileLinks/);
+  assert.match(css, /\.pt-mark \{[^}]*width: 44px; height: 44px/);
+  assert.doesNotThrow(() => new vm.Script(pts));
+});

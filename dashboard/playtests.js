@@ -201,7 +201,7 @@ async function loadPlaytest() {
 
     ${rec?.job?.log?.length ? `<details><summary class="meta">Runner log</summary><pre>${esc(rec.job.log.join('\n'))}</pre></details>` : ''}`;
   $('#ptBack').onclick = closePlaytest;
-  wireScrub(mk, shots, Math.max(p.seconds ?? 0, ...shots.map((x) => x.t ?? 0), ...(res.events ?? []).map((x) => x.t ?? 0), 1));
+  wireScrub($('#ptDetail'), shots, Math.max(p.seconds ?? 0, ...shots.map((x) => x.t ?? 0), ...(res.events ?? []).map((x) => x.t ?? 0), 1));
   const vs = $('#ptVs');
   if (vs) vs.onchange = () => openPlaytest(pt.open, vs.value || null);
 }
@@ -216,60 +216,78 @@ $('#ptDetail').addEventListener('click', (e) => {
     return;
   }
   const mark = e.target.closest('[data-mseek]');
-  if (mark) return ptSeekTo(Number(mark.dataset.mseek), mark.dataset.mkey);
+  if (mark) return ptSeekTo($('#ptDetail'), Number(mark.dataset.mseek), mark.dataset.mkey);
   const bl = e.target.closest('[data-ptbacklog]');
   if (bl) { $('#blProduct').value = bl.dataset.ptbacklog; show('backlog'); }
 });
 
 // ------------------------------------------------------------ the scrubber with markers (ptmarkers.js has the times)
+// One viewer is a root element (the playtest page, or an inline embed in a report) holding a `video.pt-vid`, a `.pt-scrub`
+// and its finding list, and a `.pt-strip` of screenshots. Everything below works inside one root, so several can share a page.
 
 const SEV_CLASS = { blocker: 'blocker', bug: 'bug' };
 const fmtT = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+const ptState = new WeakMap();
 
 /** The bar under the video: one lane of finding markers, one of event markers (pass / fail), a playhead; and the list of
  *  findings below it. Positions are set by wireScrub once the video's length is known. */
-function scrubHtml({ markers, untimed }) {
+function scrubHtml({ markers, untimed }, main = true) {
+  const id = (n) => (main ? ` id="${n}"` : '');
   const lane = (kind) => markers.filter((m) => m.kind === kind).map((m) => `<button type="button" class="pt-mark ${kind} ${m.kind === 'finding' ? SEV_CLASS[m.sev] ?? 'polish' : m.tone}" data-mseek="${m.t}" data-mkey="${m.key}" data-t="${m.t}" aria-label="${kind === 'finding' ? 'Finding' : 'Event'} at ${fmtT(m.t)}: ${esc(m.label)}" title="${fmtT(m.t)} · ${esc(m.label)}"></button>`).join('');
   const list = [...markers.filter((m) => m.kind === 'finding'), ...untimed].sort((a, b) => (a.t ?? 1e9) - (b.t ?? 1e9));
   const events = markers.filter((m) => m.kind === 'event');
-  return `<div class="pt-scrub" id="ptScrub" aria-label="Playtest timeline">
+  return `<div class="pt-scrub"${id('ptScrub')} aria-label="Playtest timeline">
       <div class="pt-lane" data-lane="finding">${lane('finding')}</div>
-      <div class="pt-track" id="ptTrack" role="slider" aria-label="Video position" tabindex="0"><div class="pt-fill" id="ptFill"></div><div class="pt-head" id="ptHead"></div></div>
+      <div class="pt-track" role="slider" aria-label="Video position" tabindex="0"><div class="pt-fill"></div><div class="pt-head"></div></div>
       <div class="pt-lane" data-lane="event">${lane('event')}</div>
-      <div class="pt-legend2"><span><i class="dot blocker"></i>blocker</span><span><i class="dot bug"></i>bug</span><span><i class="dot polish"></i>polish</span><span><i class="dot pass"></i>event passed</span><span><i class="dot fail"></i>event failed</span><span class="meta" id="ptNow">0:00</span></div>
+      <div class="pt-legend2"><span><i class="dot blocker"></i>blocker</span><span><i class="dot bug"></i>bug</span><span><i class="dot polish"></i>polish</span><span><i class="dot pass"></i>event passed</span><span><i class="dot fail"></i>event failed</span><span class="meta pt-now">0:00</span></div>
     </div>
-    ${list.length || events.length ? `<div class="pt-flist" id="ptFlist">${list.map((m) => `<button type="button" class="pt-fitem${m.t == null ? ' untimed' : ''}" ${m.t == null ? 'disabled' : `data-mseek="${m.t}" data-mkey="${m.key}"`}><span class="pill ${esc(m.sev)}">${esc(m.sev)}</span><span class="pt-ftitle">${esc(m.label)}</span><span class="meta">${m.t == null ? 'no time recorded' : fmtT(m.t)}</span></button>`).join('')}
+    ${list.length || events.length ? `<div class="pt-flist"${id('ptFlist')}>${list.map((m) => `<button type="button" class="pt-fitem${m.t == null ? ' untimed' : ''}" ${m.t == null ? 'disabled' : `data-mseek="${m.t}" data-mkey="${m.key}"`}><span class="pill ${esc(m.sev)}">${esc(m.sev)}</span><span class="pt-ftitle">${esc(m.label)}</span><span class="meta">${m.t == null ? 'no time recorded' : fmtT(m.t)}</span></button>`).join('')}
       ${events.map((m) => `<button type="button" class="pt-fitem ev ${m.tone}" data-mseek="${m.t}" data-mkey="${m.key}"><span class="pill ${m.tone === 'pass' ? 'ship' : 'failed'}">${m.tone}</span><span class="pt-ftitle">${esc(m.label)}</span><span class="meta">${fmtT(m.t)}</span></button>`).join('')}</div>` : ''}`;
 }
 
-let ptDuration = 1;
-let ptShots = [];
+/** The viewer of an inline report embed: the video (through Studio's relay, so no signed link is stored or put in the page),
+ *  the scrubber and the screenshot strip. `d` is a playtest's detail (GET /api/playtests/<step>). */
+function ptEmbedHtml(d) {
+  const rec = d.recording, res = rec?.result ?? {};
+  const shots = rec?.shots ?? [];
+  const mk = ptMarkers({ findings: d.review?.data?.findings ?? [], events: res.events ?? [], shots });
+  return `<video class="pt-vid inline-video" src="${esc(d.playtest.video)}" controls playsinline preload="metadata"></video>${scrubHtml(mk, false)}
+    ${shots.length ? `<div class="pt-strip">${shots.map((s) => `<figure data-seek="${s.t}"><img loading="lazy" src="${file(s.asset)}" alt=""><figcaption>${s.t}s ${esc(s.reason)}</figcaption></figure>`).join('')}</div>` : ''}`;
+}
+const ptEmbedDuration = (d) => Math.max(d.playtest.seconds ?? 0, ...(d.recording?.shots ?? []).map((x) => x.t ?? 0), ...(d.recording?.result?.events ?? []).map((x) => x.t ?? 0), 1);
 
 /** Seek the video to a marker's moment, highlight it (marker and list entry), and bring the strip to that moment. */
-function ptSeekTo(t, key) {
-  const v = $('#ptVideo');
+function ptSeekTo(root, t, key) {
+  const v = root.querySelector('video.pt-vid, #ptVideo');
   if (!v) return;
   v.currentTime = Math.max(0, t - 0.5);
   v.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  ptHighlight(key);
-  ptSync();
+  ptHighlight(root, key);
+  ptSync(root);
 }
-function ptHighlight(key) {
-  document.querySelectorAll('#ptDetail .pt-mark.on, #ptDetail .pt-fitem.on').forEach((n) => n.classList.remove('on'));
+function ptHighlight(root, key) {
+  root.querySelectorAll('.pt-mark.on, .pt-fitem.on').forEach((n) => n.classList.remove('on'));
   if (!key) return;
-  document.querySelectorAll(`#ptDetail [data-mkey="${key}"]`).forEach((n) => n.classList.add('on'));
-  document.querySelector(`#ptFlist [data-mkey="${key}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  root.querySelectorAll(`[data-mkey="${key}"]`).forEach((n) => n.classList.add('on'));
+  root.querySelector(`.pt-flist [data-mkey="${key}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 /** The playhead, the time and the screenshot strip follow the video's current time. */
-function ptSync() {
-  const v = $('#ptVideo');
-  if (!v) return;
-  const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : ptDuration;
+function ptSync(root) {
+  const v = root.querySelector('video.pt-vid, #ptVideo');
+  const st = ptState.get(root);
+  if (!v || !st) return;
+  const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : st.duration;
   const pct = Math.min(100, (100 * v.currentTime) / d);
-  const head = $('#ptHead');
-  if (head) { head.style.left = `${pct}%`; $('#ptFill').style.width = `${pct}%`; $('#ptNow').textContent = `${fmtT(v.currentTime)} / ${fmtT(d)}`; $('#ptTrack').setAttribute('aria-valuenow', Math.round(v.currentTime)); $('#ptTrack').setAttribute('aria-valuemax', Math.round(d)); }
-  const i = ptShotIndexAt(ptShots, v.currentTime + 0.5);
-  const strip = document.querySelector('#ptDetail .pt-strip');
+  const head = root.querySelector('.pt-head');
+  if (head) {
+    const track = root.querySelector('.pt-track');
+    head.style.left = `${pct}%`; root.querySelector('.pt-fill').style.width = `${pct}%`;
+    root.querySelector('.pt-now').textContent = `${fmtT(v.currentTime)} / ${fmtT(d)}`;
+    track.setAttribute('aria-valuenow', Math.round(v.currentTime)); track.setAttribute('aria-valuemax', Math.round(d));
+  }
+  const i = ptShotIndexAt(st.shots, v.currentTime + 0.5);
+  const strip = root.querySelector('.pt-strip');
   if (!strip) return;
   const figs = strip.querySelectorAll('figure');
   if (strip.dataset.now === String(i)) return;
@@ -280,38 +298,65 @@ function ptSync() {
   if (f) { const fr = f.getBoundingClientRect(), sr = strip.getBoundingClientRect(); strip.scrollTo({ left: strip.scrollLeft + fr.left - sr.left - (sr.width - fr.width) / 2, behavior: 'smooth' }); }
 }
 
-function wireScrub(mk, shots, fallbackDuration) {
-  const v = $('#ptVideo');
-  const track = $('#ptTrack');
-  if (!v || !track) return;
-  ptShots = shots;
-  ptDuration = fallbackDuration;
+function wireScrub(root, shots, fallbackDuration) {
+  const v = root.querySelector('video.pt-vid, #ptVideo');
+  const track = root.querySelector('.pt-track');
+  if (!v || !track || ptState.has(root) && ptState.get(root).video === v) return;
+  ptState.set(root, { shots, duration: fallbackDuration, video: v });
   const place = () => {
-    const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : ptDuration;
-    document.querySelectorAll('#ptScrub .pt-mark').forEach((m) => { m.style.left = `${Math.min(100, (100 * Number(m.dataset.t)) / d)}%`; });
-    ptSync();
+    const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : fallbackDuration;
+    root.querySelectorAll('.pt-scrub .pt-mark').forEach((m) => { m.style.left = `${Math.min(100, (100 * Number(m.dataset.t)) / d)}%`; });
+    ptSync(root);
   };
   v.addEventListener('loadedmetadata', place);
   v.addEventListener('durationchange', place);
-  v.addEventListener('timeupdate', ptSync);
-  v.addEventListener('seeked', ptSync);
+  v.addEventListener('timeupdate', () => ptSync(root));
+  v.addEventListener('seeked', () => ptSync(root));
   place();
   // Dragging or tapping the track seeks (pointer events: mouse, pen and touch alike; touch-action none keeps the page still).
   const at = (e) => {
     const r = track.getBoundingClientRect();
-    const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : ptDuration;
+    const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : fallbackDuration;
     v.currentTime = Math.min(d, Math.max(0, ((e.clientX - r.left) / r.width) * d));
-    ptSync();
+    ptSync(root);
   };
-  track.addEventListener('pointerdown', (e) => { track.setPointerCapture?.(e.pointerId); track.dataset.drag = '1'; ptHighlight(null); at(e); });
+  track.addEventListener('pointerdown', (e) => { track.setPointerCapture?.(e.pointerId); track.dataset.drag = '1'; ptHighlight(root, null); at(e); });
   track.addEventListener('pointermove', (e) => { if (track.dataset.drag) at(e); });
   const end = () => { delete track.dataset.drag; };
   track.addEventListener('pointerup', end);
   track.addEventListener('pointercancel', end);
   track.addEventListener('keydown', (e) => {
     const step = e.key === 'ArrowRight' ? 5 : e.key === 'ArrowLeft' ? -5 : 0;
-    if (step) { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime + step); ptSync(); }
+    if (step) { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime + step); ptSync(root); }
   });
+  // Taps on markers, finding rows and screenshots (in a report embed; the playtest page has its own handler below).
+  if (root.classList.contains('pt-embed')) root.addEventListener('click', (e) => {
+    const mark = e.target.closest('[data-mseek]');
+    if (mark) return ptSeekTo(root, Number(mark.dataset.mseek), mark.dataset.mkey);
+    const fig = e.target.closest('[data-seek]');
+    if (fig) { v.currentTime = Math.max(0, Number(fig.dataset.seek) - 0.5); ptSync(root); }
+  });
+}
+
+/** Inline report embeds: each `.pt-embed[data-step]` loads its playtest's markers once, when it comes on screen. */
+function ptHydrateEmbeds(scope = document) {
+  const load = async (el) => {
+    if (el.dataset.loaded) return;
+    el.dataset.loaded = '1';
+    try {
+      const d = await api(`/api/playtests/${el.dataset.step}`);
+      if (!d?.playtest?.video) return;
+      const old = el.querySelector('video.pt-vid');
+      const t = old?.currentTime ?? 0;
+      el.innerHTML = ptEmbedHtml(d);
+      wireScrub(el, d.recording?.shots ?? [], ptEmbedDuration(d));
+      if (t) el.querySelector('video.pt-vid').currentTime = t;
+    } catch { /* the plain video stays */ }
+  };
+  const els = [...scope.querySelectorAll('.pt-embed[data-step]')];
+  if (!('IntersectionObserver' in window)) return els.forEach(load);
+  const io = new IntersectionObserver((entries) => entries.forEach((en) => { if (en.isIntersecting) { io.unobserve(en.target); load(en.target); } }), { rootMargin: '200px' });
+  els.forEach((el) => io.observe(el));
 }
 
 function metricsTable(m) {

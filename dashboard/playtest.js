@@ -8,7 +8,7 @@
     description: 'Home, Roadmap, Backlog, Reports (opens the newest report), Changes (opens one change) and Talk: each waits for its data, with no console errors and nothing wider than the screen.',
   }, {
     id: 'viewer', title: 'Playtest viewer: markers and seeking', seconds: 40, tags: ['viewer'],
-    description: 'Opens the newest playtest that has a video, checks the scrubber carries markers for its findings and events, taps a finding and sees the video jump to its moment with the finding highlighted, and checks the viewer fits the screen (video full width, touch targets 44px high).',
+    description: 'Opens the newest playtest that has a video, checks the scrubber carries markers for its findings and events, taps a finding and sees the video jump to its moment with the finding highlighted, and checks the viewer fits the screen (video full width, markers 44px, one marker per finding and event).',
   }, {
     id: 'rail', title: 'A change\'s progress rail', seconds: 30, tags: ['changes', 'rail', 'phone'],
     description: 'Opens Changes and checks every change\'s rail: all its steps listed with a time and a one-line detail on the ones reached, exactly one current step highlighted while it runs, a failed step in red with its reason, the rail and the page not scrolling sideways (390px included), and then sits idle for a few seconds to see that no request goes to the changes API on a timer (updates arrive only as /api/stream change-step events).',
@@ -235,9 +235,12 @@
     const events = marks.filter((m) => m.classList.contains('event'));
     run.metrics.markers = marks.length;
     event('pass:markers', `${findings.length} finding marks, ${events.length} event marks`);
+    const listed = document.querySelectorAll('#ptFlist [data-mseek]').length;
+    if (listed !== marks.length) fail('Viewer', `${marks.length} markers on the scrubber but ${listed} timed findings and events in the list`);
+    if (document.documentElement.scrollWidth > vw + 1) fail('Viewer', 'the page scrolls sideways');
     for (const m of marks) {
       const r = m.getBoundingClientRect();
-      if (r.width < 24 || r.height < 24) fail('Viewer', 'a marker is smaller than a thumb can hit (24px)');
+      if (r.width < 44 || r.height < 44) fail('Viewer', `a marker is ${Math.round(r.width)}x${Math.round(r.height)}px, smaller than a thumb can hit (44px)`);
     }
     const item = document.querySelector('#ptFlist .pt-fitem[data-mseek]:not(.ev)');
     if (!item) { log('Viewer: this playtest has no timed findings, markers for events only'); event('pass:viewer', 'no findings to tap'); return; }

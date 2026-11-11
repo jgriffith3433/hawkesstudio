@@ -730,7 +730,7 @@ async function loadReport() {
   $('#reportBody').innerHTML = verdictHtml + `<p class="meta">${esc(run.detail ?? '')} · $${(run.cost ?? 0).toFixed(2)}</p>` + sinceHtml + [...byProduct.entries()].map(([pid, steps]) => {
     const reviews = steps.filter((s) => s.kind === 'review' && s.data);
     return `<div class="report-product"><h2>${esc(pid)}</h2>
-      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${slowPill(s)}${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">⤢ bigger</a>` : ''}</div>${s.data?.video ? `<video class="inline-video" controls preload="metadata" playsinline src="${file(s.data.video)}"></video>` : ''}${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
+      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${slowPill(s)}${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">⤢ bigger</a>` : ''}</div>${s.data?.video ? (s.kind === 'playtest' ? `<div class="pt-embed" data-step="${s.id}"><video class="pt-vid inline-video" controls preload="metadata" playsinline src="/api/playtests/${s.id}/video"></video></div>` : `<video class="inline-video" controls preload="metadata" playsinline src="${file(s.data.video)}"></video>`) : ''}${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
       ${steps.filter((s) => s.kind === 'critic' && s.data).map(criticHtml).join('')}
       ${reviews.map((rv) => `<div class="review"><h4>${esc(rv.name)} <span class="pill ${rv.data.verdict}">${esc(rv.data.verdict)}</span></h4>
         <div class="scores">${Object.entries(rv.data.scores ?? {}).map(([k, n]) => `<div class="score"><b>${n}</b><span>${k}</span></div>`).join('')}</div>
@@ -738,6 +738,7 @@ async function loadReport() {
         ${(rv.data.findings ?? []).map(findingHtml).join('')}</div>`).join('')}
     </div>`;
   }).join('');
+  if (typeof ptHydrateEmbeds === 'function') ptHydrateEmbeds($('#reportBody'));
 }
 // The critic's ten scores (src/critic.ts): a list of cards that wraps, never a table, so it reads at 390 px.
 function criticHtml(st) {
