@@ -114,7 +114,7 @@ var q=new URLSearchParams(location.search).get('gerr');if(q){gerr.hidden=false;g
 var cfg={client_id:${JSON.stringify(id)},callback:function(r){done=true;fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{done=false;if(j.waitlist){waiting=false;busy.hidden=true;tap.hidden=false;gerr.hidden=false;gerr.className='ok';gerr.textContent=j.error;}else show(j.error||('HTTP '+x.status));}});}).catch(function(){done=false;show('Could not reach Studio. Try again.');});}};
 if(phone){cfg.ux_mode='redirect';cfg.login_uri=location.origin+'/auth/google';document.cookie='hs_next='+encodeURIComponent(${JSON.stringify(next)})+'; path=/auth/google; max-age=600; SameSite=None'+(location.protocol==='https:'?'; Secure':'');}
 google.accounts.id.initialize(cfg);
-google.accounts.id.renderButton(el,{theme:dark?'filled_black':'outline',size:'large',text:'continue_with',shape:'pill',locale:'en',width:Math.min(400,Math.max(200,Math.round((w||320)/1.1))),click_listener:press});}</script>
+google.accounts.id.renderButton(el,{theme:dark?'filled_black':'outline',size:'large',text:'continue_with',shape:'pill',locale:'en',width:Math.min(400,Math.max(200,Math.round((w||320)/1.1))),click_listener:press});tap.addEventListener('pointerdown',press);}</script>
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
 }
 
@@ -130,7 +130,7 @@ ${error ? `<div class="err">${esc(error)}</div>` : ''}${notice ? `<div class="ok
   }
   return page('Sign in', `<h1>Sign in</h1><p>Hawkes Studio, Gen and the beta sites.</p>
 ${error ? `<div class="err">${esc(error)}</div>` : ''}${notice ? `<div class="ok">${esc(notice)}</div>` : ''}${g}
-<form method="post" action="/auth/signin">
+<form method="post" action="/auth/signin" onsubmit="var b=this.querySelector('button[type=submit]');if(b){b.disabled=true;b.textContent='Signing in…'}">
 <input type="hidden" name="next" value="${esc(next)}">
 <label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(email)}"${email ? '' : ' autofocus'}>
 <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required${email ? ' autofocus' : ''}>
