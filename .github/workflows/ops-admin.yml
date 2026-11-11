@@ -21,6 +21,10 @@
 #   run-disk-quota the same for Cloud Run's ephemeral disk (the quota Google refused a cell's 10 GiB working disk on):
 #                  a quota preference of <value> GiB in <region>. Free (only disk running instances use is billed).
 #                  Studio starts both itself, with apply, when J approves its quota card (src/quota.ts).
+#   clear-stuck-executions  lists the incomplete hawkes-unity-build* and studio-cell-agent* Cloud Run job executions in
+#                  hawkes-staging us-east4 (age in minutes, vCPU). With apply it cancels those older than <older_than>
+#                  minutes (default 90; one still queued with no start time is deleted, like ops-jobs-stop) and prints
+#                  the vCPU that freed. Mirrors Gen's tools/clear-stuck-executions.mjs. On demand only, never scheduled.
 #
 #   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas          (plan)
 #   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas -f apply=true
@@ -30,7 +34,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [gen-actas, secret-create, net-access, assets-bucket, firebase-deployer, run-cpu-quota, run-disk-quota]
+        options: [gen-actas, secret-create, net-access, assets-bucket, firebase-deployer, run-cpu-quota, run-disk-quota, clear-stuck-executions]
       apply:
         description: Run the commands (unticked = plan only)
         type: boolean
@@ -57,6 +61,10 @@ on:
         description: run-cpu-quota vCPU (21 to 400) / run-disk-quota GiB (11 to 2000) wanted in that region
         type: string
         default: '100'
+      older_than:
+        description: clear-stuck-executions, cancel only executions older than this many minutes
+        type: string
+        default: '90'
       studio:
         description: run-cpu-quota / run-disk-quota, the Studio that asked (its address); the run reports back to it
         type: string
@@ -93,6 +101,7 @@ jobs:
           ACCESSOR: ${{ inputs.accessor }}
           REGION: ${{ inputs.region }}
           VALUE: ${{ inputs.value }}
+          OLDER_THAN: ${{ inputs.older_than }}
         run: |
           set -euo pipefail
           sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; echo "$*" >> "$RUNNER_TEMP/said.txt"; echo "$*"; }
@@ -236,6 +245,35 @@ jobs:
               else sum "- $sa doesn't exist: skipped"; fi
             done
             sum "Then rebuild the Firebase project in Studio (e.g. hawkes-games' firebase build)." ;;
+          clear-stuck-executions)
+            # Fixed to hawkes-staging us-east4 (where Studio's cell agents and the Unity builds compete for CPU).
+            p=hawkes-staging; r=us-east4
+            [[ "$OLDER_THAN" =~ ^[0-9]+$ ]] || { sum "- older_than must be a whole number of minutes"; exit 1; }
+            sum "Incomplete executions of hawkes-unity-build* and studio-cell-agent* in $p $r; cancelling those older than $OLDER_THAN min."
+            now=$(date -u +%s); freed=0; found=0; cancelled=0
+            for j in $(gcloud run jobs list --project "$p" --region "$r" --format='value(metadata.name)'); do
+              case "$j" in hawkes-unity-build*|studio-cell-agent*) ;; *) continue;; esac
+              cpu=$(gcloud run jobs describe "$j" --project "$p" --region "$r" --format='value(spec.template.spec.template.spec.containers[0].resources.limits.cpu)')
+              case "$cpu" in *m) cpu=$(awk -v c="${cpu%m}" 'BEGIN { print c / 1000 }');; "") cpu=1;; esac
+              gcloud run jobs executions list --job "$j" --project "$p" --region "$r" --limit 500 --format=json > execs.json 2>/dev/null || echo '[]' > execs.json
+              # name, creation time (epoch s), whether it started, tasks: only executions with no completion time.
+              while IFS=$'\t' read -r e created started tasks; do
+                [ -z "$e" ] && continue
+                found=$((found + 1))
+                age=$(( (now - created) / 60 ))
+                vcpu=$(awk -v c="$cpu" -v t="$tasks" 'BEGIN { print c * t }')
+                if [ "$age" -le "$OLDER_THAN" ]; then sum "- $j/$e: $age min, $vcpu vCPU (kept)"; continue; fi
+                sum "- $j/$e: $age min, $vcpu vCPU (older than $OLDER_THAN min: $([ "$APPLY" = true ] && echo cancel || echo 'would cancel'))"
+                [ "$APPLY" = true ] || continue
+                # Cloud Run cancels only an execution that started; a queued one has to be deleted (as ops-jobs-stop).
+                if gcloud run jobs executions cancel "$e" --project "$p" --region "$r" --quiet --async >/dev/null 2>&1; then ok=1
+                elif [ "$started" = no ] && gcloud run jobs executions delete "$e" --project "$p" --region "$r" --quiet --async >/dev/null 2>&1; then ok=1; sum "    (queued: deleted $e)"
+                else ok=0; sum "    (could not cancel $e)"; fi
+                if [ "$ok" = 1 ]; then cancelled=$((cancelled + 1)); freed=$(awk -v f="$freed" -v v="$vcpu" 'BEGIN { print f + v }'); fi
+              done < <(jq -r '.[] | select(.status.completionTime == null) | [.metadata.name, ((.metadata.creationTimestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)), (if .status.startTime then "yes" else "no" end), (.spec.taskCount // 1)] | @tsv' execs.json)
+            done
+            sum "- $found incomplete execution(s) found"
+            if [ "$APPLY" = true ]; then sum "- cancelled $cancelled; freed vCPU: $freed"; else sum "- dry run: nothing cancelled, freed vCPU: 0"; fi ;;
           run-cpu-quota) quota cpu ;;
           run-disk-quota) quota disk ;;
           esac
