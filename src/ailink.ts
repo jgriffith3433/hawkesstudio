@@ -18,6 +18,7 @@ import path from 'node:path';
 import { DATA, StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
 import { seal, unseal } from './cellkeys.ts';
+import { queueWake } from './queuewake.ts';
 
 export type LinkMethod = { id: 'api-key' | 'subscription' | 'token' | 'signin'; label: string; help: string; routes: Record<string, string> };
 export type Provider = { id: 'claude' | 'cursor' | 'copilot' | 'gemini' | 'antigravity'; name: string; by: string; methods: LinkMethod[] };
@@ -53,6 +54,8 @@ function read(): Store {
 function write(store: Store) {
   fs.mkdirSync(path.dirname(FILE()), { recursive: true, mode: 0o700 });
   fs.writeFileSync(FILE(), JSON.stringify(store), { mode: 0o600 });
+  // A key or a login linked (or removed): work held for "connect your AI first" looks again now.
+  queueWake('an AI provider was linked or unlinked');
 }
 const stored = (id: string) => { const v = read()[id]?.value; try { return v ? unseal(v) : null; } catch { return null; } };
 
