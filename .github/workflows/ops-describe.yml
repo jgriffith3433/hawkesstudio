@@ -40,7 +40,7 @@ jobs:
           gcloud run services list --project "$PROJECT" --format='table(metadata.name,metadata.labels."cloud.googleapis.com/location":label=REGION,spec.template.spec.containers[0].resources.limits.cpu:label=CPU,spec.template.spec.containers[0].resources.limits.memory:label=MEM,spec.template.metadata.annotations."autoscaling.knative.dev/minScale":label=MIN,spec.template.metadata.annotations."autoscaling.knative.dev/maxScale":label=MAX,status.latestReadyRevisionName:label=READY,status.latestCreatedRevisionName:label=CREATED)'
           echo "== jobs"
           gcloud run jobs list --project "$PROJECT" --format='table(metadata.name,metadata.labels."cloud.googleapis.com/location":label=REGION,spec.template.spec.template.spec.containers[0].resources.limits.cpu:label=CPU,spec.template.spec.template.spec.containers[0].resources.limits.memory:label=MEM)'
-          for r in us-east4 us-central1 us-west1; do
+          for r in us-east4 us-east1 us-central1 us-west1; do
             echo "== running job executions in $r"
             gcloud run jobs executions list --project "$PROJECT" --region "$r" --limit 200 --format='value(metadata.name,status.startTime,status.completionTime)' 2>/dev/null | awk -F'\t' '$3=="" {print}' || true
           done
