@@ -4035,9 +4035,21 @@ async function verifiedHead(c: Change) {
 
 /** Conflict passes an agent gets on one conflict before J hears of it (resolveConflicts). */
 export const CONFLICT_PASSES = 2;
-/** An error from approve(): the branch conflicts with its base; `conflict` names the files (the agent resolves them). */
-const conflictError = (c: Change, files: string[]) => Object.assign(new Error(`${c.base} moved and the branch conflicts with it${files.length ? ` in ${files.slice(0, 10).join(', ')}` : ''}`), { conflict: files });
-export const isConflict = (e: unknown): e is Error & { conflict: string[] } => Array.isArray((e as any)?.conflict);
+/**
+ * An error from approve(): the branch conflicts with its base; `conflict` names the files (the agent resolves them).
+ * `uncompared`: GitHub says it conflicts but neither Studio's clone nor GitHub's compare could say where; `conflict` is
+ * then the files the change touches (or none known), and it is still a conflict pass: its agent merges the base on a
+ * full checkout, which names the files itself (2026-11-11, Sick of It PR #328: "could not compare the sides (not a
+ * conflict)" left the change ready and unmerged for good).
+ */
+const conflictError = (c: Change, files: string[], uncompared = false) => Object.assign(new Error(uncompared
+  ? `${c.base} moved and GitHub says the branch conflicts with it; Studio couldn't compare the two sides, so its agent merges ${c.base} on a full checkout${files.length ? ` (the change touches ${files.slice(0, 10).join(', ')})` : ''}`
+  : `${c.base} moved and the branch conflicts with it${files.length ? ` in ${files.slice(0, 10).join(', ')}` : ''}`), { conflict: files, uncompared });
+export const isConflict = (e: unknown): e is Error & { conflict: string[]; uncompared?: boolean } => Array.isArray((e as any)?.conflict);
+/** A conflict error that names nothing to resolve: no shared file, and not an uncompared one (never a conflict pass). */
+const nothingShared = (e: Error & { conflict: string[]; uncompared?: boolean }) => !e.conflict.length && !e.uncompared;
+/** The files a pull request touches (up to 100), [] when GitHub doesn't say. */
+const prFiles = (c: Pick<Change, 'slug' | 'pr'>) => github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => String(f.filename))).catch(() => [] as string[]);
 /** GitHub refusing a merge because of the base (a conflict, "not mergeable", the base modified meanwhile). */
 const MERGE_REFUSED = /not mergeable|merge conflict|base branch was modified|405|409/i;
 
@@ -4085,7 +4097,7 @@ export async function githubConflictFiles(c: Pick<Change, 'slug' | 'base' | 'bra
  * (verify.sha). A conflict only when GitHub refuses with a conflict AND the two sides share at least one file
  * (githubConflictFiles); a refusal over no shared file, or any other trouble, is `failed`: never a conflict pass.
  */
-export async function updateBranchOnGithub(id: string): Promise<{ state: 'current' | 'merged' | 'conflict' | 'failed'; files?: string[]; sha?: string; why?: string }> {
+export async function updateBranchOnGithub(id: string): Promise<{ state: 'current' | 'merged' | 'conflict' | 'failed'; files?: string[]; sha?: string; why?: string; uncompared?: boolean }> {
   const c = getChange(id);
   if (!c || !c.slug || !c.pr) return { state: 'failed', why: 'no pull request' };
   try {
@@ -4100,6 +4112,9 @@ export async function updateBranchOnGithub(id: string): Promise<{ state: 'curren
       if (/conflict|dirty|not mergeable/i.test(msg)) {
         const both = await githubConflictFiles(c);
         if (both && both.length) return { state: 'conflict', files: both };
+        // GitHub can't compare the sides (too many files, its compare failed): GitHub's own merge says it conflicts, so it
+        // is a conflict, for its agent on a full checkout; never "not a conflict", which left nobody to act on it.
+        if (!both) return { state: 'conflict', files: await prFiles(c), uncompared: true };
         return { state: 'failed', why: `GitHub refused to update the branch (${msg.slice(0, 200)}) but the two sides share no file` };
       }
       return { state: 'failed', why: msg.slice(0, 200) };
@@ -4139,7 +4154,7 @@ export function onBaseMoved(repoFolder: string) {
  */
 function conflictHandled(id: string, e: Error & { conflict: string[] }) {
   // No file really conflicts: never a pass, never an Inbox card.
-  if (!e.conflict.length) return Object.assign(new Error(`${e.message} (no shared file: not a conflict pass)`), { conflict: e.conflict });
+  if (nothingShared(e)) return Object.assign(new Error(`${e.message} (no shared file: not a conflict pass)`), { conflict: e.conflict });
   if (resolveConflicts(id, e.conflict)) {
     const c = getChange(id)!;
     return Object.assign(new Error(`${e.message}: its agent is resolving the conflicts (conflict pass ${c.conflicts} of ${CONFLICT_PASSES}, not a try); it merges once they're resolved`), { conflict: e.conflict, resolving: true });
@@ -4177,9 +4192,26 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   const before = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
   if (!current) {
     // A merge writes over ignored files, and .hawkes/ may be tracked on the base: the notes are kept aside and put back.
-    const notes = snapshotNotes(c.worktree);
-    const m = await gitAsync(c.worktree, [...STUDIO_GIT, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
-    const files = m.ok ? [] : (await gitAsync(c.worktree, ['diff', '--name-only', '--diff-filter=U'])).out.split('\n').filter(Boolean);
+    let notes = snapshotNotes(c.worktree);
+    const merge = () => gitAsync(c.worktree, [...STUDIO_GIT, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
+    const unmerged = async () => (await gitAsync(c.worktree, ['diff', '--name-only', '--diff-filter=U'])).out.split('\n').filter(Boolean);
+    let m = await merge();
+    let files = m.ok ? [] : await unmerged();
+    // A light clone that couldn't fetch the other side's file contents while merging (the promisor remote: Sick of It
+    // PR #328, 2026-11-11): Studio fetches exactly what the merge needs itself, with the repo's credentials, and merges
+    // once more. Only a merge that still can't read the sides is "not a conflict" below.
+    if (!m.ok && !files.length && PROMISOR_FETCH_FAILED.test(`${m.err}\n${m.out}`)) {
+      await gitAsync(c.worktree, ['merge', '--abort']);
+      await gitAsync(c.worktree, ['reset', '--hard', before]);
+      restoreNotes(c.worktree, notes);
+      notes = snapshotNotes(c.worktree);
+      const got = await fetchMergeObjects(c.worktree, `origin/${c.base}`);
+      addLog(id, `${c.base} moved: merging origin/${c.base} couldn't fetch file contents from the remote (${lastLines(m)}); ${got.ok ? `Studio fetched the ${got.count} the merge needs and merges again` : `fetching them failed too (${got.why})`}`);
+      if (got.ok) {
+        m = await merge();
+        files = m.ok ? [] : await unmerged();
+      }
+    }
     // Only agents' notes conflict (each change writes its own summary.md, try.md, learned.md): none of them belong in git.
     const notesOnly = !m.ok && files.length > 0 && files.every((f) => f.startsWith(NOTES));
     if (!m.ok && !notesOnly) {
@@ -4189,7 +4221,7 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
       // No unmerged file: git never got as far as comparing (credentials, a blob it couldn't fetch from the promisor
       // remote). That is a failure of the fetch, not a conflict: an agent can't resolve it and a pass must not be spent on it.
       if (!files.length) {
-        const why = `merging origin/${c.base} failed before any file conflicted: ${(m.err || m.out).split('\n').filter(Boolean).slice(-2).join(' | ').slice(0, 300)}`;
+        const why = `merging origin/${c.base} failed before any file conflicted: ${lastLines(m)}`;
         addLog(id, `${c.base} moved: ${why} (not a conflict)`);
         return { state: 'skipped', why };
       }
@@ -4221,6 +4253,30 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   update(id, { verify: { ...(c.verify ?? {}), sha } });
   addLog(id, current ? `pushed ${sha.slice(0, 7)} (${NOTES} out of git)` : `${c.base} moved: merged origin/${c.base} into the branch (no conflicts) and pushed ${sha.slice(0, 7)}`);
   return { state: 'merged', sha };
+}
+
+/** The last lines of a failed git command, for the log. */
+const lastLines = (r: { out: string; err: string }) => (r.err || r.out).split('\n').filter(Boolean).slice(-2).join(' | ').slice(0, 300);
+
+/** A git command that failed because a light clone couldn't fetch objects it lacks (no credentials, the remote refused). */
+export const PROMISOR_FETCH_FAILED = /could not fetch [0-9a-f]{7,64} from promisor remote|promisor remote|could not read (username|password)|terminal prompts disabled|authentication failed|could not read from remote repository/i;
+
+/**
+ * The objects a merge of `ref` into HEAD reads that a light clone (`--filter=blob:none`) doesn't have yet: the three
+ * snapshots' missing file contents (HEAD, `ref` and their merge base; `rev-list --missing=print` lists them without
+ * fetching), fetched from origin in one explicit, credentialed fetch per batch, the way git's own lazy fetch asks for
+ * them. A full clone has none missing: nothing is fetched.
+ */
+export async function fetchMergeObjects(worktree: string, ref: string): Promise<{ ok: boolean; count: number; why?: string }> {
+  const mb = (await gitAsync(worktree, ['merge-base', 'HEAD', ref])).out;
+  const list = await gitAsync(worktree, ['rev-list', '--objects', '--missing=print', '--no-walk', ...(mb ? [mb] : []), ref, 'HEAD']);
+  if (!list.ok) return { ok: false, count: 0, why: lastLines(list) };
+  const missing = [...new Set(list.out.split('\n').filter((l) => l.startsWith('?')).map((l) => l.slice(1).trim()).filter((o) => /^[0-9a-f]{40,64}$/.test(o)))];
+  for (let i = 0; i < missing.length; i += 1000) {
+    const f = await gitAsync(worktree, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--recurse-submodules=no', '--filter=blob:none', 'origin', ...missing.slice(i, i + 1000)]);
+    if (!f.ok) return { ok: false, count: i, why: lastLines(f) };
+  }
+  return { ok: true, count: missing.length };
 }
 
 /** Agents' notes (brief, summary, try, learned, video.json): Studio reads them from the worktree; they never belong in git. */
@@ -4401,7 +4457,7 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     if (up.state === 'skipped') {
       const ub = await updateBranchOnGithub(id);
       if (ub.state === 'conflict') {
-        const e = conflictError(getChange(id)!, ub.files ?? []);
+        const e = conflictError(getChange(id)!, ub.files ?? [], ub.uncompared);
         throw auto ? e : conflictHandled(id, e);
       }
       if (ub.state === 'failed') addLog(id, `${up.why ?? 'not updated here'}; update-branch: ${ub.why} (not a conflict)`);
@@ -4416,7 +4472,7 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
       break;
     } catch (e0: any) {
       let e = e0;
-      const files = () => github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => [] as string[]);
+      const files = () => prFiles(c);
       // GitHub says it conflicts with beta (the branch couldn't be brought up to date here): a conflict like any other.
       // GitHub doesn't name the conflicting files: they are the ones both sides changed (githubConflictFiles); only when
       // GitHub can't compare, the ones the change touches.
@@ -4426,15 +4482,19 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
           addLog(id, `GitHub says the branch conflicts with ${c.base}; both sides changed ${both.slice(0, 10).join(', ')}`);
           e = conflictError(c, both);
         } else {
-          // No shared file (or GitHub can't compare): not a conflict, never a pass or an Inbox card. Bring the branch
-          // current on GitHub and merge once more.
-          addLog(id, `GitHub says the branch conflicts with ${c.base}, but ${both ? 'the two sides changed no file in common' : 'it could not compare the sides'} (not a conflict)`);
+          // No shared file: not a conflict, never a pass or an Inbox card. Bring the branch current on GitHub and merge
+          // once more. GitHub can't compare the sides: the same first, and if GitHub still says it conflicts, it is one
+          // (its agent merges on a full checkout): never left ready and unmerged with nobody to act (Sick of It PR #328).
+          addLog(id, both ? `GitHub says the branch conflicts with ${c.base}, but the two sides changed no file in common (not a conflict)`
+            : `GitHub says the branch conflicts with ${c.base} and couldn't compare the sides: bringing it up to date on GitHub, else its agent merges ${c.base} on a full checkout`);
           if (!retried) {
             retried = true;
             const ub = await updateBranchOnGithub(id);
-            if (ub.state === 'conflict') e = conflictError(c, ub.files ?? []);
+            if (ub.state === 'conflict') e = conflictError(c, ub.files ?? [], ub.uncompared);
             else if (ub.state === 'merged' || ub.state === 'current') { sha = await verifiedHead(getChange(id)!); continue; }
+            else addLog(id, `update-branch: ${ub.why ?? 'failed'}`);
           }
+          if (!isConflict(e) && !both) e = conflictError(c, await files(), true);
         }
       }
       if (isConflict(e)) throw auto ? e : conflictHandled(id, e);
@@ -4513,7 +4573,7 @@ export async function autoMergeBeta(id: string) {
     return merged;
   } catch (e: any) {
     // A conflict with beta: its own agent resolves it (no try, nobody asked); stuck after CONFLICT_PASSES, J decides.
-    if (isConflict(e) && !e.conflict.length) return fail(`${String(e.message).slice(0, 200)} (no shared file: not a conflict pass)`);
+    if (isConflict(e) && nothingShared(e)) return fail(`${String(e.message).slice(0, 200)} (no shared file: not a conflict pass)`);
     if (isConflict(e)) {
       if (resolveConflicts(id, e.conflict)) return null;
       const r = await fail(`it still conflicts with ${BETA} after ${CONFLICT_PASSES} conflict passes by its agent: ${String(e.message).slice(0, 200)}`);
