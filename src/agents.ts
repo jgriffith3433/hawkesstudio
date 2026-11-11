@@ -2833,8 +2833,13 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       for (const n of canon.notes ?? []) addLog(id, `canon note (not blocking: ${n.note}): ${n.entry} ${n.why}`.slice(0, 600));
       if (verify) verify.canon = canon;
     }
-    // A preview J can open: <product>.hawkesgen.ai/c/<id>/
-    const pv = await Promise.resolve().then(() => buildPreview(p.id, { change: id, dir: c.worktree })).catch((e: any) => ({ status: 'failed', detail: e.message }) as any);
+    // A preview J can open: <product>.hawkesgen.ai/c/<id>/. Built only for a change that waits for a person: one that
+    // merges into beta by itself (autoMergeBeta) is on beta's site moments later, so a build of its branch would be one
+    // build per agent run for nothing (J, 2026-11-11: "we aren't building after every single run are we?"). A person can
+    // still ask for one (POST /api/previews/<product> with the change).
+    const waitsForPerson = !agentSettings().autoMergeBeta || Boolean(c.task && isVideoTask(c.task));
+    const pv = waitsForPerson ? await Promise.resolve().then(() => buildPreview(p.id, { change: id, dir: c.worktree })).catch((e: any) => ({ status: 'failed', detail: e.message }) as any) : null;
+    if (!waitsForPerson) addLog(id, 'preview: not built (the change merges into beta by itself; beta\'s site shows it)');
     const preview = pv?.status === 'ready' ? previewUrl(p.id, id) : null;
     if (preview) addLog(id, `preview: ${preview}`);
     const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
@@ -3207,8 +3212,8 @@ export async function verifyChange(c: Change, p: Product, findings: any[], jobs?
     // and goes on to beta's own build on the agent's checks, like a skipped compile check. One Studio task asks for settings.
     fileMissingBuildTask(p);
     return { outcome: 'not played', error: `${plan.why}, so Studio can't build it to play: merged on the agent's checks`, build: null };
-  } else if (plan.how === 'cloud' && !o.asked) {
-    // Nobody asked to play this change: no Unity build of its branch (heldChangeVerify).
+  } else if ((plan.how === 'cloud' || plan.how === 'server') && !o.asked) {
+    // Nobody asked to play this change: no Unity build of its branch (heldChangeVerify), in the cloud or on a build server.
     const why = heldChangeVerify(c, p, phaseOf(c.id)?.compile ?? null);
     if (getChange(c.id)) addLog(c.id, `not played: ${why}`);
     return { outcome: 'not played', error: why, build: null, held: true };

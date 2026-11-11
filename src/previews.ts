@@ -201,14 +201,21 @@ export function buildPreview(productId: string, o: { change?: string; dir?: stri
   }
   if (!subOf(p.id)) throw new StudioError(`${p.name} has no staging site (products.json "previews")`);
   const key = `${p.id}/${o.change ?? 'beta'}`;
+  // The same site already waiting its turn: this ask joins it (it builds the newest commit when it starts), so a burst of
+  // pushes or merges makes one build after the one going, never one each (J, 2026-11-11).
+  const queued = waitingTurn.get(key);
+  if (queued) return queued;
   const prev = readState()[p.id];
   const last = o.change ? prev?.changes?.[o.change] : prev?.beta;
   record(p.id, o.change, { ...(last ?? {}), status: 'building', at: Date.now(), detail: 'queued' });
   active.add(key);
-  const next = (queues.get(p.id) ?? Promise.resolve()).catch(() => {}).then(() => build(p, o)).finally(() => active.delete(key));
+  const next: Promise<Preview | null> = (queues.get(p.id) ?? Promise.resolve()).catch(() => {}).then(() => { waitingTurn.delete(key); return build(p, o); }).finally(() => active.delete(key));
+  waitingTurn.set(key, next);
   queues.set(p.id, next);
   return next;
 }
+/** Staging-site builds queued but not started, by product/site: a new ask for one joins it. */
+const waitingTurn = new Map<string, Promise<Preview | null>>();
 
 async function build(p: Product, o: { change?: string; dir?: string }): Promise<Preview | null> {
   // Deployed by the repo's own CI (the portal: GitHub Actions to Firebase): nothing to build here.

@@ -29,6 +29,8 @@ const RATE = /rate limit|abuse detection|secondary rate|too many requests|\b429\
 const NETWORK = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network (error|is unreachable)|connection (reset|refused|closed)|UND_ERR|TLS|aborted|bad gateway|service unavailable|gateway time-?out|temporarily unavailable|try again/i;
 const TOKEN = /bad credentials|token (has |had )?expired|expired (github |installation )?token|token (was |is )?lost|tokenLost/i;
 const SERVER = /(^|[^\d])(50[0-4]|52[0-9])([^\d]|$)/;
+/** A build output cut short (the same words as builds.ts TRUNCATED; repeated here so this module needs no builds.ts at load). */
+const TRUNCATED = /unexpected end of (file|data|archive|input)|Unexpected EOF|truncated (gzip|tar|archive|input|file)|incomplete (gzip|tar|archive)/i;
 /** Google Cloud out of room for a moment (a region's CPU quota, shared with Studio's own agent jobs): it passes, the code is fine. */
 export const QUOTA = /quota exceeded|RESOURCE_EXHAUSTED|insufficient (regional )?quota|exceed(s|ed)? (the |your )?quota/i;
 
@@ -93,6 +95,8 @@ export function failType(error: unknown, o: { stage?: string | null; kind?: stri
   if (accessCause(e)) return 'access';
   // A GitHub token that expired or was lost between queueing and fetching: the next try mints a fresh one (causes.ts token-expired).
   if (NETWORK.test(e) || SERVER.test(e) || TOKEN.test(e)) return 'transient';
+  // A build output that arrived cut short (builds.ts TRUNCATED): built again on the same commit, once (TRUNCATED_TRIES).
+  if (TRUNCATED.test(e)) return 'transient';
   // "Getting the commit" failing with nothing more to say (Gen or GitHub didn't answer), but not a repo or branch that isn't there.
   if (o.stage === 'checkout' && !/has no (GitHub repo|beta or main)|no GitHub repo|has no builds|no build "/i.test(e)) return 'transient';
   return 'other';
@@ -114,6 +118,8 @@ export function selfHandling(): boolean {
 /** Attempts in all (the first and two more), and the waits before the second and the third: about ten minutes in all. */
 export const MAX_TRIES = 3;
 export const RETRY_WAITS_MS = [2 * 60_000, 8 * 60_000];
+/** A truncated build output is built again once (the first try and one more): a Unity build is long, and a second cut means Gen's storage, not luck. */
+export const TRUNCATED_TRIES = 2;
 
 db.exec(`CREATE TABLE IF NOT EXISTS build_retry (
   product TEXT NOT NULL, build TEXT NOT NULL, row TEXT, attempt INTEGER NOT NULL, due INTEGER NOT NULL, ref TEXT, sha TEXT, why TEXT,
@@ -179,7 +185,7 @@ export async function handleFailure(rowId: string, o: { product: string; build: 
   if (!selfHandling()) return { handled: false, type };
   const attempt = Math.max(1, o.attempt ?? 1);
   if (type === 'transient') {
-    if (attempt >= MAX_TRIES) { clearRetry(o.product, o.build); return { handled: false, type }; }
+    if (attempt >= (TRUNCATED.test(String(o.error ?? '')) ? TRUNCATED_TRIES : MAX_TRIES)) { clearRetry(o.product, o.build); return { handled: false, type }; }
     const inMs = RETRY_WAITS_MS[Math.min(attempt - 1, RETRY_WAITS_MS.length - 1)];
     db.prepare('INSERT OR REPLACE INTO build_retry (product, build, row, attempt, due, ref, sha, why) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(o.product, o.build, rowId, attempt + 1, Date.now() + inMs, o.ref ?? null, o.sha ?? null, String(o.error ?? '').slice(0, 300));
