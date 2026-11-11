@@ -24,7 +24,7 @@ The deadlines are in the database (\`waits\` table, synced with it), not in a ti
 
 \`src/outcomes.ts\` reads what a build, a playtest and an agent pass came to into one of a fixed set, with a test for each member (\`test/outcomes.test.ts\`). A status it doesn't know is \`unread\`: looked at again, never counted as built, failed, hung or "built nothing".
 
-- **Builds** (\`buildOutcome\`, read by \`pm.ts buildOf\`): built, failed, unproven, held, cancelled, superseded, waiting, unread. Only \`failed\` goes back to an agent.
+- **Builds** (\`buildOutcome\`, read by \`pm.ts buildOf\`): built, failed, unproven, held, cancelled, superseded, waiting, builder-lost (the build server timed out or Studio cancelled it for its own timeout: rebuilt, never sent back), unread. Only \`failed\` goes back to an agent.
 - **Playtests** (\`playOutcome\`, read by \`pm.ts brokenCheck\`): played, stuck, failed, skipped, cancelled, running, unread. A play that checked nothing (stuck, failed, skipped, cancelled) is played again and is never a miss or a try.
 - **Agent passes** (\`passState\`, read by \`agents.ts checkStuck\`): moving, waiting-for-room, waiting-to-start, working-elsewhere, hung, orphaned. Only hung and orphaned are taken over.
 

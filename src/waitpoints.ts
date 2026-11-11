@@ -124,8 +124,8 @@ export const WAIT_POINTS: WaitPoint[] = [
   },
   {
     id: 'idle-roadmap', what: 'Free agent slots with nothing planned: an empty roadmap.',
-    event: 'A task or item being planned, a change finishing (the PM\'s pass), or a scout reporting (each scout\'s report wakes the PM).', deadline: '30 min of idle slots (5 min where Studio fills the roadmap itself), then 30 min for a scout to report', env: 'STUDIO_IDLE_MS', maxMs: 30 * MIN,
-    fallback: 'A scout per idle product, most likely first. Walk-away mode in J\'s Studio: each scout\'s proposal goes to the PM the moment that scout reports and a product is scouted again as soon as it is idle again, nobody is asked. Elsewhere the owner gets one question after the scouts report or their deadline.', fallbackKind: 'without',
+    event: 'A task or item being planned, a change finishing (the PM\'s pass), or a scout reporting (each scout\'s report wakes the PM).', deadline: '30 min of idle slots (5 min where Studio fills the roadmap itself, counted from free slots beyond the planned work, not from every slot empty), then 30 min for a scout to report, and 30 min before a scout that found nothing (or one from before a deploy) is tried again', env: 'STUDIO_IDLE_MS', maxMs: 30 * MIN,
+    fallback: 'A scout per idle product (open milestones with no tasks first, then the most recent work), most likely first. Walk-away mode in J\'s Studio: each scout\'s proposal goes to the PM the moment that scout reports and a product is scouted again as soon as it is idle again, nobody is asked. Elsewhere the owner gets one question after the scouts report or their deadline.', fallbackKind: 'without',
     file: 'src/pace.ts', symbols: ['idleWatch'], test: 'test/wait-points.test.ts', via: 'waits',
   },
   // Gates that keep their own deadline (database row or one timer of their own), listed so no gate goes unnamed.

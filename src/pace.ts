@@ -144,6 +144,10 @@ export const IDLE_MS = () => Number(process.env.STUDIO_IDLE_MS ?? 30 * 60_000);
 const SELF_IDLE_MS = 5 * 60_000;
 /** A scout gets this long to report (its own wall limit is 15 min); the batched question is filed with what's in by then. */
 const SCOUT_WAIT_MS = 30 * 60_000;
+/** A scout that found nothing may be tried again after this long, with slots busy or not (a lone long agent never frees the rest to "go busy"). */
+const EMPTY_RETRY_MS = 30 * 60_000;
+/** When this process started: a scout record from before it came from the old path (a deploy dropped its report) and is read again. */
+const BOOTED_AT = Date.now();
 /** The same idle products aren't asked about again for this long (a newly idle product is). */
 const REASK_MS = 7 * 86_400_000;
 /** The question's subject: one card, merged by subject, never one per product. */
@@ -168,7 +172,16 @@ export type IdleDeps = {
   addProposal?: (product: string, scout: string, proposal: string) => void;
   /** Self-fill: how likely an idle product is to matter (open milestones, recent work); higher is scouted first. */
   rank?: (product: string) => number;
+  /** When this process started (a scout from before it is eligible again); for tests. */
+  bootedAt?: number;
 };
+
+/** Whether a product's earlier scout still keeps it from being scouted: running, or found nothing a short while ago. */
+function scoutHolds(rec: { at: number; empty?: boolean } | undefined, now: number, boot: number): boolean {
+  if (!rec) return false;
+  if (!rec.empty) return true;
+  return now - rec.at < EMPTY_RETRY_MS && rec.at >= boot;
+}
 
 /** A scout report's proposed roadmap item (its "## Proposed roadmap item" section), short. */
 export function proposalOf(report: string | null | undefined, max = 450): string | null {
@@ -223,7 +236,10 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
   // A scout that has reported is read the moment the PM looks, busy or not: its proposal doesn't wait for idle slots.
   const filed = self ? harvest(st, deps, now) : 0;
   if (self) saveIdle(st);
-  if (free <= 0 || started > 0) {
+  // Free capacity is the trigger (J, 2026-11-11: one long Unity agent kept the other 5 slots empty for ever): where Studio fills
+  // the roadmap itself, free slots beyond what the PM just started are idle however many slots are busy; a start only ends it
+  // when it took the last free slot. Elsewhere any start still restarts the clock.
+  if (free <= 0 || (!self && started > 0)) {
     // Busy again: scouts that found nothing may be tried again the next time the slots idle.
     for (const [p, rec] of Object.entries(st.scouts)) if (rec.empty) delete st.scouts[p];
     if (st.since !== null || self) saveIdle({ ...st, since: null });
@@ -246,8 +262,9 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
 
   if (self) {
     const order = deps.rank ? [...idle].sort((a, b) => deps.rank!(b) - deps.rank!(a)) : idle;
+    const boot = deps.bootedAt ?? BOOTED_AT;
     for (const p of order) {
-      if (st.scouts[p]) continue; // reading it now, or it had nothing to say
+      if (scoutHolds(st.scouts[p], now, boot)) continue; // reading it now, or it had nothing to say a short while ago
       try {
         st.scouts[p] = { id: deps.startScout(p, QUESTION(name(p))).id, at: now };
       } catch {
@@ -261,7 +278,12 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
       beginWait('idle-roadmap', 'scouts', { waitsOn: `the scouts of ${running.map(([p]) => p).join(', ')} reporting`, deadlineAt: first + SCOUT_WAIT_MS, since: first });
       return 'scouting';
     }
-    endWait('idle-roadmap', 'scouts', 'event');
+    // Nothing is reading: the scouts that found nothing are tried again at their own deadline (a wait with an end, not a timer here).
+    const empties = Object.values(st.scouts).filter((r) => r.empty);
+    if (empties.length) {
+      const first = Math.min(...empties.map((r) => r.at));
+      beginWait('idle-roadmap', 'scouts', { waitsOn: 'a scout that found nothing to be tried again', deadlineAt: first + EMPTY_RETRY_MS, since: first });
+    } else endWait('idle-roadmap', 'scouts', 'event');
     return filed ? 'filed' : 'nothing idle';
   }
 

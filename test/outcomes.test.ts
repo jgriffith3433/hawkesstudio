@@ -2,7 +2,7 @@
 // each member: nothing defaults to "built nothing", to a failure it didn't have, or to "hung" (docs/stall-paths.md).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILD_OUTCOMES, PLAY_OUTCOMES, PASS_STATES, PLAYED_NOTHING, buildOutcome, playOutcome, passState, type BuildFacts } from '../src/outcomes.ts';
+import { BUILD_OUTCOMES, PLAY_OUTCOMES, PASS_STATES, PLAYED_NOTHING, buildOutcome, isBuilderLoss, playOutcome, passState, type BuildFacts } from '../src/outcomes.ts';
 
 const facts = (o: Partial<BuildFacts> = {}): BuildFacts => ({ runStatus: 'done', failedBuildSteps: 0, failedSteps: 0, ...o });
 
@@ -15,6 +15,7 @@ test('every build outcome is reached by its own facts, and the set is exactly wh
     cancelled: [facts({ cancelled: true, failedBuildSteps: 1 })],
     superseded: [facts({ superseded: true }), facts({ runStatus: 'skipped' })],
     waiting: [facts({ runStatus: 'running' }), facts({ runStatus: 'queued' })],
+    'builder-lost': [facts({ runStatus: 'failed', failedBuildSteps: 1, builderLost: true })],
     unread: [facts({ runStatus: 'something-new' }), facts({ runStatus: '' })],
   };
   for (const outcome of BUILD_OUTCOMES) {
@@ -61,4 +62,10 @@ test('every agent pass state: only a hung or orphaned pass is taken over; a wait
   for (const state of PASS_STATES) { assert.ok(reads[state].length); for (const f of reads[state]) assert.equal(passState(f), state, JSON.stringify(f)); }
   // Waiting for CPU room is only a wait at the agent step (the job is in line); at another step silence is silence.
   assert.equal(passState({ ...base, idleMs: 3_600_000, step: 'verify', waitingForRoom: true }), 'hung');
+});
+
+test('a build the build server lost (Studio\'s own timeout) is read as builder-lost, never as the change failing', () => {
+  for (const d of ['cancelled by Studio (timed out after 92 min of building)', 'the Unity build failed: timed out after 92 min of building', 'the build was stuck in Hawkes Gen: it ran 12 min']) assert.equal(isBuilderLoss(d), true, d);
+  for (const d of ['error CS0103: The name x does not exist', 'size guard: build is 900 MB', '']) assert.equal(isBuilderLoss(d), false, d);
+  assert.equal(buildOutcome(facts({ runStatus: 'failed', failedBuildSteps: 1, builderLost: true })), 'builder-lost');
 });

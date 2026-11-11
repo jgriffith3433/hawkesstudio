@@ -166,3 +166,14 @@ test("a fetch race in the beta run's repo step isn't a failed build (nothing goe
   step('s_fr3', 'repo', 'failed', 'fetch failed: fatal: could not read from remote repository');
   assert.equal(pm.buildOf('bbfile', { id: run, status: 'failed' }).ok, false);
 });
+
+test("a build Studio cancelled for its own timeout is the build server's, never the change's: nothing is blamed, the commit is built again", () => {
+  const run = 'r_timeout92';
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started, finished) VALUES (?, 'beta', 'failed', 'beta bbfile', '[]', '{}', ?, ?)").run(run, Date.now(), Date.now());
+  db.prepare('INSERT INTO steps (id, run, product, kind, name, status, detail, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run('s_to1', run, 'bbfile', 'build', 'build', 'failed', 'cancelled by Studio (timed out after 92 min of building)', Date.now(), Date.now());
+  const b = pm.buildOf('bbfile', { id: run, status: 'failed' });
+  assert.equal(b.ok, false);
+  assert.equal(b.unproven, true, 'not a failure of the change: decideFailedBuild never sees it');
+  assert.equal(b.builderLost, true);
+  assert.equal(pm.buildToRead(b, run, 'bbfile'), false);
+});
