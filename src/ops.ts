@@ -24,6 +24,8 @@ db.exec(`
 `);
 // What a waiting operation waits for (OpWaits): { on: a run id or null, why, rounds }.
 try { db.exec('ALTER TABLE ops ADD COLUMN wait TEXT'); } catch { /* already there */ }
+// The Studio revision that last ran an operation: a restart onto a newer one is a deploy, not a crash (resumeOps).
+try { db.exec('ALTER TABLE ops ADD COLUMN rev TEXT'); } catch { /* already there */ }
 
 /**
  * waiting: the operation can't finish yet and is parked on something Studio does by itself (a beta playtest before going
@@ -172,7 +174,7 @@ export async function pump() {
       const busy = new Set(running.map((r) => r.product).filter(Boolean));
       const next = (db.prepare(`SELECT * FROM ops WHERE status = 'queued' ORDER BY created`).all() as any[]).find((r) => !r.product || !busy.has(r.product));
       if (!next) return;
-      const claimed = db.prepare(`UPDATE ops SET status = 'running', started = COALESCE(started, ?), heartbeat = ?, attempts = attempts + 1 WHERE id = ? AND status = 'queued'`).run(Date.now(), Date.now(), next.id);
+      const claimed = db.prepare(`UPDATE ops SET status = 'running', started = COALESCE(started, ?), heartbeat = ?, attempts = attempts + 1, rev = ? WHERE id = ? AND status = 'queued'`).run(Date.now(), Date.now(), process.env.K_REVISION ?? null, next.id);
       if (!claimed.changes) continue;
       void runOp(next.id);
     }
@@ -267,14 +269,18 @@ export function resumeOps() {
     const r = on ? (db.prepare('SELECT status FROM runs WHERE id = ?').get(on) as any) : null;
     if (!r || r.status !== 'running') db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ?`).run(w.id);
   }
-  const rows = db.prepare(`SELECT id, attempts FROM ops WHERE status = 'running'`).all() as any[];
+  const rows = db.prepare(`SELECT id, attempts, rev FROM ops WHERE status = 'running'`).all() as any[];
   for (const r of rows) {
+    // Ended by Studio going live (a newer revision runs now), not by the operation: not an attempt it used up. Before
+    // this, three go lives during a 30-minute pull-request go live failed it as "Studio restarted 3 times".
+    const now = process.env.K_REVISION;
+    if (typeof r.rev === 'string' && r.rev && now && r.rev !== now) r.attempts = 0;
     if (r.attempts >= MAX_ATTEMPTS) {
       db.prepare(`UPDATE ops SET status = 'failed', error = ?, finished = ? WHERE id = ?`).run(`Studio restarted ${r.attempts} times while it ran; stopped trying. Look at its log, then start it again.`, Date.now(), r.id);
       const op = getOp(r.id)!;
       void Promise.resolve(hooks.get(op.kind)?.failed?.(op)).catch(() => {});
     } else {
-      db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ?`).run(r.id);
+      db.prepare(`UPDATE ops SET status = 'queued', attempts = ? WHERE id = ?`).run(r.attempts, r.id);
     }
   }
   db.prepare('DELETE FROM ops WHERE finished < ?').run(Date.now() - 7 * 86_400_000);

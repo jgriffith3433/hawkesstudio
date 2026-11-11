@@ -127,8 +127,32 @@ export async function busy(): Promise<string | null> {
   } catch { /* not loaded */ }
   try {
     const ops = await import('./ops.ts');
-    if (ops.listOps({ since: Date.now() }).some((o) => o.status === 'queued' || o.status === 'running')) return 'a background operation'; // a waiting one waits on a run, which keeps Studio up itself
+    if (ops.listOps({ since: Date.now() }).some((o) => o.status === 'queued' || o.status === 'running')) return 'a background operation';
   } catch { /* not loaded */ }
+  return await waitingWork();
+}
+
+/**
+ * Work Studio owns that waits (a gate, a retry, Gen, a build): it moves on only while Studio runs, because every wake for
+ * it (a gate's event, a retry's timer, the PM's pass) lives in this process. Before 2026-11-11 only work in flight kept
+ * the instance up, so with every change held by a gate Cloud Run stopped Studio and the queue sat until someone opened
+ * the site. Each kind here has an end of its own (a deadline, the 6 h Unity hold, an op's retries), so this can't hold
+ * the instance up for ever. Work waiting on a person (a question, an Inbox card) doesn't count: that wakes Studio itself.
+ */
+export async function waitingWork(): Promise<string | null> {
+  try {
+    const { db } = await import('./db.ts');
+    const q = (sql: string) => { try { return (db.prepare(sql).get() as { n: number }).n; } catch { return 0; } };
+    const changes = q(`SELECT COUNT(*) AS n FROM changes WHERE status IN ('queued', 'waiting on Gen', 'ready')`);
+    if (changes) return `${changes} agent change(s) waiting to go on`;
+    const ops = q(`SELECT COUNT(*) AS n FROM ops WHERE status = 'waiting'`);
+    if (ops) return `${ops} background operation(s) waiting`;
+    const runs = q(`SELECT COUNT(*) AS n FROM runs WHERE status IN ('queued', 'running')`);
+    if (runs) return `${runs} run(s) waiting`;
+    // Bounded: a merged task gets beta's build within the Unity hold's 6 h (unitybuild-policy.ts), so only that window counts.
+    const merged = q(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'merged' AND (build IS NULL OR build LIKE '%"unproven":true%') AND merged_at > ${Date.now() - 7 * 3600_000}`);
+    if (merged) return `${merged} merged task(s) waiting for beta's build`;
+  } catch { /* no database yet */ }
   return null;
 }
 
