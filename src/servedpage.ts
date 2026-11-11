@@ -64,14 +64,32 @@ export async function checkServedPage(url: string, played: { sha: string; branch
  * verdict is stale: the caller fails the step with `why`, files no findings and starts no fixers from it.
  * Unknown (no tip, or no published commit) is never a failure.
  */
-export async function ensurePublishedCurrent(o: { tip: string | null; published: () => string | null | undefined; republish: () => Promise<unknown> }): Promise<{ ok: true; republished: boolean } | { ok: false; why: string; published: string; tip: string }> {
+export type PublishedCurrent =
+  | { ok: true; republished: boolean; waited?: { before: string; after: string; seconds: number } }
+  | { ok: false; why: string; published: string; tip: string; waited?: { before: string; after: string; seconds: number; timedOut: boolean } };
+
+/** How long to wait for a republish: three times the site's last publish (`lastMs`), within 2 to 10 minutes. */
+export const publishWaitMs = (lastMs?: number | null) => Math.min(10 * 60_000, Math.max(2 * 60_000, Math.round((lastMs ?? 0) * 3)));
+
+export async function ensurePublishedCurrent(o: { tip: string | null; published: () => string | null | undefined; republish: () => Promise<unknown>; timeoutMs?: number; now?: () => number }): Promise<PublishedCurrent> {
   const behind = () => {
     const pub = o.published();
     return o.tip && pub && !sameCommit(pub, o.tip) ? pub : null;
   };
-  if (!behind()) return { ok: true, republished: false };
-  await o.republish().catch(() => {});
+  const before = behind();
+  if (!before) return { ok: true, republished: false };
+  const now = o.now ?? Date.now;
+  const t0 = now();
+  // Awaits the republish itself (the publish job's own promise, or the build already running for the tip), bounded by one
+  // timer: no polling.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = await Promise.race([
+    o.republish().catch(() => {}).then(() => false),
+    new Promise<boolean>((res) => { timer = setTimeout(() => res(true), o.timeoutMs ?? 10 * 60_000); }),
+  ]).finally(() => clearTimeout(timer));
   const still = behind();
-  if (!still) return { ok: true, republished: true };
-  return { ok: false, published: still, tip: o.tip!, why: `Stale verdict, not judged: the published beta site is at ${still.slice(0, 7)} but beta is at ${o.tip!.slice(0, 7)}, and publishing it again didn't catch up. No findings or fixes come from this run; the next one plays the republished site.` };
+  const after = (still ?? o.published() ?? o.tip!).toString();
+  const seconds = Math.round((now() - t0) / 1000);
+  if (!still) return { ok: true, republished: true, waited: { before, after, seconds } };
+  return { ok: false, published: still, tip: o.tip!, waited: { before, after, seconds, timedOut }, why: `Stale verdict, not judged: the published beta site is at ${still.slice(0, 7)} but beta is at ${o.tip!.slice(0, 7)}, and ${timedOut ? `publishing it again didn't finish within ${seconds} s` : "publishing it again didn't catch up"}. No findings or fixes come from this run; the next one plays the republished site.` };
 }

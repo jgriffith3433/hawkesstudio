@@ -278,6 +278,10 @@ export function claimCommit(product: string, build: string, sha: string): boolea
 }
 /** A claimed start ended (its run closed): its build row, if any, speaks for the commit from now on. */
 export const releaseCommit = (product: string, build: string, sha: string) => starting.delete(commitKey(product, build, sha));
+/** Build runs under way, per project (their `done`): what a playtest waits on instead of polling (servedpage.ts). */
+const running = new Map<string, Set<Promise<void>>>();
+/** Resolves when every build run of the project that is going now has ended (immediately when none). Never throws. */
+export const buildsSettled = async (product: string): Promise<void> => { await Promise.all([...(running.get(product) ?? [])]); };
 /** For tests: forget the claims of starts in flight. */
 export const resetCommitClaims = () => starting.clear();
 
@@ -356,6 +360,9 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
       closeRun(id, `build ${p.id}`);
     }
   })().catch((e) => console.warn(`[builds] ${p.id}: ${e?.message ?? e}`));
+  const set = running.get(p.id) ?? running.set(p.id, new Set()).get(p.id)!;
+  set.add(done);
+  void done.finally(() => { set.delete(done); if (!set.size) running.delete(p.id); });
   return { id, builds: specs.map((b) => b.id), done };
 }
 

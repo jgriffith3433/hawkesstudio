@@ -675,14 +675,24 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
       const previews = await import('./previews.ts');
       await previews.betaSettled(p.id);
       const cur = await (await import('./servedpage.ts')).ensurePublishedCurrent({
-        tip: await betaTipOf(p), published: () => previews.betaPreview(p.id)?.sha, republish: async () => { await previews.buildPreview(p.id); },
+        tip: await betaTipOf(p), published: () => previews.betaPreview(p.id)?.sha,
+        // Starts the publish (or joins the one going) and also waits for any build run of the project already going for
+        // the tip (a start for a commit being built starts no second run, so buildPreview alone returns at once).
+        republish: async () => { await previews.buildPreview(p.id); await (await import('./builds.ts')).buildsSettled(p.id); await previews.betaSettled(p.id); },
+        timeoutMs: (await import('./servedpage.ts')).publishWaitMs(previews.betaPreview(p.id)?.ms),
       });
+      if (cur.waited) {
+        const w = cur.waited;
+        const line = `waited for the beta site's publish: site ${w.before.slice(0, 7)} before, ${w.after.slice(0, 7)} after, ${w.seconds} s${'timedOut' in w && w.timedOut ? ' (timed out)' : ''}`;
+        console.log(`[studio] ${p.id} ${name} (${run}): ${line}`);
+        updateStep(s, { detail: line });
+      }
       if (!cur.ok) {
         console.warn(`[studio] ${p.id} ${name} (${run}): ${cur.why}`);
-        updateStep(s, { status: 'failed', detail: cur.why, data: { stale: true, wrongBuild: true, published: cur.published, tip: cur.tip }, finished: true });
+        updateStep(s, { status: 'failed', detail: cur.why, data: { stale: true, wrongBuild: true, published: cur.published, tip: cur.tip, waited: cur.waited }, finished: true });
         return null;
       }
-      if (cur.republished) updateStep(s, { detail: `the beta site was behind ${BETA}: published again` });
+      if (cur.republished) updateStep(s, { detail: `the beta site was behind ${BETA}: published again${cur.waited ? ` (site ${cur.waited.before.slice(0, 7)} before, ${cur.waited.after.slice(0, 7)} after, waited ${cur.waited.seconds} s)` : ''}` });
     }
     if (t.where === 'local' && !was?.data?.played && (p.github || !p.build) && (await cloudBetaUrl(p))) {
       const v = (await import('./previews.ts')).betaPreview(p.id);

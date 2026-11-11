@@ -62,12 +62,37 @@ test('a published site behind beta is published again and played; still behind, 
   // Behind, and republishing catches up.
   let pub = 'a6c1dff';
   const r = await ensurePublishedCurrent({ tip, published: () => pub, republish: async () => { calls++; pub = '3544fa3'; } });
-  assert.deepEqual(r, { ok: true, republished: true });
+  assert.equal(r.ok && r.republished, true);
   assert.equal(calls, 1);
   // Behind, and still behind (or the republish throws): stale, with the sentence that says so.
   const s = await ensurePublishedCurrent({ tip, published: () => 'a6c1dff', republish: async () => { throw new Error('build failed'); } });
   assert.equal(s.ok, false);
   if (!s.ok) { assert.match(s.why, /Stale verdict/); assert.match(s.why, /a6c1dff/); assert.match(s.why, /3544fa3/); assert.equal(s.published, 'a6c1dff'); }
+});
+
+test('the check waits for the republish: caught up within the wait, or stale after the timeout', async () => {
+  const { ensurePublishedCurrent, publishWaitMs } = await import('../src/servedpage.ts');
+  const tip = '3544fa3aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  // The republish finishes later than the call that started it: the check waits for it and reads the site again.
+  let pub = 'a6c1dff';
+  const r = await ensurePublishedCurrent({ tip, published: () => pub, timeoutMs: 5000, republish: () => new Promise((res) => setTimeout(() => { pub = '3544fa3'; res(null); }, 30)) });
+  assert.equal(r.ok, true);
+  if (r.ok) { assert.equal(r.republished, true); assert.equal(r.waited?.before, 'a6c1dff'); assert.equal(r.waited?.after, '3544fa3'); assert.equal(typeof r.waited?.seconds, 'number'); }
+  // A republish that outlasts the timeout is stale, with no wait beyond the timeout.
+  const t0 = Date.now();
+  const s = await ensurePublishedCurrent({ tip, published: () => 'a6c1dff', timeoutMs: 40, republish: () => new Promise(() => {}) });
+  assert.equal(s.ok, false);
+  if (!s.ok) { assert.match(s.why, /Stale verdict/); assert.equal(s.waited?.timedOut, true); }
+  assert.ok(Date.now() - t0 < 2000);
+  // Sized to the last publish: 2 to 10 minutes.
+  assert.equal(publishWaitMs(null), 120_000);
+  assert.equal(publishWaitMs(100_000), 300_000);
+  assert.equal(publishWaitMs(900_000), 600_000);
+});
+
+test('buildsSettled resolves with no build running', async () => {
+  const { buildsSettled } = await import('../src/builds.ts');
+  await buildsSettled('nothing');
 });
 
 test('a build of an older commit leaves beta\'s newest to be built', async () => {
