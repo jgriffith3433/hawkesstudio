@@ -28,6 +28,7 @@ A product is a game when its `kind` is empty or `game` and its engine isn't `sta
 | `camera-and-controls` | The camera never clips or snaps, controls answer in under 100 ms, no frame over 250 ms; jumping and combat games report coyote time, jump buffer and hit-stop; the explore bot never falls out of the world |
 | `first-five-minutes` | A stranger opening the live page cold is playing within 20 s, first input within 30 s, first success within 60 s, at most 2 taps to play, at most 40 words in minute one, no developer or debug UI visible to the public (hard). Measured by the built-in `first-five` scenario on desktop and 390x844 touch (`src/ftue.ts`, docs/playtest.md#first-five-minutes) |
 | `menus-and-ui` | Every control on a phone is at least 44 px with 8 px between, clear of the notch and home bar, on screen at 390x844 and 844x390, and every press answers on screen within 100 ms and with a sound within 150 ms: small targets 0, offscreen 0, inset overlaps 0, dead presses 0, silent presses 0 (`src/ui.ts`, docs/playtest.md#ui). The fun reviewer comments on every menu screen it sees |
+| `phone-load` | On a mid-range phone over Slow 4G (every phone twin: CDP 4x CPU, Slow 4G, DPR 2 at 390x844): at most 20 MB transferred before gameplay, at most 20 s to gameplay, fps p5 at least 30 (`src/phoneperf.ts`, docs/playtest.md#phone-load). A miss files a finding naming the five largest pre-gameplay assets, or the clip time of the fps dip |
 | `sound-design` | No silent jump or button, mix near -18 LUFS (±3) with true peak ≤ -1 dBTP, no identical sample twice in 60 s, voice ducks music ≥ 6 dB, silence in play ≤ 10 s |
 
 **Hard limits.** A check marked `hard` fails at its first sighting: the camera inside a wall (`camera-clip`), a snap
@@ -38,8 +39,9 @@ action (`silent-actions`), and an identical sample repeat (`identical-repeats`).
 `feel.inputLatencyMs` (100), `feel.worstHitchMs` and `video.worstHitchMs` (250, the review's motion clips),
 `feel.cameraClipSeconds` (0), `feel.coyoteMs` and `feel.jumpBufferMs` (80), `feel.hitStopMs` (40),
 `explore.fallSpots` and `explore.stuckSpots` (0), `audio.silentActions` / `audio.identicalRepeats60s` (0),
-`audio.lufsIntegrated` (-21..-15), `audio.truePeakDb` (-1), `audio.voiceDuckDb` (6), `audio.longestSilenceS` (10).
-`optional` checks only apply to games that report them. Software rendering drops the hitch and latency readings. These
+`audio.lufsIntegrated` (-21..-15), `audio.truePeakDb` (-1), `audio.voiceDuckDb` (6), `audio.longestSilenceS` (10),
+`phone.mbBeforeGameplay` (20), `phone.secondsToGameplay` (20), `phone.fpsP5` (min 30).
+`optional` checks only apply to games that report them. Software rendering drops the hitch, latency and phone fps readings. These
 are starting values: a game tunes its own in products.json `tuning`, e.g. `{ "feel.inputLatencyMs": { "max": 120 } }`.
 
 **What counts as a hitch** (J's go-lives, 2026-11-09). The hitch limit is for play: a long frame on a loading,

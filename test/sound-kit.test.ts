@@ -81,6 +81,6 @@ test('setStem lands on the next bar line', () => {
   kit.music({ bpm: 120, beatsPerBar: 4, stems: { drums: 'synth', bass: 'synth' }, on: ['drums'] });
   ctx.currentTime = 0.3;
   const at = kit.setStem('bass', true);
-  assert.ok(Math.abs(at - 2.05) < 1e-6, 'a multiple of one 2 s bar after the start');
+  assert.ok(at != null && Math.abs(at - 2.05) < 1e-6, 'a multiple of one 2 s bar after the start');
   kit.dispose();
 });

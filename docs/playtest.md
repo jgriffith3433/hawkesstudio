@@ -251,6 +251,11 @@ shows every run with all of this, next to the previous run of the same scenario.
 - **Phones:** a playtest with `device: "phone"` plays at 390x844 with touch input (no keyboard).
   Bots should play through touch there (or the game should show touch controls), and Claude judges touch controls,
   text size and layout.
+- **Phone load** (`#phone-load`, `src/phoneperf.ts`): every phone twin also runs under CDP **4x CPU** throttling,
+  **Slow 4G** and **DPR 2** (Gen's `playtest.run` when `mobile: true`). The result reports
+  `phone.mbBeforeGameplay`, `phone.secondsToGameplay` and `phone.fpsP5` (and the largest pre-gameplay assets).
+  Rubric limits: at most 20 MB and 20 s to gameplay, fps p5 at least 30. A miss is a finding that names the five
+  largest assets (size/time) or the clip time of the fps dip. Desktop plays are unchanged.
 - **Visual changes:** screenshots at the same events (load, ready, each new `scene`, the end) are compared with the
   previous run's. Stable `scene` names make this work: keep them the same between builds.
 
