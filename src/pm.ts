@@ -2099,6 +2099,9 @@ export async function undoDecision(id: string, by = 'J') {
   } else if (u.kind === 'queue-heal') {
     // A change the queue heal parked (queue-heal.ts): resumed now.
     detail = (await import('./queue-heal.ts')).resumeParked(u.change, by);
+  } else if (u.kind === 'dup-closed') {
+    // A change closed before it started because its work was already merged (dup-merged.ts): queued again.
+    detail = (await import('./dup-merged.ts')).reopenDuplicate(u.change, by);
   } else throw new StudioError(`Don't know how to undo ${u.kind}`);
   markUndone(id);
   logDecision('undo', d.subject, d.product, `${by} undid ${id} (${d.action}): ${detail}`);
