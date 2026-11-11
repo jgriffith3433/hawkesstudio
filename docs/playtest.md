@@ -329,6 +329,36 @@ array in its report) that plays with `feel.samples` 0, or with `feel.activeSecon
 files one bug, "feel sensor not running in <scenario>", with the sensor's events. `feel: false` reports neither metric
 and files nothing.
 
+## Audio
+
+What a game *sounds* like rarely shows in a screenshot: a silent jump, a clipping mix, the same footstep sample twice
+in a row. The **audio probe** measures those while a playtest runs.
+
+- **Web / Unity WebGL** (`clients/web/hawkes-audio.js`, started by `hawkes-playtest.js` with every run): taps the page's
+  `AudioContext` into a `MediaRecorder` and pushes events for every sound start (`sample`, `bus`, `rate`, `gain`) and
+  every real input. On a phone (390×844) the first tap that unlocks a suspended context logs `audiocontext-resume`
+  (`how: "first-tap"`). `audio: false` turns it off. Tag sources when the auto id is wrong:
+  `source.__hawkesSampleId = 'jump'; gain.__hawkesBus = 'sfx'`.
+- **Native Unity** (`OnAudioFilterRead`): waits until a Unity playtest runs outside WebGL.
+
+Events are **pushed** through `window.__hawkesPlaytestPush` (never polled) and also land in the report's `events` /
+`audio` lists.
+
+**Studio** (`src/audio.ts`) turns the timeline into metrics and findings, and runs ffmpeg `ebur128` on the recording
+for loudness:
+
+| metric | meaning |
+|---|---|
+| `audio.lufsIntegrated` | integrated loudness (LUFS) from ebur128 |
+| `audio.truePeakDb` | true peak (dBTP) from ebur128 |
+| `audio.longestSilenceS` | longest gap between sounds in play (menus/loading excluded) |
+| `audio.silentActions` | inputs with no sound start within 150 ms |
+| `audio.identicalRepeats60s` | same sample+rate twice within 60 s |
+| `audio.voiceDuckDb` | music duck under voice (only when voice played) |
+
+The quality gate's `sound-design` rule holds them (`docs/quality.md`). One finding per broken limit names the action or
+sample and its time. A short timeline summary goes into `playtest.review` (`audio` param) and the critic's sound axis.
+
 ## Explore
 
 The **explore bot** (`clients/web/hawkes-explore.js`, copy it next to `hawkes-playtest.js`) plays a level the way a

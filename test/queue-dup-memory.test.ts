@@ -44,7 +44,7 @@ test('a queued change duplicating merged work is closed before it starts, and ca
   const asked: string[] = [];
   const closed: string[] = [];
   D.dupHooks.judge = async (q, m) => { asked.push(`${q.id}>${m.id}`); return true; };
-  D.dupHooks.close = async (id) => { closed.push(id); db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(id); };
+  D.dupHooks.close = async (id, _by) => { closed.push(id); db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(id); return null; };
   D.dupHooks.pump = async () => {};
   assert.equal(D.duplicateHold('c_other000001'), true);
   assert.equal(D.duplicateHold('c_dupe0000001'), false, 'held while the model judges');

@@ -64,6 +64,12 @@ export interface PlaytestOptions {
    * hugs walls, jumps edges and maps stuck and fall spots. true: the game is playable on load.
    */
   explore?: boolean | ExploreOptions;
+  /** The audio probe (hawkes-audio.js): false turns it off. On by default for every run. */
+  audio?: false | AudioOptions;
+}
+
+export interface AudioOptions {
+  thresholds?: Record<string, number>;
 }
 
 export interface ExploreOptions {
