@@ -27,6 +27,7 @@
 import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
 import { isVideoTask } from './videos.ts';
 import { unityBuildOf, buildProof, builtBy, includesMerge, missingScenarioSkips } from './betabuild.ts';
+import { heldBuildRun, milestoneBuildDue, unityBuildGate } from './unitybuild-policy.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
@@ -339,7 +340,8 @@ async function checkOnBeta(t: Task) {
   if (!judged) {
     // No beta check yet: start one if nothing is running for this product and the merge is a while ago (only looked up
     // when beta is played after merges: two more queries per merged task every pass otherwise, 2026-11-10 freezes).
-    const due = playsAfterMerges && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled;
+    // A Unity project whose build of beta waits for the milestone's end: no check of its own (it would play nothing new).
+    const due = playsAfterMerges && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled && !(unityStudioBuilt(t.product) && !unityBuildGate(t.product, 'auto').go);
     const running = due && db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
     const asked = due && !running && listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check' }).some((d) => d.subject === t.id);
     if (due && !running && !asked && !creditsWaitReason()) {
@@ -542,8 +544,14 @@ export async function followBuilds() {
     const since = Math.min(...list.map((x) => x.at));
     // A run whose build was cancelled (J, Talk, the PM or Gen) built nothing: it is neither a build nor a failed one, and
     // the "nothing built the newest merge" check below starts another (cancel.ts).
+    // A run whose Unity build was held (unitybuild-policy.ts) built nothing either: its tasks wait for the milestone's build.
     const runs = (db.prepare(`SELECT id, status, detail, started, finished FROM runs WHERE kind = 'beta' AND products LIKE ? AND started >= ? ORDER BY started DESC, rowid DESC`).all(`%"${product}"%`, since) as any[])
-      .filter((x) => !buildCancelled(x.id, product) && !heldRun(x.id));
+      .filter((x) => !buildCancelled(x.id, product) && !heldRun(x.id) && !heldBuildRun(x.id, product));
+    // Beta's Unity build waits for a milestone's end with nothing else queued: no beta run of its own is started for a
+    // merge meanwhile (it would only be held again); the milestone's check builds it (milestoneCheck). Asked only when a
+    // start is otherwise due: reading the project's work every pass for every product froze Studio before (2026-11-10).
+    let held: boolean | undefined;
+    const unityHeld = () => (held ??= unityStudioBuilt(product) && !unityBuildGate(product, 'auto').go);
     // A run refused for credits built nothing and says nothing about the change: never blamed (creditwait.ts).
     for (const { t } of list) if (t.build?.run && (buildCancelled(t.build.run, product) || heldRun(t.build.run))) setTask(t.id, { build: null });
     const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
@@ -553,7 +561,7 @@ export async function followBuilds() {
     }
     // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
     const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
-    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: last.at, action: 'beta-build' }).some((d) => d.product === product)) {
+    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: last.at, action: 'beta-build' }).some((d) => d.product === product) && !unityHeld()) {
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(product, { focus: `Building beta after "${last.t.title}" merged.`, playtest: false });
       logDecision('beta-build', last.t.id, product, `no beta run built "${last.t.title}" after its merge: started ${r.id}`);
@@ -565,7 +573,7 @@ export async function followBuilds() {
     // A run that built nothing that includes a task's merge (betabuild.ts) proves nothing about it: never blamed on the task;
     // beta is built once more (a Unity project's beta run builds its head first).
     const unproven = list.filter((x) => { const b = getTask(x.t.id)?.build; return Boolean(b && b.run === newest.id && b.unproven); });
-    if (unproven.length && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: newest.started, action: 'beta-build' }).some((d) => d.product === product)) {
+    if (unproven.length && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: newest.started, action: 'beta-build' }).some((d) => d.product === product) && !unityHeld()) {
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(product, { focus: `Building beta's head: run ${newest.id} didn't build a commit with ${unproven.map((x) => `"${x.t.title}"`).join(', ')}.`, playtest: false });
       logDecision('beta-build', unproven[0].t.id, product, `beta run ${newest.id} built nothing that includes ${unproven.length} merged task(s): started ${r.id}, which builds beta's head first`);
@@ -731,18 +739,31 @@ export async function milestoneCheck(id: string) {
   if (!m || m.status !== 'open') return;
   let runs: string[] = parse(m.checks ?? null) ?? [];
   const tasks = milestoneTasks(id).filter((t) => t.status === 'merged' && hasBeta(t.product) && t.criteria.length);
+  // A Unity project Studio builds: its merges weren't built one by one (unitybuild-policy.ts, J 2026-11-11), so this
+  // check is what builds beta's head, ONE build, once nothing else is queued for it, even with no criteria to play.
+  const unity = [...new Set(milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product) && unityStudioBuilt(t.product)).map((t) => t.product))];
   if (!runs.length) {
     // Checked again after a miss: once beta built again (the misses' fixes, or the next merge).
-    if (!recheckDue(id, [...new Set(tasks.map((t) => t.product))])) return;
-    if (!tasks.length || !pmSettings().enabled) return announceMilestone(id);
+    if (!recheckDue(id, [...new Set([...tasks.map((t) => t.product), ...unity])])) return;
+    const products = [...new Set([...tasks.map((t) => t.product), ...unity])];
+    if (!products.length || !pmSettings().enabled) return announceMilestone(id);
+    // Work still queued for a Unity project: its one build waits. The PM's pass after that work ends (a merge, a change
+    // that ends: agents.ts kicks the loop) asks again; said once per reason in the decision log.
+    for (const product of unity) {
+      const v = milestoneBuildDue(product);
+      if (v.go) continue;
+      const line = `milestone "${m.title}": every task is merged; its build of ${name(product)} waits: ${v.why}`;
+      if (listDecisions({ since: 0, action: 'milestone-wait', limit: 10_000 }).find((d) => d.subject === id)?.detail !== line.slice(0, 2000)) logDecision('milestone-wait', id, m.product, line);
+      return;
+    }
     const { startBeta } = await import('./pipeline.ts');
-    for (const product of [...new Set(tasks.map((t) => t.product))]) {
+    for (const product of products) {
       const plays = await playsFor(tasks.filter((x) => x.product === product));
-      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. Check each one works and nothing regressed.`, plays, playtest: true, quiet: 0, origin: m.origin });
+      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Build it for the milestone.'}`, plays, playtest: plays.length > 0, quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
       runs.push(r.id);
     }
     setMilestoneChecks(id, runs);
-    logDecision('milestone-check', id, m.product, `milestone "${m.title}": every task merged and built; started ${runs.join(', ')} to playtest its tasks on beta and judge their criteria`);
+    logDecision('milestone-check', id, m.product, `milestone "${m.title}": every task merged${unity.length ? ` (${unity.map(name).join(', ')}: complete in code, nothing else queued, so beta's head is built once now)` : ' and built'}; started ${runs.join(', ')} to playtest its tasks on beta and judge their criteria`);
     return;
   }
   // A run a newer beta run took over: the newer one plays it (betaqueue.ts absorbed).
@@ -833,6 +854,9 @@ export function brokenCheck(run: string, product?: string): string | null {
   // Over and not failed counts as done here (buildOf reads any other status as a run that threw).
   // A cancelled build was never built: this run says nothing about beta (and nothing is blamed), the next one builds it.
   if (buildCancelled(run, p)) return `beta's build was cancelled in run ${run}, so beta was not built or checked there`;
+  // Its Unity build was held (unitybuild-policy.ts): nothing was built or played, so nothing was checked.
+  const held = heldBuildRun(run, p);
+  if (held) return `beta's Unity build was held in run ${run} (${held}), so beta was not built or checked there`;
   // A Unity project Studio builds: a run with no build of beta's head built nothing, so it checked nothing.
   const sp = unityStudioBuilt(p) ? buildProof({ unity: true, built: builtBy(run, p), includes: true }) : undefined;
   const build = buildOf(p, { ...r, status: r.status === 'failed' ? 'failed' : 'done' }, sp);

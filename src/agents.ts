@@ -36,6 +36,7 @@
 
 import { buildCheckBrief } from './buildfix.ts';
 import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
+import { unityBuildVerdict } from './unitybuild-policy.ts';
 import { unityCheckAsync, unityFixPrompt, issueLines, looksUnity, changedCsFilesAsync, type UnityCheckResult } from './unitycheck.ts';
 import { rubricBrief, isGame, qualityGate, failLine } from './quality.ts';
 import { qualityScan, qualityFixPrompt, scanLines, type QualityScan } from './quality-scan.ts';
@@ -322,6 +323,9 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   // bug goes back to open so the PM picks it up again (at most maxTries attempts, then J is asked): consumed means it
   // will get done, not that it's dropped when an attempt crashes.
   if (patch.status !== undefined && patch.status !== cur?.status) kickFollowups();
+  // A change that ends may leave its project with nothing queued: the PM's pass looks now (a milestone's one Unity build
+  // waits for exactly that, unitybuild-policy.ts), not on its next minute.
+  if (patch.status !== undefined && patch.status !== cur?.status && ['merged', 'failed', 'closed', 'cancelled'].includes(String(patch.status))) void import('./pm.ts').then((m) => m.kick()).catch(() => {});
   if (patch.status === 'failed' && cur?.status !== 'failed') reopenTaken(id, (parse(next.findings) ?? []) as string[], String(next.detail ?? ''));
 }
 
@@ -2725,7 +2729,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       // The commit it played (verify.sha can move later, when the base is merged in): what pm.ts compares with beta to
       // keep this playtest's criteria as the task's verdict (acceptance.ts changeVerdictHolds).
       const head = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out.trim();
-      const verify: any = await verifyChange(getChange(id)!, p, findings, jobs).catch((e: any) => ({ outcome: 'not played', error: `the playtest couldn't run: ${String(e.message ?? e).slice(0, 300)}` }));
+      const verify: any = await verifyChange(getChange(id)!, p, findings, jobs, { asked: Boolean(ph.requested) }).catch((e: any) => ({ outcome: 'not played', error: `the playtest couldn't run: ${String(e.message ?? e).slice(0, 300)}` }));
       save({ step: 'finish', verify: { ...verify, played: verify?.build?.sha || head || ph.tip } });
     }
 
@@ -2887,6 +2891,7 @@ export function readyDetail(v: any) {
   const played = playtested(v);
   const met = played && v.criteria?.length ? ` · criteria ${v.criteria.filter((k: any) => k.met === 'yes').length}/${v.criteria.length} met` : '';
   const what = played ? `playtest ${v.outcome ?? '?'} · review: ${v.verdict ?? 'n/a'}${met}`
+    : v?.outcome === 'not played' && v.held ? `ready: agent's checks passed (not played: ${String(v.error ?? '').slice(0, 200)})`
     : v?.outcome === 'not played' ? `ready: agent's checks passed (the playtest asked for couldn't run: ${String(v.error ?? '').slice(0, 160)})`
       : "ready: agent's checks passed, pull request open (not playtested)";
   const unity = v?.unityCheck ? ` · ${v.unityCheck.engine === 'none' ? 'Unity check: no C# changed' : `Unity check passed (${v.unityCheck.engine === 'roslyn' ? 'Roslyn' : 'built-in'}, ${v.unityCheck.files.length} file${v.unityCheck.files.length === 1 ? '' : 's'})`}` : '';
@@ -3072,7 +3077,8 @@ async function buildChangeInCloud(c: Change, p: Product, buildId: string): Promi
   const B = await import('./builds.ts');
   addLog(c.id, `build: ${sha.slice(0, 7) || c.branch} through ${p.name}'s builds list (${buildId}), published for this change only`);
   update(c.id, { detail: 'building the branch in the cloud' });
-  const r = await B.startBuild(p.id, { build: buildId, change: c.id, ref: c.branch });
+  // Only a playtest a person asked for gets here (verifyChange): a person's build (unitybuild-policy.ts).
+  const r = await B.startBuild(p.id, { build: buildId, change: c.id, ref: c.branch, cause: 'person' });
   // Never waited on longer than a build may take (2026-11-10: a change waited 12 hours on a build that never ran): past
   // that, the run is cancelled and the change goes on without it (a verify that couldn't build never fails a change).
   const limit = B.BUILD_MAX_MS() + 15 * 60_000;
@@ -3100,7 +3106,19 @@ function fileMissingBuildTask(p: Product) {
   } catch (e: any) { console.warn(`[studio] filing the build-settings task for ${p.id}: ${e.message ?? e}`); }
 }
 
-export async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo) {
+/**
+ * A Unity change's verify playtest that nobody asked for isn't built (J, 2026-11-11: each change built its branch in the
+ * cloud, and ~20 Unity builds queued at once used up the region's CPU quota): Unity builds wait for a milestone's end with
+ * nothing else queued (unitybuild-policy.ts), and this change is still queued work. It goes on without that build, like a
+ * verify that couldn't build; the compile gate (compilecheck.ts: Gen compiles the branch, no player build) is its check.
+ * Exported for the tests.
+ */
+export function heldChangeVerify(c: Pick<Change, 'id'>, p: Pick<Product, 'id' | 'name'>, compile?: { summary?: string } | null): string {
+  const why = unityBuildVerdict('auto', { name: p.name, milestone: null, changes: [c.id], tasks: [] }).why;
+  return `${why}; this change is checked by the compile check instead${compile?.summary ? ` (${compile.summary})` : ''}, and played on beta's milestone build`;
+}
+
+export async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo, o: { asked?: boolean } = {}) {
   let dir: string;
   let build: ChangeBuild | null = null;
   let cloudUrl: string | null = null;
@@ -3113,9 +3131,14 @@ export async function verifyChange(c: Change, p: Product, findings: any[], jobs?
     // and goes on to beta's own build on the agent's checks, like a skipped compile check. One Studio task asks for settings.
     fileMissingBuildTask(p);
     return { outcome: 'not played', error: `${plan.why}, so Studio can't build it to play: merged on the agent's checks`, build: null };
+  } else if (plan.how === 'cloud' && !o.asked) {
+    // Nobody asked to play this change: no Unity build of its branch (heldChangeVerify).
+    const why = heldChangeVerify(c, p, phaseOf(c.id)?.compile ?? null);
+    if (getChange(c.id)) addLog(c.id, `not played: ${why}`);
+    return { outcome: 'not played', error: why, build: null, held: true };
   } else if (plan.how === 'cloud') {
-    // A project built through its builds list: the branch is built the way beta is (builds.ts, Hawkes Gen's cloud build),
-    // published at c/<change>/, and that address is what gets played.
+    // A playtest a person asked for, of a project built through its builds list: the branch is built the way beta is
+    // (builds.ts, Hawkes Gen's cloud build), published at c/<change>/, and that address is what gets played.
     build = await buildChangeInCloud(c, p, plan.spec.id).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
     if (!build.ok && /^cancelled\b/.test(String(build.error))) return { outcome: 'not played', error: build.error, build, cancelled: true };
     if (!build.ok) return { outcome: 'build failed', error: build.error, build };

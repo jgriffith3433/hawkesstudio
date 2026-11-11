@@ -1472,7 +1472,13 @@ type BetaOptions = { focus?: string; reverify?: boolean; origin?: string | null;
    *  while no other change of the product is on its way into beta (betaqueue.ts mergesInFlight). */
   merge?: string;
   /** A build tag J pushed (tagbuild.ts): this run builds that exact commit in the cloud (GitHub mode) instead of beta's checkout. */
-  tag?: { name: string; sha: string } };
+  tag?: { name: string; sha: string };
+  /**
+   * Who asked for this run, for its Unity build (unitybuild-policy.ts): a person (the Beta button, the API), or a
+   * milestone's check (pm.ts milestoneCheck, which asked the rule when it started it). None: automatic, so a Unity build
+   * of beta's head runs only once a milestone is complete and nothing else is queued.
+   */
+  cause?: 'person' | 'milestone' };
 /** A reached milestone's check (pm.ts milestoneCheck): one scenario (none: the product's first local one) and the criteria judged on it. */
 export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; criteria: string[] };
 
@@ -1485,7 +1491,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}) }), Date.now());
   tagRun(id, o.origin);
   // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
   if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) {
@@ -1514,7 +1520,7 @@ async function unchangedPass(p: Product, name: string): Promise<string | null> {
   return noRuntimeChange(files) ? `${name} passed on beta ${pass.sha.slice(0, 7)} (run ${pass.run}); since then only docs and notes changed (${files.length} file(s)): not played again` : null;
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
     const nameFor = (x: { scenario?: string }) => {
@@ -1598,15 +1604,24 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       const spec = BB.unityBuildOf(p)!;
       const s = startStep(id, p.id, 'build', spec.id, 'beta\'s head, built before it is played');
       const slug = String(p.github);
+      // A Unity build only at a milestone's end with nothing else queued, or when a person asked (J, 2026-11-11):
+      // unitybuild-policy.ts. Held, the run ends here: nothing is built, and nothing plays an older build in its place.
+      const P = await import('./unitybuild-policy.ts');
+      const unityCause = cause ?? 'auto';
       const r = await BB.ensureBetaBuild(p.id, spec.id, {
         head: async () => {
           const { repoToken, githubFetch } = await import('./ghtoken.ts');
           const { githubCommit } = await import('./sitestore.ts');
           return githubCommit(slug, BETA, githubFetch(await repoToken(slug)));
         },
-        start: async (sha) => (await import('./builds.ts')).startBuild(p.id, { trigger: 'beta', build: spec.id, sha, ref: BETA, origin: null }),
+        hold: () => { const v = P.unityBuildGate(p.id, unityCause); return v.go ? null : v.why; },
+        start: async (sha) => (await import('./builds.ts')).startBuild(p.id, { trigger: 'beta', build: spec.id, sha, ref: BETA, origin: null, cause: unityCause }),
         say: (detail) => updateStep(s, { detail }),
       });
+      if (r.how === 'held') {
+        updateStep(s, { status: 'skipped', detail: r.detail, data: { held: r.detail, sha: r.sha || null }, finished: true });
+        return void closeRun(id, `beta ${p.id} (Unity build held)`);
+      }
       updateStep(s, { status: r.ok ? (r.how === 'already built' ? 'skipped' : 'done') : 'failed', detail: r.detail, data: r.ok ? { built: { sha: r.sha, version: r.version, run: r.run, how: r.how } } : { failed: true, sha: r.sha || null }, finished: true });
       if (!r.ok) return void closeRun(id, `beta ${p.id}`);
     } else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});

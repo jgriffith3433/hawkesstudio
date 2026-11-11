@@ -543,7 +543,7 @@ export async function deployMain(p: Product, sha: string, origin?: string | null
   const b = firebaseOf(p);
   if (!b) return null;
   const { startBuild } = await import('./builds.ts');
-  const run = await startBuild(p.id, { build: b.id, ref: 'main', sha, origin: origin ?? null });
+  const run = await startBuild(p.id, { build: b.id, ref: 'main', sha, origin: origin ?? null, cause: 'release' });
   opLog(`deploying ${sha.slice(0, 7)} to Firebase (live) from Studio's cloud build${run ? `: run ${run.id}` : ''}`);
   return run?.id ?? null;
 }
@@ -1057,7 +1057,7 @@ export const MAX_PLAY_ROUNDS = 3;
  * then goes live if the play passed, waits again if beta moved meanwhile (up to MAX_PLAY_ROUNDS plays), or fails with
  * the play's own reason. `play` is for the tests.
  */
-type BetaPlayer = (product: string, short: string, why: string) => Promise<{ started?: string; playing?: string; played?: string; error?: string }>;
+type BetaPlayer = (product: string, short: string, why: string, start?: undefined, cause?: 'person') => Promise<{ started?: string; playing?: string; played?: string; error?: string }>;
 /** The tests' stand-in for starting beta's play (golive-policy.ts playBeforeGoLive). */
 export const goLiveHooks: { play?: BetaPlayer } = {};
 
@@ -1065,7 +1065,10 @@ export async function waitForBetaPlay(op: Op, product: string, short: string, pl
   const rounds = op.wait?.rounds ?? 0;
   if (rounds >= MAX_PLAY_ROUNDS) throw new StudioError(`Not going live: beta kept moving while it was being playtested (${rounds} plays; now ${short}). It goes live with the next beta play that passes.`);
   const go = play ?? goLiveHooks.play ?? (await import('./golive-policy.ts')).playBeforeGoLive;
-  const r = await go(product, short, `going live was asked for (${op.by ?? 'someone'})`);
+  // A person asked to go live: shipping needs beta's head built, so its Unity build runs even with work queued
+  // (unitybuild-policy.ts). Studio's own go live (by "Studio ...") waits for the milestone's build like the rest.
+  const asked = Boolean(op.by) && !/^Studio\b/.test(String(op.by));
+  const r = await go(product, short, `going live was asked for (${op.by ?? 'someone'})`, undefined, asked ? 'person' : undefined);
   if (r.started || r.playing) throw new OpWaits(`waiting for beta's playtest at ${short} (${r.started ? 'started' : 'already playing'}: run ${r.started ?? r.playing}); goes live by itself if it passes`, r.started ?? r.playing ?? null);
   if (r.played) {
     const run = db.prepare('SELECT status, detail FROM runs WHERE id = ?').get(r.played) as any;

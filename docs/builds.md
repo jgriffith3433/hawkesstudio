@@ -23,7 +23,8 @@ GitHub mode into the website repo). Everything here is the `builds` list, which 
     "workflow": "build.yml",   // actions: the workflow file that builds it (Studio can dispatch it)
     "artifact": "web",         // actions: the artifact the workflow uploads (default: the build's id)
     "on": ["beta"],            // when Studio builds it by itself: beta pushes, build-* tags; [] = only when asked (actions
-                               // builds default to []: their own workflow's triggers start them, and they report in)
+                               // builds default to []: their own workflow's triggers start them, and they report in).
+                               // A unity build's beta pushes wait for a milestone's end (below, "When a Unity build runs")
     "publish": { "project": "yoobalandgame", "path": "Game/" }, // also put the output into another project's site here
     "playtest": true,          // play the build when it's published (default true for web)
     "machine": "m"             // unity: Gen's build machine, s | m | l | xl or { "cpu": 4, "memoryGiB": 12 } (default m)
@@ -62,6 +63,38 @@ What builds it (the runner) follows from `tool`:
 - **actions → the project's own GitHub Actions**: the workflow builds however it likes (GameCI for Unity with their own
   license, Godot export, anything), uploads an artifact, then tells Studio (below). Studio downloads the artifact and
   carries on. Studio can start it (`workflow_dispatch`) when asked.
+
+## When a Unity build runs (unitybuild-policy.ts)
+
+J, 2026-11-11: "Unity builds should really just be for the milestone end but only if there's not more work to be done."
+That day about 20 Unity builds (8 vCPU Cloud Run jobs each) were queued at once, one per agent change's verify, per push
+to beta and per beta run after a merge, and they used up the region's CPU quota so Studio's own server couldn't start.
+
+A project's `unity` build that nobody asked for runs only when **both**:
+1. an open milestone with an item of the project is **complete in code**: every task of its items merged into beta
+   (roadmap.ts `codeComplete`; not "built by beta", which would wait for the very build this holds), and
+2. **nothing else is queued** for the project: no agent change queued or in flight (queued, working, verifying,
+   revising, ready, needs answer, waiting on Gen), no roadmap task working, in review or waiting on an answer, and no
+   planned task that will start by itself (one behind an idea, a failed or missing task, or the owner's GPU budget won't).
+
+Then ONE build of beta's head runs: the PM's milestone check (pm.ts `milestoneCheck`, started by the pass after the last
+merge or after the project's last change ends) starts one beta run that builds it (`cause: 'milestone'`), plays the
+milestone's scenarios, and the flow goes on from that build: the milestone is reached, the one beta playtest before going
+live plays it, go live. A second start for the same commit waits for that build (builds.ts `buildOne`, betabuild.ts
+`ensureBetaBuild`); nothing polls.
+
+Always built (`StartOptions.cause`): a person's ask (`person`: the builds route and Talk's build tool, the Inbox's Build
+again, rebuilding the beta site, the Beta button, "Playtest this change", and a go live a person asked for, whose one
+beta play builds beta's head: deploy.ts `waitForBetaPlay`), a `build-*` tag (`tag`), the release build when going live
+(`release`), and a retry of a build that already ran (`retry`: buildaccess.ts, inbox.ts after an
+infrastructure failure). Everything else is `auto` and goes by the rule: a push to beta (the hook's answer says `held`),
+a beta run after a merge (its build step is skipped with the words, and the run plays nothing older in its place), a beta
+site rebuild after a sync, the rebuild after a build fixer's change merged (buildfix.ts: the chain waits for the
+milestone's build), a build revived after restarts that was automatic, and an agent change's verify (agents.ts
+`verifyChange`: not played; the compile gate, compilecheck.ts, is its check). A held start says
+"held: Unity builds run once the milestone is complete and nothing else is queued for <project> (...)" where its run, step,
+change or the hook's answer shows it. The PM leaves held beta runs alone: they build nothing, so they are never a
+task's build, never a failed one, and start no beta run of their own (pm.ts `followBuilds`, `brokenCheck`).
 
 ## Builds are runs
 
@@ -118,7 +151,8 @@ through a pull request into its beta when a project needs one, and checks the pu
 
 Each repo's `.github/workflows/hawkes-studio.yml` (repokit.ts writes it) posts GitHub's signed OIDC token to the
 Studio's own address (`<STUDIO_PUBLIC_URL>/api/hooks/github`, with that address as the audience):
-- a push to `beta`: every build with `on: ["beta"]` runs, then the beta site;
+- a push to `beta`: every build with `on: ["beta"]` runs, then the beta site (a `unity` build only by the rule above;
+  held, the answer's `held` says why);
 - a `build-*` tag: every build with `on: ["tag"]` runs at that commit;
 - a push to `main`: going live as before.
 

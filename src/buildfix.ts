@@ -65,7 +65,7 @@ export type Attempt = {
   errors: string[];
   change: string; title: string; at: number;
   /** The rebuild after the fix merged: the run asked for (or why it could not start). */
-  rebuild?: { at: number; run?: string; failed?: string };
+  rebuild?: { at: number; run?: string; failed?: string; /** Held by the Unity build rule (unitybuild-policy.ts): the milestone's build checks the fix. */ held?: string };
 };
 export type Chain = { id: string; product: string; build: string; status: 'open' | 'passed' | 'escalated'; reason: string | null; attempts: Attempt[]; created: number; updated: number };
 const chainOf = (r: any): Chain => { let a: Attempt[] = []; try { a = JSON.parse(r.attempts); } catch { /* none */ } return { ...r, attempts: Array.isArray(a) ? a : [] }; };
@@ -125,7 +125,7 @@ async function escalate(c: Chain, why: string, row: any): Promise<void> {
  * A fixer's change merged into beta: build the same build id again on beta's head, even when its builds only run on a tag
  * (agents.ts approve). That rebuild is what verifies the fix. Never throws; false when the change isn't a build fixer's.
  */
-export async function fixMerged(changeId: string, deps: { rebuild?: (product: string, build: string) => Promise<{ id: string } | null> } = {}): Promise<boolean> {
+export async function fixMerged(changeId: string, deps: { rebuild?: (product: string, build: string, onHeld: (why: string) => void) => Promise<{ id: string } | null> } = {}): Promise<boolean> {
   try {
     const rows = db.prepare("SELECT * FROM build_chains WHERE status = 'open' AND attempts LIKE ?").all(`%${changeId}%`) as any[];
     const c = rows.map(chainOf).find((x) => x.attempts.some((a) => a.change === changeId));
@@ -134,9 +134,13 @@ export async function fixMerged(changeId: string, deps: { rebuild?: (product: st
     if (a.rebuild) return true; // asked already (a second call of the merge)
     a.rebuild = { at: Date.now() };
     try {
-      const rebuild = deps.rebuild ?? (async (product, build) => (await import('./builds.ts')).startBuild(product, { build }));
-      const run = await rebuild(c.product, c.build);
+      // Automatic: a Unity build waits for a milestone's end with nothing else queued (unitybuild-policy.ts); held, the
+      // fix is checked by that build instead, and the chain stays open until then.
+      const rebuild = deps.rebuild ?? (async (product, build, onHeld) => (await import('./builds.ts')).startBuild(product, { build, cause: 'auto', onHeld }));
+      let held: string | null = null;
+      const run = await rebuild(c.product, c.build, (why) => { held = why; });
       if (run) a.rebuild.run = run.id;
+      else if (held) a.rebuild.held = held;
       else a.rebuild.failed = 'the project has no such build any more';
     } catch (e: any) { a.rebuild.failed = String(e?.message ?? e).slice(0, 200); }
     if (a.rebuild.failed) { saveChain(c); await escalate(c, `The fix merged (change ${changeId}) but the rebuild could not start: ${a.rebuild.failed}`, null); return true; }

@@ -27,6 +27,7 @@ import { db, newId, J, parse } from './db.ts';
 import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 import { walkAwaySettings, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
 import { refreshTaskChanges } from './queue-follow.ts';
+import { unityBuildOf } from './betabuild.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -244,7 +245,8 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
     return 'you: it failed after its tries';
   }
   if (t.status === GPU_WAIT) return 'a GPU server: stand-ins are on beta; Studio runs it again for the real art when one is up';
-  if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})` : "beta's build";
+  // A Unity project Studio builds builds beta once, at a milestone's end with nothing else queued (unitybuild-policy.ts).
+  if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})` : unityGated(t.product) ? "beta's build, which runs once the milestone is complete and nothing else is queued" : "beta's build";
   return null;
 }
 
@@ -743,7 +745,19 @@ export function milestoneProgress(id: string) {
   const done =items.filter((i) => ['on beta', 'verified', 'live', 'done'].includes(i.progress.state));
   const tasks = { total: 0, merged: 0, built: 0, working: 0, waiting: 0 };
   for (const i of items) for (const k of Object.keys(tasks) as (keyof typeof tasks)[]) tasks[k] += i.progress[k];
-  return { items: items.map((i) => ({ id: i.id, title: i.title, product: i.product, status: i.status, display: i.progress.label, state: i.progress.state, consumed: Boolean(i.consumed) })), done: done.length, total: items.length, tasks };
+  const coded = items.map((i) => ({ i, coded: codeComplete(i.progress) }));
+  return { items: coded.map(({ i, coded: c }) => ({ id: i.id, title: i.title, product: i.product, status: i.status, display: i.progress.label, state: i.progress.state, consumed: Boolean(i.consumed), coded: c })), done: done.length, coded: coded.filter((x) => x.coded).length, total: items.length, tasks };
+}
+/**
+ * An item complete in code: on beta (or further), or every task of it merged into beta, built or not. A Unity project
+ * Studio builds holds its Unity builds until a milestone is complete in code (unitybuild-policy.ts, J 2026-11-11), so its
+ * milestone can't wait for a build of each merge: that build would only come once the milestone was already complete.
+ */
+export const codeComplete = (p: Pick<Progress, 'state' | 'merged' | 'total'>) => ['on beta', 'verified', 'live', 'done'].includes(p.state) || (p.total > 0 && p.merged === p.total);
+/** A product whose Unity builds wait for a milestone's end (betabuild.ts unityBuildOf: its builds list has a unity build). */
+export function unityGated(product: string | null | undefined): boolean {
+  if (!product) return false;
+  try { return Boolean(unityBuildOf(loadProducts().find((p) => p.id === product) ?? {})); } catch { return false; }
 }
 /** Every task of the milestone's items (not dropped or ideas). */
 export const milestoneTasks = (id: string) => (db.prepare(`SELECT id FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[])
@@ -778,12 +792,17 @@ function setItemMilestone(item: string, milestone: string | null) {
   if (!db.prepare('SELECT id FROM items WHERE id = ?').get(item)) throw new StudioError(`No item ${item}`);
   db.prepare('UPDATE items SET milestone = ?, updated = ? WHERE id = ?').run(milestone || null, Date.now(), item);
 }
-/** Open milestones whose items (at least one) are all on beta (merged and built): their check runs, then reached (pm.ts). */
+/**
+ * Open milestones whose items (at least one) are all on beta (merged and built): their check runs, then reached (pm.ts).
+ * An item of a Unity project Studio builds counts once it is complete in code (codeComplete): the milestone's check is
+ * what builds beta's head for it, once nothing else is queued for that project (unitybuild-policy.ts).
+ */
 export function milestonesToReach() {
-  return (db.prepare(`SELECT * FROM milestones WHERE status = 'open'`).all() as Milestone[]).filter((m) => {
-    const p = milestoneProgress(m.id);
-    return p.total > 0 && p.done === p.total;
-  });
+  return (db.prepare(`SELECT * FROM milestones WHERE status = 'open'`).all() as Milestone[]).filter((m) => milestoneComplete(milestoneProgress(m.id)));
+}
+/** Every item on beta, or complete in code where its product's Unity build waits for the milestone (unityGated). */
+export function milestoneComplete(p: { total: number; items: { state: string; coded: boolean; product: string | null }[] }) {
+  return p.total > 0 && p.items.every((i) => ['on beta', 'verified', 'live', 'done'].includes(i.state) || (i.coded && unityGated(i.product)));
 }
 export const markReached = (id: string) => db.prepare(`UPDATE milestones SET status = 'reached', reached_at = ?, updated = ? WHERE id = ?`).run(Date.now(), Date.now(), id);
 

@@ -55,6 +55,14 @@ export type StartOptions = {
   retry?: number;
   /** An Actions build that finished: its workflow run and artifact (server.ts hooks). */
   artifact?: { runId: string; name?: string };
+  /**
+   * Who or what started it, for a Unity build's rule (unitybuild-policy.ts): a person, a build-* tag, the go-live
+   * release, a retry, a milestone's check, or anything else (auto: held until a milestone is complete and nothing else
+   * is queued). None: a trigger or a change is auto, a build-* tag is tag, the rest was asked for (causeOf).
+   */
+  cause?: import('./unitybuild-policy.ts').UnityBuildCause;
+  /** Told the plain words when a Unity build of this start was held (its step, change or hook shows them). */
+  onHeld?: (why: string, builds: string[]) => void;
 };
 
 /** A project's builds: its own, else a web project's implicit one (its beta branch built, or published as it is). */
@@ -238,16 +246,32 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
   const p = getProduct(projectId);
   const all = buildsOf(p);
   if (!all.length) throw new StudioError(`${p.name} has no builds (docs/builds.md: set "builds" on the project)`, 409);
-  const specs = o.build ? all.filter((b) => b.id === o.build) : o.trigger ? all.filter((b) => triggersOf(b).includes(o.trigger!)) : all;
+  let specs = o.build ? all.filter((b) => b.id === o.build) : o.trigger ? all.filter((b) => triggersOf(b).includes(o.trigger!)) : all;
   if (o.build && !specs.length) throw new StudioError(`${p.name} has no build "${o.build}" (it has ${all.map((b) => b.id).join(', ')})`, 404);
   if (!specs.length) return null;
+  // A Unity build nobody asked for waits for a milestone's end with nothing else queued (J, 2026-11-11: ~20 Unity builds
+  // queued at once used up the region's CPU quota). The rule is unitybuild-policy.ts; here every start asks it.
+  const cause = (await import('./unitybuild-policy.ts')).causeOf(o);
+  const unity = specs.filter((b) => b.tool === 'unity');
+  const verdict = unity.length ? (await import('./unitybuild-policy.ts')).unityBuildGate(p.id, cause) : null;
+  if (verdict && !verdict.go) {
+    specs = specs.filter((b) => b.tool !== 'unity');
+    console.log(`[builds] ${p.id}: ${unity.map((b) => b.id).join(', ')} ${verdict.why}`);
+    o.onHeld?.(verdict.why, unity.map((b) => b.id));
+    if (!specs.length) return null;
+  }
   if (specs.some((b) => b.tool === 'unity')) await requireCloudBuilds();
   // A stuck "building" row from before (its run gone) is settled now, so it never stands in this build's way.
   await reconcileBuilds({ product: p.id }).catch((e) => console.warn(`[builds] ${p.id}: reconciling: ${e?.message ?? e}`));
   const { tagRun } = await import('./followup.ts');
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'build', 'running', `build ${p.id}`, JSON.stringify([p.id]), JSON.stringify({ builds: specs.map((b) => b.id), ref: o.ref, trigger: o.trigger, change: o.change }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'build', 'running', `build ${p.id}`, JSON.stringify([p.id]), JSON.stringify({ builds: specs.map((b) => b.id), ref: o.ref, trigger: o.trigger, change: o.change, cause }), Date.now());
   tagRun(id, o.origin);
+  // The Unity builds held from this start (a push building its web build too): the run says so on a step of their own.
+  if (verdict && !verdict.go) {
+    const { startStep, updateStep } = await import('./pipeline.ts');
+    for (const b of unity) updateStep(startStep(id, p.id, 'build', b.id, 'unity'), { status: 'skipped', detail: verdict.why, data: { held: verdict.why }, finished: true });
+  }
   // A rebuild is the answer to the failed build's Inbox card: it goes now, and comes back only if this one fails differently.
   if (!o.change) await (await import('./inbox.ts')).resolveBuildCards(p.id, specs.map((b) => b.id), o.origin ? 'Talk' : 'J').catch((e) => console.warn(`[builds] ${p.id}: resolving the failed build's card: ${e?.message ?? e}`));
   // Building in Studio's own cloud: a card still waiting on GitHub's "Actions: write" for this project has nothing to wait for.
@@ -1233,7 +1257,8 @@ export async function handleBuildRoutes(req: http.IncomingMessage, res: http.Ser
   if (!m[2] && method === 'POST') {
     const b = await readJson(req);
     const { originOf } = await import('./followup.ts');
-    const r = await startBuild(p.id, { build: b.build ? String(b.build) : undefined, ref: b.ref ? String(b.ref) : undefined, origin: originOf(req) });
+    // A person (the dashboard's Build, Talk's build tool, the CLI): always built, Unity too (unitybuild-policy.ts).
+    const r = await startBuild(p.id, { build: b.build ? String(b.build) : undefined, ref: b.ref ? String(b.ref) : undefined, origin: originOf(req), cause: 'person' });
     return send(200, r ? { run: r.id, builds: r.builds } : { run: null, note: 'nothing to build' }), true;
   }
   if (m[2] && method === 'POST') return send(200, await setBeta(p.id, m[2], Number(m[3]))), true;
@@ -1265,8 +1290,11 @@ export async function onRepoHook(claims: Record<string, any>, body: any) {
   const trigger: BuildTrigger | null = ref === 'refs/heads/beta' ? 'beta' : /^refs\/tags\/build-/.test(ref) ? 'tag' : null;
   if (!trigger) return null;
   const golive: string[] = [];
+  // A push to beta is "auto" for a Unity build (unitybuild-policy.ts): held until a milestone is complete and nothing else
+  // is queued, said in the answer; a build-* tag always builds.
+  const held: Record<string, string> = {};
   for (const p of projects) {
-    const r = await startBuild(p.id, { trigger, sha, ref: trigger === 'beta' ? 'beta' : ref.replace(/^refs\/tags\//, '') }).catch((e) => { out[p.id] = `not built: ${e.message}`; return null; });
+    const r = await startBuild(p.id, { trigger, sha, ref: trigger === 'beta' ? 'beta' : ref.replace(/^refs\/tags\//, ''), onHeld: (why) => { held[p.id] = why; } }).catch((e) => { out[p.id] = `not built: ${e.message}`; return null; });
     if (r) out[p.id] = r.id;
     // Beta moved and nothing builds for it here (Hawkes Studio itself: its own CI deploys it): the go-live policy is
     // asked now, as a build's end would (2026-11-10: #324 to #327 sat on beta with green CI, because in a customer's
@@ -1278,5 +1306,5 @@ export async function onRepoHook(claims: Record<string, any>, body: any) {
     }
   }
   if (golive.length) void import('./golive-policy.ts').then((G) => Promise.all(golive.map((id) => G.autoGoLive(id, `beta moved to ${sha.slice(0, 7)}`)))).catch(() => {});
-  return { ok: true, trigger, runs: out, ...(golive.length ? { golive } : {}) };
+  return { ok: true, trigger, runs: out, ...(Object.keys(held).length ? { held } : {}), ...(golive.length ? { golive } : {}) };
 }
