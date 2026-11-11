@@ -72,7 +72,7 @@ export type PmSettings = {
   delegatedMerges: boolean;
   /** Agent starts the PM makes per day (Max-plan usage). */
   maxStartsPerDay: number;
-  /** Agents working at once that the PM will add to (it never starts one beyond this). */
+  /** Agents working at once that the PM will add to (it never starts one beyond this). Never below Agents' own max concurrent: pmSettings() raises it to that. */
   maxConcurrent: number;
   /** Tries per task (the first attempt and its revisions) before J is asked. */
   maxTries: number;
@@ -93,14 +93,31 @@ const stored = (): Partial<PmSettings> => {
     return {};
   }
 };
+/** The ceiling Settings → Agents sets (agents.json, read here because agents.ts imports this file lazily). */
+function agentsCeiling(): number {
+  try {
+    const n = JSON.parse(fs.readFileSync(path.join(DATA, 'agents.json'), 'utf8')).maxConcurrent;
+    return typeof n === 'number' ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+/** What was saved or defaulted, before the agents' ceiling applies. */
+const rawPmSettings = (): PmSettings => ({ ...defaults(), ...stored() });
+/**
+ * One ceiling (J, 2026-11-10: "6 of 4 used"): agents may run up to agents.maxConcurrent, so the PM's own "Agents at once"
+ * can never be lower than it. It is the higher of the two, so the PM never refuses a start while agents have room, and
+ * its capacity can't read over-full just because Agents allows more.
+ */
 export function pmSettings(): PmSettings {
-  return { ...defaults(), ...stored() };
+  const s = rawPmSettings();
+  return { ...s, maxConcurrent: Math.max(s.maxConcurrent, agentsCeiling()) };
 }
 /** Dollar caps of walk-away mode: 0 or more, at most this. */
 const GPU_CAP_MAX = 1000;
 export function savePmSettings(patch: Partial<PmSettings>, by = 'J') {
   const d = defaults();
-  const cur = pmSettings();
+  const cur = rawPmSettings();
   const next = { ...cur };
   const write: Record<string, unknown> = { ...stored() };
   for (const k of Object.keys(d) as (keyof PmSettings)[]) {

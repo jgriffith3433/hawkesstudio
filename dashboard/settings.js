@@ -311,7 +311,7 @@
       ${row('PM loop', bool('pm', 'enabled', p.enabled, 'running'))}
       ${row('Delegated merges into beta', bool('pm', 'delegatedMerges', p.delegatedMerges))}
       ${row('Starts per day', num('pm', 'maxStartsPerDay', p.maxStartsPerDay))}
-      ${row('Agents at once', num('pm', 'maxConcurrent', p.maxConcurrent, { min: 1, max: 8 }))}
+      ${row('Agents at once', num('pm', 'maxConcurrent', p.maxConcurrent, { min: 1, max: 8 }), 'The most agents the PM adds to. It is never lower than Agents → At once: the higher of the two applies, so raise Agents → At once to raise both.')}
       ${row('Tries before asking you', num('pm', 'maxTries', p.maxTries, { min: 1, max: 10 }))}
       ${row('Fix bugs when no task can start', bool('pm', 'fixBugs', p.fixBugs))}
       ${row('Daily PM turn after (hour)', num('pm', 'dailyHour', p.dailyHour, { min: 0, max: 23 }))}
