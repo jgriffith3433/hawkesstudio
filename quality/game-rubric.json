@@ -85,7 +85,8 @@
         "Story as experience: every story beat happens through gameplay, in-game cutscenes with real events, sound effects and Hawkes Gen voice lines. On-screen text is a last resort, one line at most; a beat told only in text fails."
       ],
       "checks": [
-        { "id": "world-bible", "kind": "scan", "what": "A world bible that is added or changed has every section: Areas, Landmarks, Who lives here, What happens, Story beats." },
+        { "id": "world-bible", "kind": "scan", "what": "A world bible that is added or changed has every section: Areas, Landmarks, Who lives here, Characters, What happens, Story beats." },
+        { "id": "characters", "kind": "scan", "what": "Every named character in the bible's Characters section has a want, an arc, the gameplay moment that shows it, three personality words, a Gen voice id and an idle, walk and talk animation set." },
         { "id": "quiet-gap", "kind": "playtest", "what": "The playtest walks each area and times the gaps between things to see, hear or do: none longer than 10 seconds.", "metric": "quality.maxQuietSeconds", "max": 10, "problem": "quality.quiet-gap" },
         { "id": "text-story", "kind": "playtest", "what": "Story text counted against voiced and acted beats: no beat told only in text.", "metric": "quality.textOnlyBeats", "max": 0, "problem": "quality.text-story" },
         { "id": "empty-area", "kind": "vision", "what": "How empty each area looks: bare floors, nothing alive, nothing to do.", "problem": "quality.empty-area" },
@@ -112,6 +113,7 @@
         { "id": "input-latency", "kind": "playtest", "world": "3d", "what": "Input to visible movement, measured by the feel sensor: under 100 ms.", "metric": "feel.inputLatencyMs", "max": 100, "problem": "quality.input-latency" },
         { "id": "hitch", "kind": "playtest", "what": "Frame hitches during play: no frame over 250 ms. Loading, title and menu screens and a scene's first seconds are load stutter, a note, not a fail.", "metric": "feel.worstHitchMs", "max": 250, "problem": "quality.hitch" },
         { "id": "video-hitch", "kind": "review", "what": "Stutters the recording shows (the review's video freezes): none over 250 ms. Advisory: the recorder can stall on its own, so it is a note unless the game's own frame timings agree (the hitch check).", "metric": "video.worstHitchMs", "max": 250, "optional": true, "advisory": true },
+        { "id": "level-metrics", "kind": "scan", "what": "docs/metrics.json records jump height, jump distance, run speed and corridor widths as numbers, and the game-feel defaults: coyote time and jump buffer at least 80 ms, hit-stop at least 40 ms." },
         { "id": "coyote-time", "kind": "playtest", "world": "3d", "what": "Jumping games report their coyote time: at least 80 ms.", "metric": "feel.coyoteMs", "min": 80, "optional": true },
         { "id": "jump-buffer", "kind": "playtest", "world": "3d", "what": "Jumping games report their jump buffer: at least 80 ms.", "metric": "feel.jumpBufferMs", "min": 80, "optional": true },
         { "id": "hit-stop", "kind": "playtest", "world": "3d", "what": "Combat games report their hit-stop: at least 40 ms on heavy hits.", "metric": "feel.hitStopMs", "min": 40, "optional": true },

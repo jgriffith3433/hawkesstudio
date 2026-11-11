@@ -32,6 +32,17 @@ test('each kind has its own rules', () => {
   assert.match(JOB_BRIEFS.feature.rules, /no placeholder art/);
   assert.match(JOB_BRIEFS.content.rules, /world bible/);
   assert.match(JOB_BRIEFS.polish.rules, /disappear for a player/);
-  assert.deepEqual(Object.values(JOB_BRIEFS).map((j) => j.prefix), ['Fix', 'Add', 'Content', 'Polish']);
+  assert.deepEqual(Object.values(JOB_BRIEFS).map((j) => j.prefix), ['Fix', 'Add', 'Content', 'Polish', 'New game']);
   assert.match(JOB_BRIEFS.polish.intro('Harbour', 'a fishing game'), /polish pass/);
+});
+
+test('new-game kind, and every game kind loads its design skills', async () => {
+  const { skillsBrief } = await import('../src/agents.ts');
+  assert.equal(jobKind({ request: 'Make the first playable version of "Harbour" from what the person described' }), 'new-game');
+  assert.deepEqual(JOB_BRIEFS.content.skills, ['story-through-play', 'level-design', 'game-feel']);
+  assert.deepEqual(JOB_BRIEFS['new-game'].skills, ['story-through-play', 'level-design', 'game-feel']);
+  const b = skillsBrief('content', 'hawkes');
+  for (const k of ['story-through-play', 'level-design', 'game-feel']) assert.match(b, new RegExp(`hawkes:${k}`));
+  assert.match(skillsBrief('new-game', 'studio'), /studio:game-quality/);
+  for (const root of ['.claude', 'customer-plugin']) for (const k of ['story-through-play', 'level-design', 'game-feel']) assert.ok(fs.existsSync(path.join(import.meta.dirname, '..', root, 'skills', k, 'SKILL.md')), `${root}/${k}`);
 });

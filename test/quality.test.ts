@@ -157,7 +157,8 @@ test('the scan reads C#, web code and the world bible', () => {
   const bi = scan.scanFile('docs/world-bible.md', Buffer.from(bible));
   assert.equal(bi.length, 1);
   assert.match(bi[0].detail, /Who lives here/);
-  assert.deepEqual(scan.scanFile('docs/world-bible.md', Buffer.from(`# G\n${scan.BIBLE_SECTIONS.map((s) => `## ${s}`).join('\n')}\n`)), []);
+  assert.match(bi[0].detail, /Characters/);
+  assert.deepEqual(scan.scanFile('docs/world-bible.md', Buffer.from(`# G\n${scan.BIBLE_SECTIONS.filter((s) => s !== 'Characters').map((s) => `## ${s}`).join('\n')}\n## Characters\nNone: a game with no named characters.\n`)), []);
 });
 
 /** A cube GLB (12 triangles, wound outward), with normals out or in, and a node scale. */
@@ -285,4 +286,35 @@ test('a project with no 3D world gets no camera or controls checks', () => {
   assert.ok(!g.unmeasured.some((u) => /input-latency|camera/.test(u)));
   assert.equal(q.hasWorld3d({ engine: 'web' }, { metrics: { 'feel.maxCameraDegPerSec': 90 } }), true);
   assert.equal(q.hasWorld3d({ engine: 'unity', world: 'none' }, {}), false);
+});
+
+test('world bible scan: every named character needs a want, arc, moment, three words, voice id and idle/walk/talk', () => {
+  const head = `# G\n${['Areas', 'Landmarks', 'Who lives here', 'What happens', 'Story beats'].map((s) => `## ${s}`).join('\n')}\n`;
+  const full = '- Want: the cellar key\n- Arc: wary, then trusting, then gone\n- Moment: she hands the player the key mid-fight\n- Personality: dry, proud, kind\n- Voice: v_8f3a21\n- Animations: idle, walk, talk, wave\n';
+  const ok = scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\n### Mara\n${full}`));
+  assert.deepEqual(ok, []);
+  const noVoice = scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\n### Mara\n${full.replace('- Voice: v_8f3a21\n', '')}`));
+  assert.equal(noVoice.length, 1);
+  assert.match(noVoice[0].detail, /Mara lacks a Gen voice id/);
+  const noWant = scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\n### Mara\n${full.replace('- Want: the cellar key\n', '')}`));
+  assert.match(noWant[0].detail, /a want/);
+  const noArc = scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\n### Mara\n${full.replace(/- Arc:.*\n/, '')}`));
+  assert.match(noArc[0].detail, /an arc/);
+  const noTalk = scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\n### Mara\n${full.replace('idle, walk, talk, wave', 'idle, walk')}`));
+  assert.match(noTalk[0].detail, /talk/);
+  const two = scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\n### Mara\n${full}### Ode\n- Want: rest\n`));
+  assert.equal(two.length, 1);
+  assert.equal(two[0].where, 'Ode');
+  assert.equal(scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\nNone: a solitary puzzle game.\n`)).length, 0);
+  assert.equal(scan.scanFile('docs/world-bible.md', Buffer.from(`${head}## Characters\n`)).length, 1);
+});
+
+test('metrics scan: numbers and the game-feel floors', () => {
+  const good = { jumpHeight: 2.1, jumpDistance: 4.6, runSpeed: 7.5, corridorWidths: { min: 2, combat: 6 }, feel: { coyoteMs: 100, jumpBufferMs: 80, hitStopMs: 40 } };
+  const run = (o: any) => scan.scanFile('docs/metrics.json', Buffer.from(JSON.stringify(o)));
+  assert.deepEqual(run(good), []);
+  assert.match(run({ ...good, jumpHeight: undefined })[0].detail, /jumpHeight/);
+  assert.match(run({ ...good, feel: { ...good.feel, coyoteMs: 50 } })[0].detail, /coyoteMs is 50/);
+  assert.match(run({ ...good, feel: { ...good.feel, hitStopMs: 20 } })[0].detail, /hitStopMs is 20/);
+  assert.match(run({ ...good, corridorWidths: {} })[0].detail, /corridorWidths/);
 });

@@ -85,6 +85,15 @@ One landmark per area a player can see from far off and steer by.
 ## Who lives here
 The characters and creatures, their routines through the day, and how they react to the player.
 
+## Characters
+One entry per named character, a "### <Name>" heading with every line below (the scan fails a character missing any):
+- Want: what they are after, in the world, right now.
+- Arc: how they change across the game, in three beats or fewer.
+- Moment: the gameplay moment that shows the want and the arc (an event the player is in, not a text box).
+- Personality: three words.
+- Voice: the Hawkes Gen voice id their lines are made with.
+- Animations: idle, walk, talk at least (the clips the game plays), then any more.
+
 ## What happens
 Per area: the interactions (several kinds), the events that happen on their own, the ambient sound, what changes over time.
 
@@ -93,4 +102,4 @@ Each beat as an event the player lives through (gameplay, an in-game cutscene wi
 where and when it happens. On-screen text is a last resort, one line at most.
 ```
 
-Ask the fun-reviewer subagent to judge the bible, or the build, and fix what it calls a demo.
+Check it by hand with `npm run worldbible` in Studio's repo, or let the pre-PR scan do it (exit 1 on a character without a want, arc, voice id or an idle, walk and talk set). Ask the fun-reviewer subagent to judge the bible, or the build, and fix what it calls a demo.
