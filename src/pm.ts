@@ -609,6 +609,16 @@ export function buildOf(product: string, r: { id: string; status: string; detail
 }
 
 /**
+ * Whether a task's build is (re)read from run `run`: a run it wasn't read from yet, or the same run read as "built
+ * nothing" when its build step in fact failed (verdicts recorded before 2026-11-11's fix, #447: 28 Yooba Land and Sick
+ * of It tasks kept "not built" for a build that had broken, so none went back to an agent and nothing moved).
+ */
+export function buildToRead(b: TaskBuild | null | undefined, run: string, product: string): boolean {
+  if (b?.run !== run) return true;
+  return Boolean(b.unproven && buildFailedIn(run, product));
+}
+
+/**
  * Beta's build after each merge, on its task ("did it work", J 2026-10-18): the newest beta run of the product that
  * started after the task's change merged and finished (a superseded run is skipped: the newer one built it). OK: the
  * task is on beta (Unity: it compiled). Failed: the error is on the task, and ONE task goes back to an agent with the
@@ -643,7 +653,7 @@ export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[
     const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
     for (const { t, at } of list) {
       const r = finished.find((x) => x.started >= at);
-      if (r && t.build?.run !== r.id) {
+      if (r && buildToRead(t.build, r.id, product)) {
         setTask(t.id, { build: buildOf(product, r, await proofFor(product, t, r.id)) });
         // Its change's own playtest met every criterion and beta's build of a commit with the merge succeeded: verified now,
         // no beta run for it. A failed build leaves it merged (carryChangeVerdict needs build.ok).

@@ -180,11 +180,17 @@ test('2b. a build that broke is a failed build sent back to an agent, never "bui
   assert.equal(b.ok, false);
   assert.notEqual(b.unproven, true, 'a broken build is the task\'s failure to fix, not unproven');
   assert.match(b.detail, /beta's build failed.*size guard/);
+  // A verdict read before the fix ("built nothing" for that same run) is read again; a right one is left alone.
+  assert.equal(pm.buildToRead({ ok: false, unproven: true, run: r, at: 1, detail: 'not built by beta run: built nothing' } as any, r, 'sou'), true);
+  assert.equal(pm.buildToRead(b, r, 'sou'), false);
+  assert.equal(pm.buildToRead(b, 'r_newer', 'sou'), true);
   // A run that really had no build step is still "built nothing".
   const none = run();
   step(none, 'playtest', 'smoke@local', 'done');
   assert.equal(BB.buildFailedIn(none, 'sou'), false);
-  assert.match(pm.buildOf('sou', { id: none, status: 'done', finished: Date.now() }, await pm.proofFor('sou', t, none, { merge: async () => ({ slug: 'x/sou', sha: 'm' }) })).detail, /built nothing/);
+  const nb = pm.buildOf('sou', { id: none, status: 'done', finished: Date.now() }, await pm.proofFor('sou', t, none, { merge: async () => ({ slug: 'x/sou', sha: 'm' }) }));
+  assert.match(nb.detail, /built nothing/);
+  assert.equal(pm.buildToRead(nb, none, 'sou'), false, 'and not read again and again');
   // A cancelled build is neither (cancel.ts settles it): not a failure.
   const c = run();
   step(c, 'build', 'web', 'cancelled');
