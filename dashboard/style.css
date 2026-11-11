@@ -217,7 +217,7 @@ main { padding: var(--space-4) var(--space-5) var(--space-15); max-width: 1500px
 .card h3 { margin: 0; font-size: var(--text-lg); display: flex; align-items: center; gap: 8px; }
 .card h3 small { color: var(--text-muted); font-weight: 400; font-size: var(--text-sm); }
 .card .verdict { margin-left: auto; }
-.pill { font-size: var(--text-xs); padding: var(--space-0) var(--space-2); border-radius: var(--radius-pill); border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+.pill, .pill-status { font-size: var(--text-xs); padding: var(--space-0) var(--space-2); border-radius: var(--radius-pill); border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
 .pill.ship { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .pill.fix-first { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
 .pill.broken, .pill.failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
@@ -258,6 +258,48 @@ video { max-width: 100%; border-radius: var(--radius-md); background: var(--medi
 .empty { color: var(--text-muted); padding: var(--space-8); text-align: center; }
 pre { background: var(--surface-raised); padding: var(--space-3); border-radius: var(--radius-md); overflow: auto; font-size: var(--text-sm); max-height: 300px; }
 @media (max-width: 700px) { .step { grid-template-columns: 22px 1fr; } .step > :nth-child(n+3) { grid-column: 2; } .finding { grid-template-columns: 1fr; } .finding .side { align-items: flex-start; } }
+
+/* ---- Shared components (J: every tab uses the same buttons, pills, cards, empty states and loading rows) ----
+   Buttons: .btn-primary, .btn-quiet, .btn-danger (the older button.primary / button.danger / a.button.primary are the same
+   rules). Pills: .pill-status with a state class. Cards: .card. Empty states: .empty-state. Loading: .skel rows
+   (shapes in app.js skeleton(), cleared by the tab's own fetch or stream message; no timer). Tokens only. */
+.btn-primary, button.primary, a.button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.btn-quiet, a.button { background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.btn-danger, button.danger { background: transparent; color: var(--danger); border-color: var(--danger); font-weight: 600; }
+.btn-primary, .btn-quiet, .btn-danger { padding: var(--space-2) var(--space-3); cursor: pointer; text-decoration: none; display: inline-block; font: inherit; }
+.btn-primary, .btn-danger { border: 1px solid; border-radius: var(--radius-sm); }
+.btn-primary:hover, .btn-quiet:hover, .btn-danger:hover { border-color: var(--border-strong); }
+.btn-danger:hover { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.pill-status { display: inline-block; }
+.pill-status.ok, .pill.ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, transparent); }
+.pill-status.warn, .pill.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.pill-status.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.empty-state, .empty { color: var(--text-muted); padding: var(--space-8); text-align: center; background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius); }
+.empty-state p, .empty p { margin: 0 0 var(--space-2); }
+.empty-state:empty, .empty:empty { display: none; }
+/* Loading rows shaped like the content (cards, finding rows, tiles). */
+.skel-list { display: flex; flex-direction: column; gap: 10px; }
+.skel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 10px; }
+.skel-row { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: 8px; min-height: 84px; }
+.skel-row.tile { min-height: 96px; }
+.skel-row.slim { min-height: 44px; flex-direction: row; align-items: center; }
+.skel-bar { display: block; height: 12px; border-radius: var(--radius-pill); width: var(--w, 60%); }
+.skel-bar.pill-s { height: 16px; width: 64px; }
+.skel-bar.btn-s { height: 28px; width: 96px; border-radius: var(--radius-sm); }
+.skel-bar, .skel { background: linear-gradient(90deg, var(--surface-raised) 25%, var(--border-subtle) 50%, var(--surface-raised) 75%); background-size: 200% 100%; animation: skel-shimmer 1.4s ease-in-out infinite; }
+@keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.tab.on { animation: tab-in .15s ease-out; }
+@keyframes tab-in { from { opacity: .6; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .skel, .skel-bar, .skel-row, .tab, .tab.on, button, a.button, .btn-primary, .btn-quiet, .btn-danger, .home-count { animation-duration: 0s !important; transition-duration: 0s !important; animation-iteration-count: 1 !important; }
+}
+/* Phone: the five tabs' controls reach 44 px, and nothing scrolls sideways. */
+@media (pointer: coarse), (max-width: 760px) {
+  #home, #roadmap, #backlog, #report, #changes { overflow-wrap: anywhere; }
+  :is(#home, #roadmap, #backlog, #report, #changes) :is(button, select, a.button, summary, .btn-primary, .btn-quiet, .btn-danger) { min-height: 44px; min-width: 44px; }
+  :is(#home, #roadmap, #backlog, #report, #changes) :is(.bar select, .bar button) { max-width: 100%; }
+  :is(#backlog, #changes) .thumbs { max-width: 100%; }
+}
 
 /* Talk */
 .talk { display: grid; grid-template-columns: 260px 1fr; gap: 14px; height: calc(100vh - 156px); }
