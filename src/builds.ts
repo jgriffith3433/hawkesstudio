@@ -18,6 +18,7 @@ import { getProduct, loadProducts, hasOwnBeta, StudioError, managedElsewhere, se
 import { folderFilesAsync } from './sitestore.ts';
 import { BuildFailure, LOG_LINES, extractLog, recordFailure, announce, settleFailure } from './buildfail.ts';
 import { asFirebase } from './firebasebuild.ts';
+import { enterLine, lineKey, type Turn } from './buildline.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS builds (
   id TEXT PRIMARY KEY, product TEXT NOT NULL, build TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL,
@@ -420,6 +421,11 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (!slot.release) slot.release = await (await import('./heavyslot.ts')).heavySlot(say);
   };
   const release = () => slot.release?.();
+  // This build's turn in its line (buildline.ts), ended in `finally` so the build waiting behind it starts.
+  let turn: Turn | null = null;
+  // Set when a newer commit asked for this build's line before this one really started in Gen: it gives way.
+  let yielded: string | null = null;
+  let yieldedBy: string | null = null;
   try {
     if (!slug) throw new Error(`${p.name} has no GitHub repo to build from`);
     const { repoToken, githubFetch } = await import('./ghtoken.ts');
@@ -443,6 +449,32 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (o.trigger && !o.artifact && !o.change) {
       const had = db.prepare("SELECT version, url FROM builds WHERE product = ? AND build = ? AND sha = ? AND status = 'ready' AND change IS NULL ORDER BY version DESC LIMIT 1").get(p.id, b.id, sha) as any;
       if (had) { updateStep(step, { status: 'done', detail: `${sha.slice(0, 7)} is built already (${b.id} ${had.version})`, data: { url: had.url, version: had.version, sha }, finished: true }); return; }
+    }
+    // One build of this kind at a time, and one waiting (buildline.ts; J, 2026-11-11: "let's not have so many builds of the
+    // same product in a queue"). The same commit joins the build already going; another waits its turn, and a newer start
+    // replaces it. An Actions build only dispatches or publishes what its own workflow built: no line.
+    if (b.tool !== 'actions') {
+      const e = enterLine(lineOf(p.id, b.id, o), sha, { now: Boolean(o.resume), retry: Boolean(o.retry && o.retry > 1) });
+      if (e.how === 'joined') {
+        say(`${sha.slice(0, 7)} is ${e.building ? 'already building' : 'already waiting to build'} (${b.id}): this start waits for that build instead of building it again`);
+        joinedEnd(step, p.id, b.id, sha, o.change ?? null, await e.done, updateStep);
+        return;
+      }
+      if (e.how === 'queued') {
+        say(`waiting for the build of ${e.behind.slice(0, 7)} to end: one ${b.id} build of ${p.name} at a time (a newer commit replaces this one)`);
+        const t = await e.turn;
+        if ('superseded' in t) {
+          updateStep(step, { status: 'cancelled', detail: supersededWords(t.superseded), data: { superseded: { by: t.superseded }, cancelled: true }, finished: true });
+          // A retry the newer build replaced is over: the failed build it retried waits for nothing now.
+          if (o.retry) void import('./buildaccess.ts').then((m) => m.clearRetry(p.id, b.id)).catch(() => {});
+          return;
+        }
+        turn = t;
+        // Cancelled while it waited (its run was): the turn passes on at once (finally), nothing is built.
+        const halted = (await import('./cancel.ts')).haltOf(run)();
+        if (halted) { updateStep(step, { status: 'cancelled', detail: halted, data: { cancelled: true }, finished: true }); return; }
+        say(`${sha.slice(0, 7)} (${o.ref ?? 'beta'}): its turn to build`);
+      } else turn = e.turn;
     }
     // The same commit already building (a push, the nightly sync and a rebuild at once): not built twice (2026-10-31 review).
     if (!o.resume && !o.artifact && !o.change) {
@@ -471,12 +503,24 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
     const row = rowId;
     stage = 'build';
+    // A newer commit asked for this line while this Unity build hasn't really started in Hawkes Gen (not submitted yet,
+    // or still queued for a builder): it gives way now, so Gen never holds two queued builds of one project. One already
+    // building in Gen is left to finish (its cost is mostly spent); the newer one builds after it (buildline.ts).
+    if (b.tool === 'unity') turn?.onNewer((newer) => {
+      if (yielded) return;
+      const job = (db.prepare('SELECT gen_job FROM builds WHERE id = ?').get(row) as { gen_job: string | null } | undefined)?.gen_job ?? null;
+      if (job && genQueue.get(row)?.queued !== true) return;
+      yielded = supersededWords(newer);
+      yieldedBy = newer;
+      console.log(`[builds] ${p.id} ${b.id}: ${sha.slice(0, 7)} gives way: ${yielded}`);
+      if (job) void import('./cancel.ts').then((m) => m.cancelJob(job, 'Studio', yielded)).catch((e) => console.warn(`[builds] ${p.id}: giving way to ${newer.slice(0, 7)}: ${e?.message ?? e}`));
+    });
     // The run cancelled: the wait ends at once and the Gen job is cancelled (cancel.ts haltOf). The step carries the Gen
     // job, so cancelling the run cancels it in Gen too (2026-11-09: a cancel found no job on the step and the build kept going).
     const { haltOf } = await import('./cancel.ts');
     const started = (db.prepare('SELECT started FROM builds WHERE id = ?').get(row) as { started: number } | undefined)?.started;
     if (o.resume?.job) updateStep(step, { job: o.resume.job });
-    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, started, halt: haltOf(run), onSubmit: (id) => { db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row); updateStep(step, { job: id }); }, onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
+    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, started, halt: () => yielded ?? haltOf(run)(), onSubmit: (id) => { db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row); updateStep(step, { job: id }); }, onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say, hold)
       : b.tool === 'firebase' ? await viaFirebase(p, b, slug, sha, ref, token, gh, say, hold)
       : await viaStudio(p, b, slug, sha, token, gh, say, hold);
@@ -535,10 +579,12 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       }
     }
     updateStep(step, { status: 'done', detail: `${b.id} ${version || o.change}: ${out.files.length} files, ${Math.round(out.bytes / 1e5) / 10} MB${linked.length ? `; also in ${linked.join(', ')}` : ''}`, data: { url, version, sha, sent: r.sent }, finished: true });
-    // Published: its files are no longer needed in memory, and the playtest doesn't hold the slot.
+    // Published: its files are no longer needed in memory, and the playtest doesn't hold the slot, nor this build's line
+    // (the next build of it may start while this one is played).
     out.cleanup();
     out = null;
     release();
+    turn?.end();
     stage = 'playtest';
     if (movesBeta && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
     else if (movesBeta && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
@@ -550,7 +596,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (e instanceof BuildCancelled) {
       console.warn(`[builds] ${p.id} ${b.id} cancelled: ${why}`);
       if (rowId) db.prepare("UPDATE builds SET status = 'cancelled', detail = ?, finished = ? WHERE id = ? AND status = 'building'").run(why, Date.now(), rowId);
-      updateStep(step, { status: 'cancelled', detail: why, data: { cancelled: true }, finished: true });
+      updateStep(step, { status: 'cancelled', detail: why, data: { cancelled: true, ...(yieldedBy ? { superseded: { by: yieldedBy } } : {}) }, finished: true });
       return;
     }
     // In the log too: a customer's Studio is only visible to the platform through its logs (2026-10-31: a refused build
@@ -575,7 +621,27 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     out?.cleanup();
     release();
     if (rowId) forgetGenQueued(rowId);
+    turn?.end();
   }
+}
+
+/** The line a build start belongs to (buildline.ts): its project, its build, and the branch or tag it builds, or its change. */
+export const lineOf = (product: string, build: string, o: { change?: string; ref?: string }) => lineKey(product, build, o.change ? `c/${o.change}` : o.ref ?? 'beta');
+
+/** The words a build start that a newer commit replaced ends with (its step, its run, the log). */
+export const supersededWords = (sha: string) => `superseded by the build of ${sha.slice(0, 7)}: one build of a project's commit at a time, and the newest waiting one replaces the older`;
+
+/**
+ * A start that joined the build of the same commit already going (buildline.ts): its step says how that build ended, from
+ * that build's own row. Exported for the tests.
+ */
+export function joinedEnd(step: string, product: string, build: string, sha: string, change: string | null, r: { superseded?: string }, updateStep: typeof import('./pipeline.ts').updateStep) {
+  const short = sha.slice(0, 7);
+  if (r.superseded) return updateStep(step, { status: 'cancelled', detail: supersededWords(r.superseded), data: { superseded: { by: r.superseded }, cancelled: true }, finished: true });
+  const row = db.prepare(`SELECT version, status, url, run, detail FROM builds WHERE product = ? AND build = ? AND sha = ? AND ${change ? 'change = ?' : 'change IS NULL'} ORDER BY started DESC LIMIT 1`).get(...[product, build, sha, ...(change ? [change] : [])]) as { version: number; status: string; url: string | null; run: string; detail: string | null } | undefined;
+  if (row?.status === 'ready') return updateStep(step, { status: 'done', detail: `${short} was built by the build already going (${build} ${row.version}, run ${row.run})`, data: { url: row.url, version: row.version, sha, joined: row.run }, finished: true });
+  if (row?.status === 'failed') return updateStep(step, { status: 'failed', detail: `the build of ${short} this start joined failed (run ${row.run}): ${String(row.detail ?? 'no reason recorded').slice(0, 200)}`, data: { joined: row.run }, finished: true });
+  return updateStep(step, { status: 'cancelled', detail: `the build of ${short} this start joined ended without a build (${row ? `${row.status}, run ${row.run}` : 'nothing was recorded'})`, data: { joined: row?.run ?? null, cancelled: true }, finished: true });
 }
 
 /**
@@ -877,6 +943,38 @@ export async function supersedeOlder(n: { product: string; build: string; row: s
   return out;
 }
 
+/**
+ * Before a Unity build is submitted: Hawkes Gen jobs of the same project's build (same repo, branch and project folder) that
+ * are still queued there and haven't started are cancelled, said as replaced by this commit. A compile check (check: true)
+ * and anything already building are left alone, and a job that belongs to a build of Studio's still running in its turn
+ * (another row) is never one: the line (buildline.ts) lets only one build of the same kind run. Returns the ids cancelled.
+ * api: a test seam (Gen's client by default). Exported for the tests.
+ */
+export async function replaceQueuedGen(n: { project: string; slug: string; ref: string; path: string | null; sha: string; row: string | null }, api?: { jobs(q: Record<string, string>): Promise<any[]>; job(id: string): Promise<any> }, cancel?: (id: string, why: string) => Promise<unknown>): Promise<string[]> {
+  const { gen, genProject } = await import('./gen.ts');
+  const g = api ?? (gen as any);
+  const listed = ((await g.jobs({ tool: 'unity.build', status: 'queued', limit: '50' })) ?? []) as any[];
+  const projects = new Set([n.project, String(genProject(n.project))]);
+  const mine = new Set((db.prepare("SELECT gen_job FROM builds WHERE gen_job IS NOT NULL AND status = 'building' AND id != ?").all(n.row ?? '') as { gen_job: string }[]).map((r) => r.gen_job));
+  const why = `replaced by the build of ${n.sha.slice(0, 7)}: Hawkes Gen keeps one queued build of ${n.project} at a time`;
+  const out: string[] = [];
+  for (const x of listed) {
+    if (x?.tool && x.tool !== 'unity.build') continue;
+    if (x?.status && x.status !== 'queued') continue;
+    if (x?.started || (x?.project && !projects.has(String(x.project)))) continue;
+    const j = x?.params ? x : await g.job(String(x.id)).catch(() => null);
+    const q = j?.params ?? {};
+    if (!j || j.started || j.status !== 'queued' || q.check) continue;
+    if (String(q.github?.repo ?? '').toLowerCase() !== n.slug.toLowerCase() || String(q.github?.ref ?? '') !== n.ref || String(q.path ?? '') !== String(n.path ?? '')) continue;
+    // A build of Studio's own that is still in its turn (a different line would have a different ref): its own run ends
+    // cancelled, with these words, when Gen says so.
+    if (mine.has(String(j.id))) console.log(`[builds] ${n.project}: ${j.id} belongs to a build still waiting in Gen: ${why}`);
+    await (cancel ?? (async (id: string, w: string) => (await import('./cancel.ts')).cancelJob(id, 'Studio', w)))(String(j.id), why);
+    out.push(String(j.id));
+  }
+  return out;
+}
+
 const mins = (ms: number) => Math.round(ms / 60_000);
 
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
@@ -893,6 +991,9 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   const { forgetRepoToken, repoToken } = await import('./ghtoken.ts');
   let first = token;
   if (!resume.job) { forgetRepoToken(slug); first = (await repoToken(slug)) ?? token; }
+  // Hawkes Gen holds at most one queued build of this project's build and branch: one still queued there (from before a
+  // restart, or a start Studio lost track of) is replaced by this one, never added to.
+  if (!resume.job) await replaceQueuedGen({ project: p.id, slug, ref, path: b.path ?? null, sha, row: resume.row ?? null }).then((ids) => { if (ids.length) say(`replaced ${ids.length} older queued build${ids.length === 1 ? '' : 's'} of ${p.name} in Hawkes Gen (${ids.join(', ')})`); }).catch((e) => console.warn(`[builds] ${p.id}: looking for queued builds in Gen: ${e?.message ?? e}`));
   // Every Gen job this build tried and why each failed, and what Gen kept of the last one (buildfail.ts): the failure keeps them.
   const tried: { id: string; error: string }[] = [];
   const note = (j: any) => { if (j?.status === 'failed' || j?.status === 'cancelled') tried.push({ id: String(j.id ?? ''), error: String(j.error ?? 'no reason given').slice(0, 300) }); };
@@ -1022,10 +1123,18 @@ export async function folderOutput(dir: string, tmp: string, keepFolder = false)
 }
 
 /** Whether a download failure is worth another try: Gen or its proxy busy (5xx, 429), the connection cut, a timeout. Exported for the tests. */
+/**
+ * A build's output that arrived cut short ("gzip: stdin: unexpected end of file", "tar: Unexpected EOF": b_86e7f3a869dc,
+ * sick-of-it-unity v85, 2026-11-11, failed after 58 minutes as "Not recognised"). The archive or its download was
+ * truncated: infrastructure, never the project's code. It is downloaded again (downloadBuild), and if it is still cut short
+ * the build is built once more on the same commit (buildaccess.ts, TRUNCATED_TRIES), through its line like any start.
+ */
+export const TRUNCATED = /unexpected end of (file|data|archive|input)|Unexpected EOF|truncated (gzip|tar|archive|input|file)|incomplete (gzip|tar|archive)/i;
 export function downloadTransient(e: unknown): boolean {
   const st = Number((e as any)?.status);
   if (st === 429 || (st >= 500 && st < 600)) return true;
-  return /HTTP (5\d\d|429)\b|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|terminated|fetch failed|other side closed|premature close|aborted/i.test(String((e as any)?.message ?? e));
+  const m = String((e as any)?.message ?? e);
+  return TRUNCATED.test(m) || /HTTP (5\d\d|429)\b|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|terminated|fetch failed|other side closed|premature close|aborted/i.test(m);
 }
 
 /** The waits between download tries (ms). Exported for the tests to shorten. */

@@ -96,6 +96,68 @@ milestone's build), a build revived after restarts that was automatic, and an ag
 change or the hook's answer shows it. The PM leaves held beta runs alone: they build nothing, so they are never a
 task's build, never a failed one, and start no beta run of their own (pm.ts `followBuilds`, `brokenCheck`).
 
+## One build at a time per project (buildline.ts)
+
+J, 2026-11-11: "we aren't building after every single run are we? ... let's not have so many builds of the same product
+in a queue." Every build start goes through one place, builds.ts `buildOne`, and takes a turn in its **line**: one line per
+project, build id and lane (`<project>|<build>|<branch or tag>`, or `c/<change>` for a change's own preview).
+
+- Nothing in the line: it builds now.
+- The same commit already building or already waiting: the start **joins** it and ends with it ("already building ...:
+  this start waits for that build"). No second build of one commit.
+- Another commit building: the start **waits** behind it. A newer start **replaces** the one waiting, which ends at once,
+  cancelled, "superseded by the build of <sha>" on its step and run (nothing is blamed, nothing waits for ever). So a burst
+  of merges makes one build running and one of the newest commit after it, never one per merge.
+- The build going is told of the newer commit. A Unity build that hasn't really started in Hawkes Gen (not submitted yet,
+  or still queued for a builder) gives way there and then (its Gen job cancelled with those words); one already building
+  in Gen finishes, and the newest builds after it.
+- The turn passes on when the build is published (its playtest doesn't hold the line), or when it fails or is cancelled.
+  A start whose run was cancelled while it waited builds nothing when its turn comes.
+- Before a Unity build is submitted, Gen's queued `unity.build` jobs of the same repo, branch and folder that haven't
+  started are cancelled ("replaced by the build of <sha>": `replaceQueuedGen`), so Gen never holds two queued builds of
+  one project's build, whatever left them there. Compile checks (`check: true`) are never touched.
+- A beta run waiting for a build that was replaced ends "superseded" (betabuild.ts `ensureBetaBuild`, `endedWithout`), and
+  its build step is cancelled, so the PM neither blames nor re-runs it; the newer commit's run plays it.
+
+- A build output that arrives cut short ("gzip: stdin: unexpected end of file", "tar: Unexpected EOF": b_86e7f3a869dc,
+  sick-of-it-unity v85, failed after 58 minutes as "Not recognised") is infrastructure (builds.ts `TRUNCATED`): it is
+  downloaded again, and if it is still cut short the same commit is built once more by itself (buildaccess.ts
+  `TRUNCATED_TRIES`). That retry is a start like any other in the line: it joins a build of the same commit, and it never
+  pushes out a newer start that is already waiting.
+
+Event-driven: a build's own end hands its turn to the one waiting. No timer, no polling, no watcher. The line is in memory;
+after a restart the resumed builds take their turns at once, and the database's "already building" check covers the rest.
+Local staging sites (projects without a GitHub repo, previews.ts) do the same in their own queue: an ask for a site
+already waiting joins it.
+
+## Every path that starts a build
+
+Audit of 2026-11-11 (beta 3cb61ac). "Line" = buildline.ts above. "#373" = the Unity rule above (unitybuild-policy.ts).
+
+| Path | What triggers it | Once per agent run / merge / push? | Covered by |
+|---|---|---|---|
+| Push to beta (`builds.ts onRepoHook`, the repo's hook) | every push to beta, so every merge | per push | Unity: #373 (held unless a milestone is done). Web/npm/firebase: line, so a burst of pushes is one build + the newest |
+| Beta run after a merge (`agents.ts autoMergeBeta` → `pipeline.ts startBeta` → `betaBody`) | every merge | per merge | Unity: #373 via `ensureBetaBuild`. Web: its `buildPreview` joins the push's build of the same commit (line) |
+| PM's beta runs (`pm.ts` nothing-built-the-merge, unproven build, failed build, build-fix chain, nothing-left; `verdictwork.ts`) | a decision, once per burst | at most once per burst | Unity: #373 (`unityHeld`). All: line |
+| Milestone check (`pm.ts milestoneCheck`, `cause: 'milestone'`) | a milestone complete in code, nothing queued | once per milestone | is #373's one build; line |
+| Agent verify, Unity in the cloud (`agents.ts verifyChange` → `buildChangeInCloud`) | an agent pass with player-visible files (showcase) | per agent run | #373: held unless a person asked ("Playtest this change") |
+| Agent verify, Unity on a build server (products.json `build`, `buildChange`) | same | per agent run | **was not covered; now held the same way** |
+| Compile check (`compilecheck.ts`, Gen `unity.build` with `check: true`) | an agent pass on a Unity project | per agent pass | compile only, no player build; bounded by agent concurrency |
+| Change preview at finish (`agents.ts` → `previews.ts buildPreview` change → npm Cloud Run job) | every agent run of a web project | **per agent run** | **now only for a change that waits for a person** (auto-merge off, a video); one that merges by itself is on beta's site moments later. Line `c/<change>` |
+| A person: builds route, Talk's build tool, Build button, Inbox's Build again, rebuilding the beta site, the Beta button, "Playtest this change" | asked | no | always builds (#373 `person`); line |
+| `build-*` tag (hook, `tagbuild.ts`) | a tag pushed | no | always (#373 `tag`); line per tag |
+| Release on go live (`deploy.ts`, `cause: 'release'`) and Firebase main deploys | go live, rollback | no | always; line `main` |
+| Retries: `buildaccess.ts` (transient), `inbox.ts rebuildForCause` (3 a day), `transient.ts` held retry | a failed build | per failure, capped | always (#373 `retry`); line |
+| Build fixer merged (`buildfix.ts fixMerged`) | a fixer's change merged | per fixer merge | Unity: #373 (`auto`). All: line |
+| Restarts (`builds.ts resumeRun`, `pipeline.ts resumeRuns`, `reconcileBuilds`) | Studio restarted | no | re-waits the same Gen job, never a new one; takes the line at once |
+| Gen's own queue (a `unity.build` left queued in Gen) | anything before | n/a | **now replaced before a new submit** (`replaceQueuedGen`) |
+| Beta-site rebuilds (`betawatch.ts`, `dev.ts` devtools saves, `local.ts`, a playtest that found the wrong page, `previewsAfterSync`, `laneApp`) | a push, a save, a sync, a playtest | per push or sync | GitHub projects: `startBuild` (#373 + line). Local sites: their queue joins a waiting build (new); devtools saves already coalesce |
+| Daily run (`pipeline.ts runAll` → `runProduct`) | daily | once a day | builds only a products.json `build` game whose source changed; `builds` projects aren't built by it |
+| products.json `build` Unity on Cloud Run (`betaBody` → `tagbuild.ts buildTag`, `betaqueue.ts`, `buildProduct`) | a beta run | per beta run | not #373; no project uses products.json `build` now (J's products are in the cell's `builds` lists, and a cell ignores `build`); `betaqueue.ts` makes one build per burst |
+| Actions builds (dispatch, the artifact hook) | their own workflow | their triggers | GitHub's runners, no Studio compute; no line |
+| Infra changes (hawkes-studio, hawkes-gen) | an agent change | per change | their GitHub CI and smoke check, not Studio builds |
+| Unity tests (`pipeline.ts testProduct`, `unity.test`) | after a products.json build | with that build | unchanged |
+
 ## Builds are runs
 
 A build is a run of kind `build` (`pipeline.ts startBuild`): steps `build:<id>` (the runner's work) and `publish:<id>`

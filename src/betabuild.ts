@@ -27,12 +27,25 @@ export function stateOf(product: string, build: string, sha: string, since = 0):
   return failed ? { state: 'failed', row: failed } : { state: 'none' };
 }
 
+/**
+ * A build of this commit that ended without building it (cancelled, or superseded by a newer commit's build: builds.ts
+ * buildOne, buildline.ts) since `since`, or the build step of `run` that says so: the commit that replaced it, if one did.
+ */
+export function endedWithout(product: string, build: string, sha: string, since: number, run: string | null): { by: string | null; run: string | null; detail: string | null } | null {
+  const steps = run ? db.prepare("SELECT status, detail, data FROM steps WHERE run = ? AND kind = 'build' AND name = ? AND status = 'cancelled' ORDER BY rowid DESC").all(run, build) as { status: string; detail: string | null; data: string | null }[] : [];
+  for (const st of steps) return { by: parse(st.data)?.superseded?.by ?? null, run, detail: st.detail };
+  const row = db.prepare("SELECT run, detail FROM builds WHERE product = ? AND build = ? AND sha = ? AND change IS NULL AND status = 'cancelled' AND COALESCE(finished, started) >= ? ORDER BY started DESC LIMIT 1").get(product, build, sha, since) as { run: string; detail: string | null } | undefined;
+  if (!row) return null;
+  const st = db.prepare("SELECT data FROM steps WHERE run = ? AND kind = 'build' AND name = ? ORDER BY rowid DESC LIMIT 1").get(row.run, build) as { data: string | null } | undefined;
+  return { by: parse(st?.data)?.superseded?.by ?? null, run: row.run, detail: row.detail };
+}
+
 /** The newest published (ready) build of a project's unity build: the commit it was made from, and its version. */
 export function publishedBuild(product: string, build: string): Row | null {
   return (db.prepare("SELECT id, version, status, sha, run, started, detail, build FROM builds WHERE product = ? AND build = ? AND status = 'ready' AND change IS NULL ORDER BY started DESC, version DESC LIMIT 1").get(product, build) as Row | undefined) ?? null;
 }
 
-export type Ensured = { ok: boolean; how: 'already built' | 'built' | 'waited for a build' | 'failed' | 'held'; sha: string; version: number | null; run: string | null; detail: string };
+export type Ensured = { ok: boolean; how: 'already built' | 'built' | 'waited for a build' | 'failed' | 'held' | 'superseded'; sha: string; version: number | null; run: string | null; detail: string };
 
 export type EnsureDeps = {
   /** Beta's head on GitHub. */
@@ -83,6 +96,12 @@ export async function ensureBetaBuild(product: string, build: string, d: EnsureD
     const s = stateOf(product, build, sha!, t0 - 1000);
     if (s.state === 'ready') return { ok: true, how, sha: sha!, version: s.row!.version, run: s.row!.run, detail: `beta ${short} ${how === 'built' ? 'built' : 'was built'} and published (${build} ${s.row!.version}, run ${s.row!.run})` };
     if (s.state === 'failed') return fail(sha!, `the build of beta ${short} failed (${build} ${s.row!.version}): ${String(s.row!.detail ?? 'no reason recorded').slice(0, 300)}`);
+    // A newer commit's build replaced it (buildline.ts: one build at a time, the newest waiting one wins), or it was
+    // cancelled: over, not failed, and nothing waits on it for hours.
+    const gone = endedWithout(product, build, sha!, t0 - 1000, started?.id ?? first.row?.run ?? null);
+    if (gone && (ended || s.state === 'none')) return gone.by
+      ? { ok: false, how: 'superseded', sha: sha!, version: null, run: gone.run, detail: `beta ${short} wasn't built: superseded by the build of ${gone.by.slice(0, 7)}` }
+      : fail(sha!, `the build of beta ${short} was cancelled${gone.detail ? `: ${gone.detail.slice(0, 200)}` : ''}`);
     if (ended && s.state === 'none') return fail(sha!, `the build of beta ${short} didn't happen (no build was recorded)`);
     return null;
   };

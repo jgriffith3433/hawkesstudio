@@ -13,7 +13,7 @@
 // No polling: the dashboard hears about a row changing through /api/stream (a database write).
 
 import { db } from './db.ts';
-import { tokenLost, infraLost, buildsOf, UNITY_FAILED } from './builds.ts';
+import { tokenLost, infraLost, buildsOf, UNITY_FAILED, TRUNCATED } from './builds.ts';
 import { getProduct } from './config.ts';
 import { QUOTA, accessCause, accessFix, retryPending } from './buildaccess.ts';
 import { fixerNow, fixedWording, fixSentence, type FixerNow } from './buildfix.ts';
@@ -98,6 +98,9 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
   if (/timed out|ran past|no result|stuck in Hawkes Gen/i.test(e)) return { class: 'timeout', kind: 'infrastructure', plain: `The build ran out of time before it finished. Probably infrastructure (a slow or stuck machine), not the code.${retried} Build again; if it keeps timing out, look at the Gen job.` };
   if (/out of memory|\bOOM\b|killed \(137\)|exit(ed)? (code )?137/i.test(both)) return { class: 'memory', kind: 'infrastructure', plain: `The build machine ran out of memory. That's the machine's size, not the code; Studio asks Gen for a bigger one when this happens.${retried} Build again.` };
   if (infraLost(e) || /Hawkes Gen (finished job|doesn't know job)|stopped: its run|Gen restarted/i.test(e)) return { class: 'restart', kind: 'infrastructure', plain: `Hawkes Gen or Studio restarted or lost the job while it was building. That's infrastructure, not the code.${retried} Build again.` };
+  // The output arrived cut short (b_86e7f3a869dc, 2026-11-11: "gzip: stdin: unexpected end of file / tar: Unexpected EOF",
+  // filed as "Not recognised"): the build itself finished, its archive or its download didn't. Built once more by itself.
+  if (TRUNCATED.test(e)) return { class: 'other', kind: 'infrastructure', plain: `The build finished in Hawkes Gen, but its output arrived cut short (${e.slice(0, 160)}). That's the download or Gen's storage, not your code.${retried} Studio downloads it again, and builds the same commit once more by itself if it is still cut short.` };
   // GitHub refused the app's token (403/404): the real cause and the one fix, never "access or install" (buildaccess.ts).
   const cause = accessCause(e);
   if (cause) return { class: 'access', kind: 'infrastructure', plain: accessFix(cause, o.slug ?? null) };

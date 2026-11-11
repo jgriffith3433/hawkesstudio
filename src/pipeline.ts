@@ -1622,6 +1622,12 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
         updateStep(s, { status: 'skipped', detail: r.detail, data: { held: r.detail, sha: r.sha || null }, finished: true });
         return void closeRun(id, `beta ${p.id} (Unity build held)`);
       }
+      // A newer commit's build replaced this one (builds.ts, buildline.ts): this run built nothing and plays nothing; the
+      // run of the newer commit plays it. Cancelled, not failed, so nothing is blamed (cancel.ts buildCancelled).
+      if (r.how === 'superseded') {
+        updateStep(s, { status: 'cancelled', detail: r.detail, data: { cancelled: true, superseded: r.detail, sha: r.sha || null }, finished: true });
+        return void closeRun(id, `beta ${p.id} (superseded)`);
+      }
       updateStep(s, { status: r.ok ? (r.how === 'already built' ? 'skipped' : 'done') : 'failed', detail: r.detail, data: r.ok ? { built: { sha: r.sha, version: r.version, run: r.run, how: r.how } } : { failed: true, sha: r.sha || null }, finished: true });
       if (!r.ok) return void closeRun(id, `beta ${p.id}`);
     } else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});

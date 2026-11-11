@@ -86,6 +86,8 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
   if (u.host.endsWith('.run.app') && u.pathname === '/auth/sites-key') return Response.json({ lane: 'live', alg: 'Ed25519', key: keys.publicKey });
   if (u.host === 'control.test') return Response.json({ org: 'acme-1a2b', plan: 'studio_studio', status: 'active', maxGames: 30, credits: 0 });
   if (u.host === 'gen.test') {
+    // Gen's queue as Studio reads it before a Unity submit (builds.ts replaceQueuedGen): nothing queued.
+    if (u.pathname === '/v1/jobs' && (init.method ?? 'GET') === 'GET') return Response.json({ jobs: [] });
     if (u.pathname === '/v1/jobs' && init.method === 'POST') { genCalls.push(JSON.parse(String(init.body))); return Response.json({ jobs: [{ id: 'j_unity', status: 'queued' }] }); }
     if (u.pathname === '/v1/jobs/j_unity') return Response.json({ id: 'j_unity', status: 'done', result: { artifact: { asset: 'a_out', bytes: unityTar.length }, unity: '6000.3.7f1' } });
     if (u.pathname === '/v1/files/a_out') return new Response(unityTar as any);
