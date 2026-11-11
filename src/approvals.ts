@@ -560,6 +560,7 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   if (decision === 'deny') {
     if (!claim(id, 'denied', by)) throw new StudioError('This card was just decided.', 409);
     if (a.kind === 'decision') await answerDecision(a, a.card.deny, by).catch(() => {});
+    if (a.kind === 'quota') (await import('./quota.ts')).noteDenied(a.params.asks ?? [], a.id);
     await tell(a, `J denied: ${a.card.title} (${a.id}). Nothing was done.`);
     return getApproval(id)!;
   }
@@ -647,10 +648,42 @@ async function carryOut(a: Approval, by: string, who: string) {
     await tell(a, `${who}: ${a.card.title} (${a.id}). ${result}`);
     return result;
   } catch (e: any) {
+    // A quota request that didn't reach Google: the same card opens again with the error (Approve tries again), never
+    // a dead "failed" card followed by a new one (J, 2026-11-11: the disk card kept coming back).
+    if (a.kind === 'quota') {
+      await quotaOutcome(id, { error: `Filing with Google failed: ${e.message ?? e}` });
+      return `It didn't reach Google: ${e.message ?? e}. The card is open again.`;
+    }
     db.prepare(`UPDATE approvals SET status = 'failed', result = ? WHERE id = ?`).run(String(e.message ?? e).slice(0, 2000), id);
     await tell(a, `${who} ${a.card.title} (${a.id}), but it failed: ${e.message ?? e}`);
     throw e;
   }
+}
+
+/**
+ * What became of an approved quota card (quota.ts: ops-admin's report, or a filing that couldn't start). A result
+ * (filed, Google's answer) goes on the card, which stays decided. An error opens the same card again, rebuilt with
+ * today's values, the error on it and "Approve: try again": one card per ask, with the real error and a next step.
+ */
+export async function quotaOutcome(id: string, o: { result?: string; error?: string }) {
+  const r = row(id);
+  if (!r || r.kind !== 'quota') return null;
+  const a = toApproval(r);
+  if (o.error) {
+    let fresh: { bind: string; card: Card } = { bind: r.bind, card: a.card };
+    try { fresh = await describe('quota', a.target, a.params); } catch { /* keep the card as it was */ }
+    const card: Card = { ...fresh.card, warnings: [...fresh.card.warnings, `${o.error.slice(0, 400)} Nothing was filed. Approve tries again.`], approve: 'Approve: try again' };
+    // Any other card waiting for the same quotas merges into this one.
+    db.prepare(`UPDATE approvals SET status = 'stale', token = '', result = 'merged into the reopened card for the same quota' WHERE kind = 'quota' AND target = ? AND status = 'pending' AND id != ?`).run(a.target, id);
+    db.prepare(`UPDATE approvals SET status = 'pending', token = ?, bind = ?, card = ?, decided_by = NULL, decided_at = NULL, dismissed = NULL, result = ? WHERE id = ?`)
+      .run(crypto.randomBytes(18).toString('hex'), fresh.bind, J(card), o.error.slice(0, 2000), id);
+    await tell(a, `${a.card.title} (${a.id}): ${o.error} The card is open again.`);
+  } else if (o.result) {
+    db.prepare(`UPDATE approvals SET result = ? WHERE id = ? AND status IN ('approved', 'approving')`).run(o.result.slice(0, 2000), id);
+    await tell(a, `${a.card.title} (${a.id}): ${o.result}`);
+  }
+  cardChanged(a.conversation);
+  return getApproval(id);
 }
 
 /**
@@ -714,7 +747,7 @@ async function run(a: Approval, by: string): Promise<string> {
   if (a.kind === 'quota') {
     const { raiseQuota } = await import('./quota.ts');
     const done: string[] = [];
-    for (const q of a.params.asks ?? []) done.push(await raiseQuota(q));
+    for (const q of a.params.asks ?? []) done.push(await raiseQuota(q, a.id));
     return `${done.join('; ')}.`;
   }
   await answerDecision(a, a.card.approve, by);

@@ -1211,6 +1211,30 @@ const server = http.createServer(async (req, res) => {
 `);
       return send(res, 202, { ok: true, note: 'the server pulls it now (after its own CI check), unless a run is going' });
     }
+    // An ops-admin quota run ended (.github/workflows/ops-admin.yml, its last step, with GitHub's OIDC token): what it
+    // filed or read, or the real error, goes on the quota card that asked (quota.ts onReport). Only ops-admin itself,
+    // from the ops repo's main in the production environment, may report.
+    if (route === '/api/hooks/quota' && method === 'POST') {
+      const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+      if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
+      const { verifyGitHubOidc } = await import('./github-oidc.ts');
+      const q = await import('./quota.ts');
+      const audiences = [...new Set([process.env.STUDIO_PUBLIC_URL?.replace(/\/+$/, ''), 'https://studio.hawkesgen.ai'].filter(Boolean) as string[])];
+      let claims: Record<string, any> | null = null;
+      let why = '';
+      for (const aud of audiences) {
+        try { claims = await verifyGitHubOidc(token, aud); break; } catch (e: any) { why = e.message; }
+      }
+      if (!claims) return send(res, 401, { error: `token rejected: ${why}` });
+      const why403 = q.reportRefused(claims);
+      if (why403) return send(res, 403, { error: why403 });
+      try {
+        const rec = await q.onReport((await readJson(req)) as any);
+        return send(res, 200, { ok: true, state: rec?.state ?? null, detail: rec?.detail ?? null });
+      } catch (e: any) {
+        return send(res, 400, { error: String(e?.message ?? e) });
+      }
+    }
     if ((route === '/api/hooks/github' || route === '/api/hooks/github-beta') && method === 'POST') {
       const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
       if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
