@@ -293,6 +293,10 @@ export async function afterRun(run: string, deps: { ask?: typeof askClaude } = {
       out.push(s);
       // The same day, every dimension under its target becomes one planned task with the evidence (pm.ts workFromCritic).
       try { (await import('./pm.ts')).workFromCritic(id, c, run); } catch (e: any) { console.warn(`[studio] critic work for ${id}: ${e?.message ?? e}`); }
+      // A milestone waiting on this critic (critic-gate.ts): re-check reached now that scores exist (event, no timer).
+      if (milestone && c.verdict === 'judged') {
+        try { await (await import('./pm.ts')).reachMilestones(); } catch (e: any) { console.warn(`[studio] critic milestone reach after ${run}: ${e?.message ?? e}`); }
+      }
     }
     if (out.length) { const { writeReport } = await import('./report.ts'); writeReport(run); }
     return out;

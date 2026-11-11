@@ -23,6 +23,7 @@ import { git } from './local.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
 import { ftueWarnings } from './ftue.ts';
+import { criticGate, isCriticBlocker } from './critic-gate.ts';
 import { noRuntimeChange } from './playplan.ts';
 import { opLog, registerOp, enqueue, queuePosition, getOp, wakeOps, OpWaits, type Op } from './ops.ts';
 import {
@@ -192,7 +193,7 @@ export const isQualityBlocker = (b: string) => /^Playtest \S+ on \S+ broke \d+ g
  * impossible or wrong (nothing to go live, live ahead of beta, no build, GitHub unreadable) still stops it, each with
  * its own button (Bring beta up to date, the Go live page's fix).
  */
-export const isOverridable = (b: string) => isPlaytestBlocker(b) || isQualityBlocker(b);
+export const isOverridable = (b: string) => isPlaytestBlocker(b) || isQualityBlocker(b) || isCriticBlocker(b);
 /** True when every blocker of a plan is one a person may go live past: the card offers "Go live anyway". */
 export const overridableOnly = (blockers: string[]) => blockers.length > 0 && blockers.every(isOverridable);
 
@@ -342,6 +343,10 @@ async function planOf(productId: string, { notesWaitMs = 20_000, io }: { notesWa
   { const q = qualityBlockers(tested, beta?.short); blockers.push(...q.blockers); warnings.push(...q.warnings); }
   // The first five minutes of what is live now (ftue.ts): a warning, never a blocker, so the fix for it can ship.
   warnings.push(...ftueWarnings(p.id));
+  // Critic vs live (critic-gate.ts): regression of 2+ points, or a milestone go-live under the release floor, holds it;
+  // no critic review is a warning ("Critic: not judged"), never a pass.
+  const critic = criticGate(p.id, played?.sha ?? beta?.sha, cmp.main?.sha);
+  if (critic) { blockers.push(...critic.blockers); warnings.push(...critic.warnings); }
 
   // The pre-deploy build lives on beta (beta.ts prepareBeta), so the playtested commit is exactly what ships.
   if (played && p.deploy?.prebuild && !prebuilt(p, played.sha, played.title)) {
@@ -401,6 +406,8 @@ async function planOf(productId: string, { notesWaitMs = 20_000, io }: { notesWa
     previous: previous.map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     // How the build that's live now does with real players (players.ts), so the next release can be compared.
     players,
+    // Critic scores of the beta commit vs the live build (side by side on the go-live card at 390 px); null for non-games.
+    critic: critic ? { beta: critic.beta, live: critic.live, lines: critic.lines } : null,
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers), notCloned,
     confirm: `DEPLOY ${p.id}`,
     what: unity
@@ -432,6 +439,8 @@ async function cloudPlan(p: Product) {
     if (!t.verdict) warnings.push(`${t.name} on ${beta?.short} has no review.`);
   }
   { const q = qualityBlockers(tested, beta?.short); blockers.push(...q.blockers); warnings.push(...q.warnings); }
+  const critic = criticGate(p.id, beta?.sha, refs?.source.main?.sha);
+  if (critic) { blockers.push(...critic.blockers); warnings.push(...critic.warnings); }
   const b = betaBuild(p);
   const siteBeta = refs?.site.beta ?? null;
   const top = p.repo.split('/')[0];
@@ -445,6 +454,7 @@ async function cloudPlan(p: Product) {
     build: b && { ...b, files: 0, sample: [] },
     previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     players: await livePlayers(p.id),
+    critic: critic ? { beta: critic.beta, live: critic.live, lines: critic.lines } : null,
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers), notCloned: null,
     confirm: `DEPLOY ${p.id}`,
     what: `Fast-forwards ${p.site}'s ${MAIN} to its ${BETA}${siteBeta ? ` ${siteBeta.short}` : ''} (the build${b?.version ? ` Game/v${b.version}` : ''}, already published) and ${top}'s ${MAIN} to ${beta?.short ?? BETA}, through GitHub; GitHub Pages publishes ${p.live}. No release entry this time.`,
@@ -508,6 +518,8 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   if (beta && !tested.length) blockers.push(last ? `${BETA} hasn't been playtested at ${beta.short} (the last playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}). Playtest ${BETA} first.` : `${BETA} hasn't been playtested yet: play it first (a beta run or a playtest of the project).`);
   warnings.push(...playWarnings(tested, beta?.short));
   { const q = qualityBlockers(tested, beta?.short); blockers.push(...q.blockers); warnings.push(...q.warnings); }
+  const critic = criticGate(p.id, beta?.sha, cmp.main?.sha);
+  if (critic) { blockers.push(...critic.blockers); warnings.push(...critic.warnings); }
   const tg = beta ? await publishTargets(p, beta.sha, io).catch((e: any) => ({ targets: [], blockers: [`GitHub: ${e.message}`], attempts: [] })) : { targets: [], blockers: [], attempts: [] };
   blockers.push(...tg.blockers);
   const moving = tg.targets.filter((t) => t.move);
@@ -527,6 +539,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
     buildAttempts: tg.attempts,
     previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     players: await livePlayers(p.id),
+    critic: critic ? { beta: critic.beta, live: critic.live, lines: critic.lines } : null,
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers) as BlockerFix | null, notCloned: null,
     confirm: `DEPLOY ${p.id}`,
     what: `${cmp.ahead.length ? `Fast-forwards ${slug}'s ${MAIN} to ${BETA}${beta ? ` ${beta.short}` : ''} (${cmp.ahead.length} commit(s))` : `Leaves ${slug}'s ${MAIN} as it is`}${into.length ? `, and ${into.join(', ')}` : ''}, through GitHub (never a merge or a force push); ${publisherOf(p).says} ${p.live || 'its live site'}.`,

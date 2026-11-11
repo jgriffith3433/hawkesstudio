@@ -123,10 +123,14 @@ function boardHtml(r) {
   const cards = r.milestones.map((m) => {
     const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
     for (const i of m.items) inMs.add(i.id);
-    return `<div class="card rm-col" data-key="bm:${esc(m.id)}"><h3>🏁 ${esc(m.title)} <span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span></h3>
+    const criticLine = m.critic?.waiting
+      ? `<div class="meta rm-critic" style="overflow-wrap:anywhere;min-width:0;color:var(--amber)">${esc(m.critic.line || 'waiting for the critic')}</div>`
+      : m.critic?.line ? `<div class="meta rm-critic" style="overflow-wrap:anywhere;min-width:0">${esc(m.critic.line)}</div>` : '';
+    return `<div class="card rm-col" data-key="bm:${esc(m.id)}"><h3>🏁 ${esc(m.title)} <span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : m.critic?.waiting ? 'warn' : ''}">${esc(m.critic?.waiting ? 'waiting for the critic' : m.status)}</span></h3>
       <div class="meta">${esc(m.product ? rmNames[m.product] ?? m.product : 'all products')}</div>
       <div class="status-line"><b>${m.done} of ${m.total} items done</b>${m.tasks?.total ? ` · ${m.tasks.merged} of ${m.tasks.total} tasks merged` : ''}</div>
       <div style="height:8px;background:var(--line, #333);border-radius:4px;overflow:hidden;margin:4px 0"><div style="height:8px;width:${pct}%;background:var(--accent, #33d6a6)"></div></div>
+      ${criticLine}
       ${m.goal ? `<div class="summary">${esc(m.goal)}</div>` : ''}
       ${m.items.map((i) => boardItem(byId.get(i.id), i)).join('') || '<div class="meta">No items yet: add items to it (Milestone… on an item).</div>'}
       <div class="actions">${m.status === 'reached' ? `<a class="small" href="#ready" data-goto="ready">What to test</a>` : ''}${m.status !== 'live' && m.status !== 'dropped' ? `<button class="small" data-ms="${m.id}" data-st="live">Live</button><button class="small" data-ms="${m.id}" data-st="dropped">Drop</button>` : ''}</div></div>`;
@@ -241,7 +245,7 @@ function overviewHtml(d, filtered = false) {
 function milestoneHtml(m) {
   const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
   return `<div class="finding"><div style="flex:1">
-    <h4><span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span> 🏁 ${esc(m.title)} <span class="meta">${esc(m.product ? rmNames[m.product] ?? m.product : 'all products')} · ${esc(m.id)} · ${m.done}/${m.total} items on beta${m.tasks ? ` · tasks: ${m.tasks.merged}/${m.tasks.total} merged, ${m.tasks.built}/${m.tasks.total} built on beta` : ''}${m.status === 'open' && m.checks ? ' · <b>playtesting its tasks on beta</b>' : ''}${m.reached_at ? ` · reached ${ago(m.reached_at)}` : ''}</span></h4>
+    <h4><span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : m.critic?.waiting ? 'warn' : ''}">${esc(m.critic?.waiting ? 'waiting for the critic' : m.status)}</span> 🏁 ${esc(m.title)} <span class="meta" style="overflow-wrap:anywhere">${esc(m.product ? rmNames[m.product] ?? m.product : 'all products')} · ${esc(m.id)} · ${m.done}/${m.total} items on beta${m.tasks ? ` · tasks: ${m.tasks.merged}/${m.tasks.total} merged, ${m.tasks.built}/${m.tasks.total} built on beta` : ''}${m.status === 'open' && m.checks ? ' · <b>playtesting its tasks on beta</b>' : ''}${m.critic?.waiting ? ` · <b>${esc(m.critic.line || 'waiting for the critic')}</b>` : ''}${m.reached_at ? ` · reached ${ago(m.reached_at)}` : ''}</span></h4>
     <div style="height:6px;background:var(--line, #333);border-radius:3px;overflow:hidden;margin:4px 0"><div style="height:6px;width:${pct}%;background:var(--accent, #33d6a6)"></div></div>
     ${m.goal ? `<div class="summary">${esc(m.goal)}</div>` : ''}${m.test ? `<div class="meta">You'll test: ${esc(m.test)}</div>` : ''}
     <div class="meta">${m.items.map((i) => `<span class="pill ${RM_PILL[i.state ?? i.status] ?? 'warn'}">${esc(i.display ?? i.status)}</span> ${esc(i.title)}`).join(' · ') || 'No items yet: add items to it (Milestone… on an item).'}</div>
