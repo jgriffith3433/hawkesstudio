@@ -19,23 +19,52 @@
   let pending = []; // files uploaded to Hawkes Gen, sent with the next message
   const seenSent = {}; // per conversation: the newest message this page told Studio J has seen
 
-  /** A small, safe Markdown renderer: headings, lists, bold, code, links, images (library files open in the viewer). */
+  // What the answers' references resolved to (titles of items, tasks, changes, findings; the type of Gen files), kept so a
+  // redrawn bubble (the answer streams in) shows them at once instead of flashing the bare id or link again.
+  const refTitle = {}; // id -> { title, item? } | null (not found)
+  const mediaKind = {}; // Gen file id -> 'image' | 'video' | 'other'
+  const REF_RE = /(?<![\w/=&?.;"'-])([ikcf]_[0-9a-f]{6,32})(?![\w])/g;
+  const genId = (u) => /\/v1\/files\/([A-Za-z0-9_]+)/.exec(u)?.[1];
+  // Through Studio's relay (this session, no signature, never expires); the signed link itself stays the anchor's href.
+  const relay = (u) => { const id = genId(u); return id ? `/api/gen/v1/files/${id}` : u; };
+  const refChip = (id) => {
+    const t = refTitle[id];
+    const label = t?.title ? `${esc(t.title)}` : esc(id);
+    return `<span class="talk-ref${t === null ? ' gone' : ''}" role="link" tabindex="0" data-ref="${id}" title="${esc(id)}">${label}</span>`;
+  };
+  // A Gen file link: an image or a video shows inline once its type is known (hydrate asks Gen for it); until then it is
+  // the link itself, which also opens the viewer.
+  const fileEmbed = (url, label) => {
+    const k = mediaKind[genId(url)];
+    const src = relay(url);
+    if (k === 'image') return `<img class="talk-img" src="${src}" alt="${label}" data-full="${src}" loading="lazy">`;
+    if (k === 'video') return `<video class="talk-video" src="${src}" controls preload="metadata" playsinline></video>`;
+    return `<a href="${url}" target="_blank" rel="noopener" data-media="${url}" data-embed="${genId(url)}">${label}</a>`;
+  };
+
+  /** A small, safe Markdown renderer: headings, lists, tables, code blocks (with Copy), bold, code, links, images, Gen files inline, item chips. */
   function md(text) {
     const inline = (s) => esc(s)
       .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, a, u) => `<img class="talk-img" src="${u}" alt="${a}" data-full="${u}">`)
-      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => (/\/v1\/files\//.test(u) ? `<a href="${u}" target="_blank" rel="noopener" data-media="${u}">${t}</a>` : `<a href="${u}" target="_blank" rel="noopener">${t}</a>`))
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => (/\/v1\/files\//.test(u) ? fileEmbed(u, t) : `<a href="${u}" target="_blank" rel="noopener">${t}</a>`))
       // A bare Gen file link keeps its whole query (?exp=..&sig=..: the text is escaped, so & is &amp; here); trailing
       // sentence punctuation stays outside the link. The label is short; the viewer opens it (by the relay).
       .replace(/(^|[\s(])(https?:\/\/[^\s<)\]]+?\/v1\/files\/[A-Za-z0-9_]+(?:\?[^\s<)\]]*)?)/g, (_, pre, u) => {
         const tail = /[.,:!]+$/.exec(u)?.[0] ?? '';
         const url = tail ? u.slice(0, -tail.length) : u;
-        return `${pre}<a href="${url}" target="_blank" rel="noopener" data-media="${url}">▶ Open file</a>${tail}`;
+        return `${pre}${fileEmbed(url, '▶ Open file')}${tail}`;
       })
       .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+      .replace(REF_RE, (_, id) => refChip(id));
+    const cells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+    const isRow = (l) => /^\s*\|.*\|\s*$/.test(l);
+    const isSep = (l) => isRow(l) && cells(l).every((c) => /^:?-{2,}:?$/.test(c));
     const out = [];
     let list = null;
-    for (const line of String(text).split('\n')) {
+    const lines = String(text).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const li = /^\s*[-*]\s+(.*)$/.exec(line) || /^\s*\d+\.\s+(.*)$/.exec(line);
       if (li) {
         if (!list) { list = []; }
@@ -43,6 +72,22 @@
         continue;
       }
       if (list) { out.push(`<ul>${list.join('')}</ul>`); list = null; }
+      // A fenced code block (an unclosed one, while the answer streams in, shows what has arrived).
+      if (/^\s*```/.test(line)) {
+        const code = [];
+        for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) code.push(lines[i]);
+        out.push(`<div class="talk-scroll talk-code"><button type="button" class="talk-copy" data-copy>Copy</button><pre><code>${esc(code.join('\n'))}</code></pre></div>`);
+        continue;
+      }
+      // A table: a row, a separator row, then rows; it scrolls inside its own box.
+      if (isRow(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
+        const head = cells(line);
+        const body = [];
+        for (i += 2; i < lines.length && isRow(lines[i]); i++) body.push(cells(lines[i]));
+        i--;
+        out.push(`<div class="talk-scroll"><table class="talk-table"><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+        continue;
+      }
       const h = /^(#{1,4})\s+(.*)$/.exec(line);
       if (h) out.push(`<h4>${inline(h[2])}</h4>`);
       else if (/^\s*---+\s*$/.test(line)) out.push('<hr>');
@@ -50,6 +95,50 @@
     }
     if (list) out.push(`<ul>${list.join('')}</ul>`);
     return out.join('');
+  }
+
+  // After a draw: ask for what the bubbles mention that isn't known yet (one request per id, ever) and fill it in.
+  const REF_URL = { i: (id) => `/api/roadmap/items/${id}`, k: (id) => `/api/roadmap/tasks/${id}`, c: (id) => `/api/changes/${id}`, f: (id) => `/api/findings/${id}` };
+  const asked = new Set();
+  function hydrate(root) {
+    root.querySelectorAll('[data-ref]').forEach((n) => {
+      const id = n.dataset.ref;
+      if (id in refTitle) { if (refTitle[id]?.title && n.textContent === id) n.textContent = refTitle[id].title; return; }
+      if (asked.has(id)) return;
+      asked.add(id);
+      api(REF_URL[id[0]](id)).then((r) => {
+        refTitle[id] = r && !r.error && (r.title || r.id) ? { title: String(r.title || id).slice(0, 90), item: r.item } : null;
+        document.querySelectorAll(`[data-ref="${id}"]`).forEach((c) => { if (refTitle[id]) c.textContent = refTitle[id].title; else c.classList.add('gone'); });
+      }).catch(() => asked.delete(id));
+    });
+    root.querySelectorAll('a[data-embed]').forEach((a) => {
+      const id = a.dataset.embed;
+      if (id in mediaKind) return;
+      if (asked.has(`m:${id}`)) return;
+      asked.add(`m:${id}`);
+      fetch(`/api/gen/v1/files/${id}`, { method: 'HEAD' }).then((r) => {
+        const t = r.headers.get('content-type') ?? '';
+        mediaKind[id] = t.startsWith('image/') ? 'image' : t.startsWith('video/') ? 'video' : 'other';
+        if (mediaKind[id] === 'other') return;
+        // Each such link becomes the media; its text (the label) is kept as the alt or caption by the link's title.
+        document.querySelectorAll(`a[data-embed="${id}"]`).forEach((n) => {
+          const src = `/api/gen/v1/files/${id}`;
+          const m = document.createElement(mediaKind[id] === 'video' ? 'video' : 'img');
+          if (m.tagName === 'VIDEO') Object.assign(m, { src, controls: true, preload: 'metadata', playsInline: true, className: 'talk-video' });
+          else Object.assign(m, { src, className: 'talk-img', alt: n.textContent, loading: 'lazy' }), m.dataset.full = src;
+          n.replaceWith(m);
+        });
+      }).catch(() => asked.delete(`m:${id}`));
+    });
+  }
+  // Opens what a chip names in Studio: a change's log, the Roadmap (its item or task), the Backlog.
+  function openRef(id) {
+    const t = id[0];
+    if (t === 'c') { show('changes', id); return; }
+    if (t === 'f') { show('backlog'); return; }
+    show('roadmap');
+    const item = t === 'k' ? refTitle[id]?.item : id;
+    setTimeout(() => document.querySelector(`#roadmap [data-item="${item}"]`)?.scrollIntoView({ block: 'center' }), 400);
   }
 
   const HARNESS_NAMES = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity' };
@@ -391,6 +480,19 @@
         await loadConversation();
       }
     } catch (err) { alert(err.message); }
+    const cp = e.target.closest('[data-copy]');
+    if (cp) {
+      const text = cp.parentElement.querySelector('pre')?.textContent ?? '';
+      const done = () => { cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = 'Copy'; }, 1500); };
+      try { await navigator.clipboard.writeText(text); done(); } catch {
+        // No clipboard permission (an insecure page): the old way, through a selection.
+        const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.append(ta); ta.select(); try { document.execCommand('copy'); done(); } catch { cp.textContent = 'Copy failed'; } ta.remove();
+      }
+      return;
+    }
+    const ref = e.target.closest('[data-ref]');
+    if (ref) { openRef(ref.dataset.ref); return; }
     const media = e.target.closest('[data-media]');
     if (media && !(e.ctrlKey || e.metaKey || e.shiftKey || e.button)) {
       e.preventDefault();
@@ -435,6 +537,9 @@
     vv.addEventListener('resize', setVv); vv.addEventListener('scroll', setVv); setVv();
   }
   // Dropping files on the conversation attaches them.
+  // Chips are keyboard-reachable too; titles and inline media are filled in whenever a bubble is drawn.
+  el('#talkLog').addEventListener('keydown', (e) => { const r = e.target.closest?.('[data-ref]'); if (r && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openRef(r.dataset.ref); } });
+  { let queued = false; new MutationObserver(() => { if (queued) return; queued = true; queueMicrotask(() => { queued = false; hydrate(el('#talkLog')); }); }).observe(el('#talkLog'), { childList: true, subtree: true }); }
   el('#talkLog').addEventListener('dragover', (e) => e.preventDefault());
   el('#talkLog').addEventListener('drop', (e) => { e.preventDefault(); attach([...(e.dataTransfer?.files ?? [])]); });
 
