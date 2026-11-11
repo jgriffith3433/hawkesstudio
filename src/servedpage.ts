@@ -46,3 +46,23 @@ export async function checkServedPage(url: string, played: { sha: string; branch
     return null;
   }
 }
+
+/**
+ * A beta playtest of a published site plays what is published, so the published commit must be beta's tip (J,
+ * 2026-11-11: PH Origins' beta runs said "beta is up to date (b314db9)" and played a6c1dff, #165, while #166-#170 were
+ * merged; their findings started a fixer for a stall #168 had already fixed). When the site is behind, it is published
+ * again first (`republish` builds beta's newest commit) and `published` is read once more; if it still differs the
+ * verdict is stale: the caller fails the step with `why`, files no findings and starts no fixers from it.
+ * Unknown (no tip, or no published commit) is never a failure.
+ */
+export async function ensurePublishedCurrent(o: { tip: string | null; published: () => string | null | undefined; republish: () => Promise<unknown> }): Promise<{ ok: true; republished: boolean } | { ok: false; why: string; published: string; tip: string }> {
+  const behind = () => {
+    const pub = o.published();
+    return o.tip && pub && !sameCommit(pub, o.tip) ? pub : null;
+  };
+  if (!behind()) return { ok: true, republished: false };
+  await o.republish().catch(() => {});
+  const still = behind();
+  if (!still) return { ok: true, republished: true };
+  return { ok: false, published: still, tip: o.tip!, why: `Stale verdict, not judged: the published beta site is at ${still.slice(0, 7)} but beta is at ${o.tip!.slice(0, 7)}, and publishing it again didn't catch up. No findings or fixes come from this run; the next one plays the republished site.` };
+}

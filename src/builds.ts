@@ -554,6 +554,13 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     // A Firebase deploy of main is the live site going out (deploy.ts deployMain): it never moves beta.
     const movesBeta = !o.change && !newer && !(b.tool === 'firebase' && ref === 'main') && (head ? head === sha : ref === 'beta');
     if (!o.change && !movesBeta) say(`${b.id} ${version} is published at its own address; beta stays (${newer ? 'a newer build is ready' : `${sha.slice(0, 7)} isn't beta's newest commit`})`);
+    // Beta moved on while this build ran (PH Origins, 2026-11-11: #166-#170 merged during #165's build, the site stayed at
+    // #165): beta's newest commit gets its own build now, so the site never waits for the next push. It takes its turn in
+    // the line behind this one; a commit already built or already waiting is joined, never built twice.
+    if (needsCatchUp({ change: o.change, movesBeta, newer: Boolean(newer), head, sha, ref, tool: b.tool })) {
+      say(`beta moved to ${head!.slice(0, 7)} while this built: building it next`);
+      void startBuild(p.id, { trigger: 'beta', build: b.id, sha: head!, ref: 'beta', origin: null }).catch((e) => console.warn(`[builds] ${p.id}: building beta's newer commit: ${e?.message ?? e}`));
+    }
     if (movesBeta && (b.target ?? 'web') === 'web') {
       await setBeta(p.id, b.id, version);
       (await import('./previews.ts')).noteBeta(p.id, { status: 'ready', at: Date.now(), sha: sha.slice(0, 7), ref, files: out.files.length, version: `${b.id} ${version}` });
@@ -633,6 +640,10 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
 export const lineOf = (product: string, build: string, o: { change?: string; ref?: string }) => lineKey(product, build, o.change ? `c/${o.change}` : o.ref ?? 'beta');
 
 /** The words a build start that a newer commit replaced ends with (its step, its run, the log). */
+/** A finished build that isn't beta's newest commit leaves a newer one to build (a beta build of a web project, no newer version ready, beta's tip known and different; Unity builds keep their own gate). */
+export const needsCatchUp = (o: { change?: string | null; movesBeta: boolean; newer: boolean; head: string | null; sha: string; ref: string; tool?: string }) =>
+  !o.change && o.ref === 'beta' && o.tool !== 'unity' && !o.movesBeta && !o.newer && Boolean(o.head) && o.head !== o.sha;
+
 export const supersededWords = (sha: string) => `superseded by the build of ${sha.slice(0, 7)}: one build of a project's commit at a time, and the newest waiting one replaces the older`;
 
 /**
