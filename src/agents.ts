@@ -1227,6 +1227,7 @@ export const DESIGN_SKILLS = {
   'story-through-play': 'every named character has a want, an arc, the gameplay moment that shows it, three personality words, a Gen voice id and an idle, walk and talk animation set; story told by events and voice, not text',
   'level-design': 'build gaps, ledges and corridors from the measured numbers in docs/metrics.json (jump height and distance, run speed, corridor widths)',
   'game-feel': 'coyote time and jump buffer of at least 80 ms, hit-stop of at least 40 ms, a short screen shake',
+  'ui-kit': 'menus use the Hawkes UI kit (hawkes-ui.js createUiKit, Unity HawkesUI): pressed, hover and focus states, a ui-bus click on every press, 150-200 ms screen slides (0 ms with reduced motion), safe-area containers, 44 px targets, one ui-press per press (docs/ui-kit-skill.md if the skill is not loadable)',
 } as const;
 export type DesignSkill = keyof typeof DESIGN_SKILLS;
 
@@ -1254,7 +1255,7 @@ export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) 
     look: 'Read the story doc, the world bible and the code it touches. Plan it, then build it.',
     keep: 'Keep to this request. Don\'t refactor unrelated code',
     prefix: 'Add',
-    skills: ['story-through-play', 'level-design', 'game-feel'],
+    skills: ['story-through-play', 'level-design', 'game-feel', 'ui-kit'],
   },
   content: {
     intro: (name, about) => `You are making content for ${name} (${about}): story, places, characters, dialogue or art.`,
@@ -1279,7 +1280,7 @@ export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) 
     look: 'Look at each item\'s screenshots and replay place to see it the way a player does. Find where it comes from.',
     keep: 'Keep to these items. Don\'t refactor unrelated code',
     prefix: 'Polish',
-    skills: ['game-feel'],
+    skills: ['game-feel', 'ui-kit'],
   },
   'new-game': {
     intro: (name, about) => `You are making the first version of ${name} (${about}): a new game, built as a vertical slice of a planned world.`,
@@ -1293,7 +1294,7 @@ export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) 
     look: 'Read the pitch, the starter and the game-quality skill. Write the world bible and metrics first, commit them, then build the slice.',
     keep: 'Keep to this game\'s first version. Don\'t refactor unrelated code',
     prefix: 'New game',
-    skills: ['story-through-play', 'level-design', 'game-feel'],
+    skills: ['story-through-play', 'level-design', 'game-feel', 'ui-kit'],
   },
 };
 

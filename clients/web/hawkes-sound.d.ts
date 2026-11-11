@@ -31,6 +31,8 @@ export interface SoundKit {
   stopMusic(): void;
   setBusVolume(bus: Bus, v: number): void;
   unlock(): void;
+  /** The kit plays the ui bus on every control press; the UI kit (hawkes-ui.js) turns it off and plays it itself. */
+  autoUi: boolean;
   duckDb: number;
   state(): string;
   dispose(): void;

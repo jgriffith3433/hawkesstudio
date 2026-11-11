@@ -455,6 +455,30 @@ screen and press goes to the review (`audio` param) and the fun review, which co
 Not yet: Hawkes Gen plays one viewport per run, so the other orientation comes from the frame above. When Gen's `playtest.run`
 takes a landscape touch viewport, add a `:landscape` twin of the phone playtest and the same events arrive from a real 844x390 play.
 
+## UI kit
+
+The drop-in that makes a game's menus feel alive, so no agent rebuilds it (`clients/web/hawkes-ui.js` `createUiKit`, next to the UI
+probe in the same file; Unity `HawkesUI` and `HawkesSafeArea` in `com.hawkes.playtest` 0.6.0; skill `ui-kit`, kept in
+`docs/ui-kit-skill.md` and `customer-plugin/skills/ui-kit/`, listed in the brief's "Skills to load" for feature, new-game and
+polish work). Reference: Hades and Celeste menus.
+
+- **Presses.** On pointerdown (or Enter or Space) a control gets `data-hawkes-pressed` (scale and brightness, held at least 110 ms),
+  hover and focus-visible states, and the `ui-press` set plays on the sound kit's `ui` bus (the kit turns the sound kit's own
+  auto-click off so a press clicks once; with no sound kit it loads one). It logs **exactly one** `ui-press` (the probe leaves DOM
+  presses to the kit: `window.__hawkesUiKit`); `visualMs` is the time to the pressed state, about a frame. Studio's
+  `ui.duplicatePresses` counts a control logged twice within 30 ms (must be 0).
+- **Screens.** `ui.show(name, { dir })` slides `[data-ui-screen]` sections for 150-200 ms (`TRANSITION_MS`) and logs
+  `ui-transition { from, to, ms, plannedMs, reduced }`; with `prefers-reduced-motion: reduce` there is no slide and `ms` is 0.
+  Studio reads them as `ui.transitions`, `ui.transitionMsMin/Max` and `ui.transitionsOffSpec` (a slide outside 150-200 ms, with 40 ms
+  of timer slack, or a reduced-motion one that took any time; must be 0).
+- **Targets and safe area.** `.hawkes-btn` and `[data-hawkes-ui]` are at least 44x44 px (`:where()`, so a game's CSS wins);
+  `.hawkes-safe` pads by `--hawkes-safe-*`, the larger of `env(safe-area-inset-*)` and (when the page is a playtest) the probe's
+  simulated insets, updated on resize and rotation, so no kit control sits under the notch or home bar at 390x844 and 844x390.
+- **Unity.** `HawkesUI.Instance.Press(rt, label)` from onClick (pop, `HawkesSound.PressUi`, one `ui-press`), `Hover`, `Focus`,
+  `Fit(rt)` (44 pt), `Show(next, previous, dir)` (coroutine; `HawkesUI.ReducedMotion` gives 0 ms), `HawkesSafeArea` on menu roots.
+
+Test `test/ui-kit.test.ts`.
+
 ## Explore
 
 The **explore bot** (`clients/web/hawkes-explore.js`, copy it next to `hawkes-playtest.js`) plays a level the way a

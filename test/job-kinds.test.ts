@@ -40,7 +40,10 @@ test('new-game kind, and every game kind loads its design skills', async () => {
   const { skillsBrief } = await import('../src/agents.ts');
   assert.equal(jobKind({ request: 'Make the first playable version of "Harbour" from what the person described' }), 'new-game');
   assert.deepEqual(JOB_BRIEFS.content.skills, ['story-through-play', 'level-design', 'game-feel']);
-  assert.deepEqual(JOB_BRIEFS['new-game'].skills, ['story-through-play', 'level-design', 'game-feel']);
+  assert.deepEqual(JOB_BRIEFS['new-game'].skills, ['story-through-play', 'level-design', 'game-feel', 'ui-kit']);
+  assert.ok(JOB_BRIEFS.feature.skills.includes('ui-kit') && JOB_BRIEFS.polish.skills.includes('ui-kit'), 'feature and polish briefs load the ui-kit skill');
+  // The ui-kit skill's source is docs/ui-kit-skill.md (the sandbox can't write .claude/); the customer plugin has it already.
+  for (const f of ['docs/ui-kit-skill.md', 'customer-plugin/skills/ui-kit/SKILL.md']) assert.ok(fs.existsSync(path.join(import.meta.dirname, '..', f)), f);
   const b = skillsBrief('content', 'hawkes');
   for (const k of ['story-through-play', 'level-design', 'game-feel']) assert.match(b, new RegExp(`hawkes:${k}`));
   assert.match(skillsBrief('new-game', 'studio'), /studio:game-quality/);

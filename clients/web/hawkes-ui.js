@@ -6,6 +6,9 @@
 // [onclick], [data-ui]) and pushes events (never polled): `ui-layout` (every control's problems at this viewport) and
 // `ui-press` (a press, and whether anything changed on screen within 100 ms). Studio (src/ui.ts) adds the sound check from the
 // audio probe's events (no sound start within 150 ms = silent) and turns the rest into ui.* metrics and findings.
+// The UI KIT (createUiKit, below) is the drop-in that makes a game's menus feel alive: pressed, hover and focus states, a ui-bus
+// click on every press (through the sound kit when there is one), 150-200 ms screen slides (0 ms with reduced motion) and safe-area
+// containers. It announces each press and transition to the probe, which logs them: exactly one `ui-press` per press.
 // Canvas and WebGL games have no DOM controls: give the rects with t.ui([{ id, label, x, y, w, h }]) and each press with
 // t.uiPress(label, { changed: true }) (docs/playtest.md#ui).
 
@@ -256,6 +259,7 @@ export function startUiProbe({ emit = () => {}, now = () => 0, scene = () => und
     return el && !isOverlay(el) ? el : null;
   };
   const onDown = (e) => {
+    if (win.__hawkesUiKit) return; // the kit logs its own presses (one ui-press per press)
     const el = target(e);
     if (!el) return;
     const r = el.getBoundingClientRect();
@@ -266,6 +270,20 @@ export function startUiProbe({ emit = () => {}, now = () => 0, scene = () => und
   const opts = { capture: true, passive: true };
   doc.addEventListener('pointerdown', onDown, opts);
   doc.addEventListener('keydown', onKey, opts);
+  // The kit (createUiKit) announces its presses and screen transitions as 'hawkes-ui' window events; they become run events.
+  const onKit = (e) => {
+    const d = e?.detail;
+    if (state.stopped || !d) return;
+    if (d.type === 'press') {
+      state.presses++;
+      if (!d.visual) state.dead++;
+      emit('ui-press', { t: now(), id: d.id, label: d.label, orientation: orientation(), scene: scene(), visual: !!d.visual, visualMs: d.visualMs, rect: d.rect, kit: true });
+    } else if (d.type === 'transition') {
+      state.transitions = (state.transitions ?? 0) + 1;
+      emit('ui-transition', { t: now(), from: d.from, to: d.to, ms: d.ms, plannedMs: d.plannedMs, reduced: !!d.reduced, scene: scene() });
+    }
+  };
+  win.addEventListener?.('hawkes-ui', onKit);
 
   return {
     layout, press,
@@ -274,6 +292,7 @@ export function startUiProbe({ emit = () => {}, now = () => 0, scene = () => und
       try { mo?.disconnect(); } catch {}
       doc.removeEventListener('pointerdown', onDown, opts);
       doc.removeEventListener('keydown', onKey, opts);
+      win.removeEventListener?.('hawkes-ui', onKit);
       for (const p of pending.slice()) settle(p);
     },
     metrics: () => ({ 'ui.layouts': state.layouts, 'ui.presses': state.presses }),
@@ -319,4 +338,205 @@ export async function layoutOtherOrientation({ win = window, emit = () => {}, sc
       setTimeout(() => finish(null), settleMs + 6000);
     } catch { finish(null); }
   });
+}
+
+// ====================================================================================================================
+// The UI kit: pressed / hover / focus states, a UI-bus sound on every press, screen transitions, safe-area containers.
+// Spec: docs/playtest.md#ui-kit; how to use it: the ui-kit skill (docs/ui-kit-skill.md); the Unity twin is HawkesUI.cs.
+//
+//   import { createUiKit } from './hawkes-ui.js';
+//   const ui = createUiKit({ sound });                 // sound: the sound kit (hawkes-sound.js); without it one is loaded for you
+//   // markup: <main class="hawkes-safe"><section data-ui-screen="menu">...<button class="hawkes-btn">Play</button></section>
+//   //         <section data-ui-screen="options" hidden>...</section></main>
+//   await ui.show('options');                          // slides 180 ms (150-200), instantly with prefers-reduced-motion
+//   await ui.show('menu', { dir: 'back' });
+// ====================================================================================================================
+
+export const UI_KIT_VERSION = 1;
+export const TRANSITION_MS = { min: 150, max: 200, default: 180 };
+const KIT_CONTROL = 'button, a[href], [role=button], [role=tab], [role=menuitem], input[type=button], input[type=submit], summary, [data-hawkes-ui]';
+
+/** The transition length in ms: clamped to 150-200, and 0 when the player asks for reduced motion. */
+export function transitionMs(ms = TRANSITION_MS.default, reduced = false) {
+  if (reduced) return 0;
+  const n = Number(ms);
+  return Math.min(TRANSITION_MS.max, Math.max(TRANSITION_MS.min, Number.isFinite(n) ? Math.round(n) : TRANSITION_MS.default));
+}
+
+/** The simulated notch and home bar for a viewport (what the probe checks fixed controls against). */
+export function simulatedInsets(width, height) {
+  return UI_DEFAULTS.insets[height >= width ? 'portrait' : 'landscape'];
+}
+
+/** The kit's stylesheet. :where() keeps its specificity at zero so a game's own CSS always wins. */
+export function kitCss() {
+  return `
+:where(.hawkes-btn, [data-hawkes-ui]:not([data-hawkes-ui=off])){min-width:44px;min-height:44px;box-sizing:border-box;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer;
+  transition:transform 70ms ease-out,filter 90ms ease-out,box-shadow 90ms ease-out,background-color 90ms ease-out}
+:where(.hawkes-stack){display:flex;flex-direction:column;gap:8px}
+:where(.hawkes-row){display:flex;flex-direction:row;flex-wrap:wrap;gap:8px}
+:where(.hawkes-safe){box-sizing:border-box;padding-top:var(--hawkes-safe-top,0px);padding-right:var(--hawkes-safe-right,0px);padding-bottom:var(--hawkes-safe-bottom,0px);padding-left:var(--hawkes-safe-left,0px)}
+:where(.hawkes-safe-fixed){position:fixed;inset:0;overflow:hidden}
+@media (hover:hover){:where(.hawkes-btn,[data-hawkes-ui]):not([disabled]):hover{filter:brightness(1.12);transform:translateY(-1px)}}
+:where(.hawkes-btn,[data-hawkes-ui],button,a[href],[role=button]):focus-visible{outline:3px solid #ffd45a;outline-offset:2px}
+:where(.hawkes-btn,[data-hawkes-ui],button,a[href],[role=button])[data-hawkes-pressed]{transform:scale(.95);filter:brightness(.88);box-shadow:inset 0 2px 6px rgba(0,0,0,.35)}
+@media (prefers-reduced-motion:reduce){:where(.hawkes-btn,[data-hawkes-ui]){transition:none}:where(.hawkes-btn,[data-hawkes-ui],button,a[href],[role=button])[data-hawkes-pressed]{transform:none}}
+[data-ui-screen][hidden]{display:none!important}
+`;
+}
+
+/**
+ * Make the kit. opts: { sound (the sound kit), win, durationMs (150-200, default 180), simulateInsets (default: on when the page
+ * is a playtest), css (false to skip the stylesheet) }. Returns { show, current, press, safeArea, state, dispose }.
+ */
+export function createUiKit(opts = {}) {
+  const win = opts.win ?? (typeof window !== 'undefined' ? window : null);
+  const doc = win?.document;
+  const kit = { presses: [], transitions: [] };
+  if (!doc) return { ...kit, show: async () => null, current: () => null, press() {}, safeArea() {}, state: () => kit, dispose() {} };
+  const now = () => (win.performance ?? performance).now();
+  const emit = (detail) => { try { win.dispatchEvent(new win.CustomEvent('hawkes-ui', { detail })); } catch {} };
+  const reduced = () => !!win.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  const cleanups = [];
+  win.__hawkesUiKit = true; // the probe leaves DOM presses to the kit
+
+  // ---- the stylesheet, viewport-fit=cover, safe-area variables ----
+  if (opts.css !== false && !doc.querySelector?.('style[data-hawkes-ui-kit]')) {
+    const st = doc.createElement('style');
+    st.setAttribute('data-hawkes-ui-kit', '1');
+    st.textContent = kitCss();
+    (doc.head ?? doc.documentElement).appendChild(st);
+    cleanups.push(() => st.remove());
+  }
+  try {
+    const meta = doc.querySelector?.('meta[name=viewport]');
+    if (meta && !/viewport-fit=cover/.test(meta.content)) meta.content = `${meta.content}, viewport-fit=cover`;
+  } catch {}
+  const simulate = opts.simulateInsets ?? /[?&](playtest|hawkes-ui-sim)\b/.test(win.location?.search ?? '');
+  let probeEl = null;
+  function readEnv() {
+    // env() only resolves inside CSS: read it through a hidden element's padding.
+    if (!probeEl) {
+      probeEl = doc.createElement('div');
+      probeEl.setAttribute('aria-hidden', 'true');
+      probeEl.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)';
+      doc.body.appendChild(probeEl);
+      cleanups.push(() => probeEl?.remove());
+    }
+    const cs = win.getComputedStyle(probeEl);
+    const px = (v) => parseFloat(v) || 0;
+    return { top: px(cs.paddingTop), right: px(cs.paddingRight), bottom: px(cs.paddingBottom), left: px(cs.paddingLeft) };
+  }
+  /** Sets --hawkes-safe-* on the root: the device's own insets, or at least the simulated ones while a playtest runs. */
+  function safeArea() {
+    const env = readEnv();
+    const sim = simulate ? simulatedInsets(win.innerWidth, win.innerHeight) : { top: 0, right: 0, bottom: 0, left: 0 };
+    const out = {};
+    for (const k of ['top', 'right', 'bottom', 'left']) {
+      out[k] = Math.max(env[k], sim[k]);
+      doc.documentElement.style.setProperty(`--hawkes-safe-${k}`, `${out[k]}px`);
+    }
+    return out;
+  }
+  const onResize = () => safeArea();
+  win.addEventListener?.('resize', onResize);
+  win.addEventListener?.('orientationchange', onResize);
+  cleanups.push(() => { win.removeEventListener?.('resize', onResize); win.removeEventListener?.('orientationchange', onResize); });
+  if (doc.body) safeArea(); else doc.addEventListener?.('DOMContentLoaded', safeArea, { once: true });
+
+  // ---- sound: the sound kit's ui bus; the kit takes over its auto-click so a press clicks once ----
+  let sound = opts.sound ?? null;
+  if (sound) { try { sound.autoUi = false; } catch {} }
+  else if (opts.sound !== false) {
+    import('./hawkes-sound.js').then((m) => { if (!sound) { sound = m.createSoundKit({ win, autoUi: false }); sound.autoUi = false; } }).catch(() => {});
+  }
+  const click = () => { try { sound?.unlock?.(); sound?.play?.('ui-press'); } catch {} };
+
+  // ---- presses: pressed state at once, a click, one ui-press ----
+  const MIN_HELD_MS = 110; // a quick tap still shows its pressed state for this long
+  const pressedAt = new Map();
+  function release(el) {
+    const t0 = pressedAt.get(el);
+    if (t0 == null) return;
+    const wait = Math.max(0, MIN_HELD_MS - (now() - t0));
+    setTimeout(() => { el.removeAttribute('data-hawkes-pressed'); pressedAt.delete(el); }, wait);
+  }
+  function record(el, label, id, rect, t0) {
+    const d = { type: 'press', id, label, rect, visual: true, visualMs: 0 };
+    // The pressed state was set synchronously; confirm it took (and how long it took) on the next frame.
+    const raf = win.requestAnimationFrame ?? ((f) => setTimeout(f, 16));
+    raf(() => {
+      d.visual = el.hasAttribute('data-hawkes-pressed') || pressedAt.has(el);
+      d.visualMs = Math.round(now() - t0);
+      kit.presses.push(d);
+      if (kit.presses.length > 500) kit.presses.shift();
+      emit(d);
+    });
+  }
+  function onPress(e) {
+    const el = e.target?.closest?.(KIT_CONTROL);
+    if (!el || el.getAttribute('data-hawkes-ui') === 'off' || el.disabled || el.getAttribute('aria-disabled') === 'true') return;
+    if (el.closest?.('[data-hawkes-ui-overlay]')) return;
+    const t0 = now();
+    el.setAttribute('data-hawkes-pressed', '');
+    pressedAt.set(el, t0);
+    click();
+    const r = el.getBoundingClientRect();
+    const label = labelOf(el);
+    record(el, label, idOf(el, label), [ri(r.left), ri(r.top), ri(r.width), ri(r.height)], t0);
+    if (e.type === 'keydown') release(el); // a key has no pointerup
+  }
+  const onDown = (e) => { if (e.button > 0 && e.pointerType === 'mouse') return; onPress(e); };
+  const onKey = (e) => { if ((e.key === 'Enter' || e.key === ' ') && !e.repeat) onPress(e); };
+  const onUp = (e) => { const el = e.target?.closest?.(KIT_CONTROL); if (el) release(el); for (const k of [...pressedAt.keys()]) if (k !== el) release(k); };
+  const o = { capture: true, passive: true };
+  doc.addEventListener('pointerdown', onDown, o);
+  doc.addEventListener('keydown', onKey, o);
+  for (const t of ['pointerup', 'pointercancel']) doc.addEventListener(t, onUp, o);
+  cleanups.push(() => {
+    doc.removeEventListener('pointerdown', onDown, o); doc.removeEventListener('keydown', onKey, o);
+    for (const t of ['pointerup', 'pointercancel']) doc.removeEventListener(t, onUp, o);
+  });
+
+  // ---- screens: slide, 150-200 ms, 0 with reduced motion ----
+  const screens = () => [...doc.querySelectorAll('[data-ui-screen]')];
+  const current = () => screens().find((s) => !s.hidden)?.getAttribute('data-ui-screen') ?? null;
+  let busy = null;
+  /** Shows screen `name`. dir: 'forward' (default; the new screen slides in from the right), 'back' (from the left). Resolves to the transition's record. */
+  async function show(name, { dir = 'forward' } = {}) {
+    if (busy) await busy.catch(() => {});
+    const to = screens().find((s) => s.getAttribute('data-ui-screen') === name);
+    if (!to) return null;
+    const from = screens().find((s) => !s.hidden && s !== to) ?? null;
+    const isReduced = reduced();
+    const planned = transitionMs(opts.durationMs, isReduced);
+    const t0 = now();
+    const run = async () => {
+      if (planned > 0 && from && typeof to.animate === 'function') {
+        const sign = dir === 'back' ? -1 : 1;
+        to.hidden = false;
+        const easing = 'cubic-bezier(.2,.8,.2,1)';
+        const a = to.animate([{ transform: `translateX(${28 * sign}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: planned, easing, fill: 'both' });
+        const b = from.animate([{ transform: 'none', opacity: 1 }, { transform: `translateX(${-28 * sign}px)`, opacity: 0 }], { duration: planned, easing, fill: 'both' });
+        await Promise.all([a.finished, b.finished].map((p) => Promise.resolve(p).catch(() => {})));
+        from.hidden = true;
+        try { a.cancel(); b.cancel(); } catch {}
+      } else {
+        if (from) from.hidden = true;
+        to.hidden = false;
+      }
+    };
+    busy = run();
+    await busy; busy = null;
+    const rec = { type: 'transition', from: from?.getAttribute('data-ui-screen') ?? null, to: name, ms: planned === 0 ? 0 : Math.round(now() - t0), plannedMs: planned, reduced: isReduced };
+    kit.transitions.push(rec);
+    emit(rec);
+    return rec;
+  }
+
+  return {
+    show, current, safeArea, press: (el) => onPress({ target: el, type: 'pointerdown' }),
+    state: () => ({ presses: kit.presses.slice(), transitions: kit.transitions.slice() }),
+    dispose() { for (const c of cleanups) { try { c(); } catch {} } try { delete win.__hawkesUiKit; } catch {} },
+  };
 }
