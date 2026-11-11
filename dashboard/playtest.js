@@ -12,6 +12,21 @@
   }, {
     id: 'rail', title: 'A change\'s progress rail', seconds: 30, tags: ['changes', 'rail', 'phone'],
     description: 'Opens Changes and checks every change\'s rail: all its steps listed with a time and a one-line detail on the ones reached, exactly one current step highlighted while it runs, a failed step in red with its reason, the rail and the page not scrolling sideways (390px included), and then sits idle for a few seconds to see that no request goes to the changes API on a timer (updates arrive only as /api/stream change-step events).',
+  }, {
+    id: 'roadmap', title: 'Roadmap: a milestone and an item', seconds: 30, tags: ['roadmap'],
+    description: 'Opens Roadmap on the milestone board, opens one milestone and one item (the way a person taps them) and logs each one\'s state; every check is a pass or fail event naming the screen and the element.',
+  }, {
+    id: 'report', title: 'Report: the latest report and its findings', seconds: 30, tags: ['report'],
+    description: 'Opens the latest report, checks it drew with its run summary, and opens its findings one by one, logging each as a pass or fail event naming the screen and element.',
+  }, {
+    id: 'phone-cockpit', title: 'Phone cockpit: Inbox, a card, a milestone, Talk', seconds: 45, tags: ['phone', 'cockpit'],
+    description: 'At 390x844 touch: Inbox, one Inbox card, a Roadmap milestone, and the Talk input with the keyboard up. Any control under 44px or any sideways scroll fails and names the screen and element.',
+  }, {
+    id: 'signin', title: 'Sign-in card in a non-English browser, then Home', seconds: 30, tags: ['signin', 'phone'],
+    description: 'Loads the signed-out sign-in card, checks its button is English and at least 44px tall, taps it and expects a loading state within 100ms, then confirms the test sign-in landed on Home.',
+  }, {
+    id: 'look', title: 'Every tab: text contrast and nothing wider than the screen', seconds: 60, tags: ['look'],
+    description: 'Opens every tab; fails and names the tab and element when body text is under 4.5:1 contrast or any element is wider than the viewport.',
   }];
   const READY_TIMEOUT_MS = 20000;
   const t0 = () => Date.now();
@@ -317,15 +332,330 @@
     run.progress = 1;
   }
 
+
+  // ---- Scenarios that end in a pass or fail, with one logged event per check naming its screen and element ----
+  const MIN_TOUCH = 44;
+  const vwNow = () => document.documentElement.clientWidth || innerWidth;
+  const nameOf = (el) => {
+    const label = (el.getAttribute?.('aria-label') || el.title || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 30);
+    const cls = typeof el.className === 'string' && el.className.trim() ? `.${el.className.trim().split(/\s+/)[0]}` : '';
+    return `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : cls}${label ? ` "${label}"` : ''}`;
+  };
+  // Every check is one event: pass:<scenario>:<screen> or fail:<scenario>:<screen>, its detail naming the element.
+  let checks = [];
+  function check(screen, element, ok, detail) {
+    const type = `${ok ? 'pass' : 'fail'}:${run.id}:${screen}`;
+    event(type, `${element}: ${detail}`);
+    if (!ok) checks.push(`${screen}: ${element}: ${detail}`);
+    return ok;
+  }
+  function finish() {
+    run.metrics.checks = run.events.filter((e) => /^(pass|fail):/.test(e.type)).length;
+    run.metrics.failedChecks = checks.length;
+    event(`result:${run.id}`, checks.length ? `fail (${checks.length}): ${checks[0]}` : 'pass');
+    if (checks.length) throw new TabFailure(`${checks.length} check(s) failed. First: ${checks.slice(0, 3).join(' | ')}`);
+    run.progress = 1;
+  }
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    for (let p = el; p && p.nodeType === 1; p = p.parentElement) {
+      const cs = getComputedStyle(p);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    }
+    return true;
+  };
+  // Controls a thumb has to hit, smaller than 44px either way (a checkbox inside a label counts through its label).
+  function smallControls(root) {
+    const bad = [];
+    for (const el of root.querySelectorAll('button, a[href], select, summary, textarea, input:not([type=hidden]), [role=button]')) {
+      if (el.disabled || !visible(el)) continue;
+      if (el.type === 'checkbox' || el.type === 'radio') { if (el.closest('label')) continue; }
+      const r = el.getBoundingClientRect();
+      if (r.width < MIN_TOUCH || r.height < MIN_TOUCH) bad.push(`${nameOf(el)} is ${Math.round(r.width)}x${Math.round(r.height)}px`);
+    }
+    return bad;
+  }
+  const sideways = () => document.documentElement.scrollWidth > vwNow() + 1;
+  const sidewaysWords = () => `the page is ${document.documentElement.scrollWidth}px wide on a ${vwNow()}px screen`;
+
+  async function roadmap() {
+    await ready('roadmap', () => openTab('roadmap', 'Roadmap'), 'Roadmap');
+    run.scene = 'Roadmap';
+    event('scene', 'Roadmap');
+    const view = document.getElementById('rmView');
+    if (view && view.value !== 'board') { view.value = 'board'; view.dispatchEvent(new Event('change', { bubbles: true })); }
+    await sleep(100);
+    await appears('#rmBoard .rm-col, #rmList .finding[data-item], #rmList .empty', 'the milestone board');
+    const board = document.getElementById('roadmap');
+    check('Roadmap', '#rmView', view?.value === 'board', `view is "${view?.value}"`);
+    const ms = document.querySelector('#rmBoard .rm-col');
+    if (!ms) check('Roadmap', '#rmBoard', true, 'no milestones yet, the empty board is what a person sees');
+    else {
+      ms.scrollIntoView?.({ block: 'center' });
+      const title = ms.querySelector('h3')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+      const state = ms.querySelector('.pill')?.textContent.trim() ?? '';
+      const progress = ms.querySelector('.status-line')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+      check('Roadmap', `milestone ${title.slice(0, 40)}`, Boolean(title && state && progress), `state "${state}", ${progress || 'no progress line'}`);
+      const details = ms.querySelector('details > summary');
+      if (details) { details.click(); check('Roadmap', `milestone ${title.slice(0, 40)} details`, details.parentElement.open, details.parentElement.open ? 'opened' : 'would not open'); }
+      run.metrics.milestones = document.querySelectorAll('#rmBoard .rm-col').length;
+    }
+    const item = document.querySelector('#rmList .finding[data-item]');
+    if (!item) check('Roadmap', '#rmList', true, 'no items yet, the empty list is what a person sees');
+    else {
+      item.scrollIntoView?.({ block: 'center' });
+      const title = item.querySelector('h4')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 60) ?? '';
+      const state = item.querySelector('h4 .pill')?.textContent.trim() ?? '';
+      check('Roadmap', `item ${title}`, Boolean(title && state), `state "${state}", ${item.querySelector('.status-line')?.textContent.replace(/\s+/g, ' ').trim() || 'no status line'}`);
+      const sum = item.querySelector('details.more-details > summary');
+      if (sum) { sum.click(); check('Roadmap', `item ${title.slice(0, 40)} details`, sum.parentElement.open, sum.parentElement.open ? 'opened' : 'would not open'); }
+      run.metrics.items = document.querySelectorAll('#rmList .finding[data-item]').length;
+    }
+    const wide = tooWide(board);
+    check('Roadmap', '#roadmap', !wide.length && !sideways(), wide.length ? wide.join('; ') : sideways() ? sidewaysWords() : `fits ${vwNow()}px`);
+    if (errors.length) check('Roadmap', 'console', false, errors.slice(0, 2).join(' | '));
+    finish();
+  }
+
+  async function report() {
+    await ready('report', () => openTab('report', 'Reports'), 'Reports');
+    run.scene = 'Report';
+    event('scene', 'Report');
+    const sel = document.getElementById('reportRun');
+    const first = sel?.querySelector('option');
+    if (!first) { check('Report', '#reportRun', true, 'no runs yet, the empty page is what a person sees'); return finish(); }
+    if (sel.value !== first.value) await ready('report', () => { sel.value = first.value; sel.dispatchEvent(new Event('change', { bubbles: true })); }, 'Reports');
+    const body = document.getElementById('reportBody');
+    check('Report', '#reportRun', true, `latest report ${first.textContent.trim().slice(0, 50)}`);
+    check('Report', '#reportBody', Boolean(body?.children.length && body.textContent.trim().length > 20), body?.children.length ? 'the report drew' : 'the report did not draw');
+    const findings = [...(body?.querySelectorAll('.finding') ?? [])];
+    run.metrics.findings = findings.length;
+    if (!findings.length) check('Report', '.finding', true, 'the latest report has no findings');
+    for (const f of findings.slice(0, 5)) {
+      const title = f.querySelector('h4, b')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 60) ?? '';
+      check('Report', `finding ${title}`, Boolean(title), title ? `${f.querySelector('.pill')?.textContent.trim() || 'no severity'}` : 'a finding has no title');
+    }
+    const sum = body?.querySelector('details.more-details > summary');
+    if (sum) { sum.click(); check('Report', 'details', sum.parentElement.open, sum.parentElement.open ? 'opened' : 'would not open'); }
+    const wide = tooWide(document.getElementById('report'));
+    check('Report', '#report', !wide.length && !sideways(), wide.length ? wide.join('; ') : sideways() ? sidewaysWords() : `fits ${vwNow()}px`);
+    if (errors.length) check('Report', 'console', false, errors.slice(0, 2).join(' | '));
+    finish();
+  }
+
+  async function phoneCockpit() {
+    const vw = vwNow();
+    check('Phone', 'viewport', vw <= 480, `${vw}px wide${vw <= 480 ? '' : ' (this scenario is for a 390x844 phone)'}`);
+    // One screen: its controls (44px) and no sideways scroll, named.
+    const screen = (name, root) => {
+      const small = smallControls(root);
+      check(name, 'controls', !small.length, small.length ? `${small.length} under ${MIN_TOUCH}px: ${small.slice(0, 3).join('; ')}` : `every control is at least ${MIN_TOUCH}px`);
+      const wide = tooWide(root);
+      check(name, 'page', !sideways() && !wide.length, wide.length ? wide.join('; ') : sideways() ? sidewaysWords() : `no sideways scroll at ${vw}px`);
+    };
+    run.scene = 'Inbox';
+    event('scene', 'Inbox');
+    openTab('inbox', 'Inbox');
+    await appears('#ibList .ib-card, #ibList .empty, #ibList .meta', 'the Inbox list');
+    await sleep(400);
+    screen('Inbox', document.getElementById('inbox'));
+    const card = document.querySelector('#ibList .ib-card');
+    if (!card) check('Inbox card', '.ib-card', true, 'nothing waiting, the empty Inbox is what a person sees');
+    else {
+      card.scrollIntoView?.({ block: 'center' });
+      const sum = card.querySelector('details > summary');
+      if (sum) { sum.click(); await sleep(150); }
+      screen('Inbox card', card);
+    }
+    run.scene = 'Roadmap milestone';
+    event('scene', 'Roadmap milestone');
+    await ready('roadmap', () => openTab('roadmap', 'Roadmap'), 'Roadmap');
+    const view = document.getElementById('rmView');
+    if (view && view.value !== 'board') { view.value = 'board'; view.dispatchEvent(new Event('change', { bubbles: true })); }
+    await appears('#rmBoard .rm-col, #rmList .finding[data-item], #rmList .empty', 'the milestone board');
+    const ms = document.querySelector('#rmBoard .rm-col');
+    if (!ms) check('Roadmap milestone', '.rm-col', true, 'no milestones yet');
+    else { ms.scrollIntoView?.({ block: 'center' }); screen('Roadmap milestone', ms); }
+    run.scene = 'Talk';
+    event('scene', 'Talk');
+    await ready('talk', () => openTab('talk', 'Talk'), 'Talk');
+    const input = document.getElementById('talkInput');
+    if (!input) check('Talk', '#talkInput', false, 'the message box is missing');
+    else {
+      input.focus();
+      await sleep(400); // the keyboard rises and talk.js moves the box (visualViewport)
+      const r = input.getBoundingClientRect();
+      const vv = window.visualViewport;
+      const bottom = vv ? vv.offsetTop + vv.height : innerHeight;
+      check('Talk', '#talkInput', r.top >= 0 && r.bottom <= bottom + 1, `box spans ${Math.round(r.top)}-${Math.round(r.bottom)}px, visible area ends at ${Math.round(bottom)}px`);
+      const send = document.getElementById('talkSend')?.getBoundingClientRect();
+      check('Talk', '#talkSend', Boolean(send && send.bottom <= bottom + 1 && send.top >= 0), send ? `Send spans ${Math.round(send.top)}-${Math.round(send.bottom)}px` : 'the Send button is missing');
+      screen('Talk', document.getElementById('talk'));
+      input.blur();
+    }
+    if (errors.length) check('Phone', 'console', false, errors.slice(0, 2).join(' | '));
+    finish();
+  }
+
+  // The signed-out card is a page of its own (auth-pages.ts), so it is fetched with no cookies and drawn in a frame at this
+  // screen's width; its Google button is stood in for (the real one is Google's, in its own frame).
+  async function signin() {
+    run.scene = 'Sign-in card';
+    event('scene', 'Sign-in card');
+    const lang = navigator.language || 'en';
+    event('locale', `browser language ${lang}`);
+    if (/^en/i.test(lang)) run.problems.push({ severity: 'warning', message: `the browser language is ${lang}: run this in a non-English browser to prove the card stays English` });
+    const res = await fetch('/auth/signin?next=%2F', { credentials: 'omit', headers: { 'Accept-Language': 'de-DE,de;q=0.9' } });
+    const htmlText = await res.text();
+    check('Sign-in card', '/auth/signin', res.ok && /<h1>Sign in<\/h1>/.test(htmlText), `HTTP ${res.status}${/<h1>Sign in<\/h1>/.test(htmlText) ? ', "Sign in" card' : ', not the sign-in card'}`);
+    check('Sign-in card', 'html[lang]', /<html lang="en"/.test(htmlText), 'the card says it is English (lang="en")');
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    frame.style.cssText = `position:fixed;left:0;top:0;width:${vwNow()}px;height:${innerHeight}px;border:0;opacity:0.01;pointer-events:none`;
+    frame.srcdoc = htmlText.replace(/<script src="https:\/\/accounts\.google\.com[^>]*><\/script>/, '');
+    const loaded = new Promise((r) => frame.addEventListener('load', r, { once: true }));
+    document.body.appendChild(frame);
+    try {
+      await loaded;
+      const w = frame.contentWindow, d = frame.contentDocument;
+      const tap = d.querySelector('.g-tap');
+      if (tap && typeof w.hsGoogle === 'function') {
+        w.google = { accounts: { id: { initialize() {}, renderButton(el) { el.innerHTML = '<div role="button" style="height:40px">Continue with Google</div>'; } } } };
+        w.hsGoogle();
+      }
+      const buttons = [...d.querySelectorAll('button')].filter((b) => !b.hidden && b.getBoundingClientRect().height > 0);
+      const targets = [...(tap ? [tap] : []), ...buttons];
+      check('Sign-in card', 'button', targets.length > 0, targets.length ? `${targets.length} sign-in control(s)` : 'no sign-in button on the card');
+      for (const el of targets) {
+        const r = el.getBoundingClientRect();
+        const label = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        check('Sign-in card', nameOf(el), r.height >= MIN_TOUCH, `${Math.round(r.width)}x${Math.round(r.height)}px${r.height >= MIN_TOUCH ? '' : `, under ${MIN_TOUCH}px`}`);
+        if (label) check('Sign-in card', `${nameOf(el)} text`, /^[\x20-\x7E…’']+$/.test(label), `"${label.slice(0, 40)}" ${/^[\x20-\x7E…’']+$/.test(label) ? 'is English' : 'is not English'}`);
+      }
+      check('Sign-in card', 'page', d.documentElement.scrollWidth <= vwNow() + 1, `card ${d.documentElement.scrollWidth}px in ${vwNow()}px`);
+      // Tap, and the loading state must be showing within 100ms.
+      const busy = d.getElementById('gbusy');
+      const form = d.querySelector('form');
+      let tapped, shown;
+      if (tap && busy) {
+        tapped = performance.now();
+        tap.dispatchEvent(new w.PointerEvent('pointerdown', { bubbles: true }));
+        shown = !busy.hidden;
+      } else if (form) {
+        form.addEventListener('submit', (e) => e.preventDefault(), true);
+        tapped = performance.now();
+        form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+        const b = form.querySelector('button[type=submit]');
+        shown = Boolean(b?.disabled);
+      }
+      if (tapped === undefined) check('Sign-in card', 'loading state', false, 'nothing on the card can be tapped');
+      else {
+        await new Promise((r) => w.requestAnimationFrame(() => r()));
+        const ms = Math.round(performance.now() - tapped);
+        const nowShown = tap && busy ? !busy.hidden : Boolean(form?.querySelector('button[type=submit]')?.disabled);
+        run.metrics.loadingMs = ms;
+        check('Sign-in card', tap && busy ? '#gbusy' : 'button[type=submit]', (shown || nowShown) && ms <= 100, `${shown || nowShown ? 'loading state shown' : 'no loading state'} ${ms}ms after the tap`);
+      }
+    } finally { frame.remove(); }
+    // The runner signed in with the test sign-in before the page opened: it must have landed on Home.
+    run.scene = 'Home';
+    event('scene', 'Home');
+    const me = await fetch('/api/me', { credentials: 'same-origin' }).then((r) => r.ok, () => false);
+    check('Home', 'test sign-in', me, me ? 'signed in as the test account' : 'the session is not signed in');
+    await ready('home', () => openTab('home', 'Home'), 'Home');
+    check('Home', '#homeGames', document.getElementById('home')?.classList.contains('on') && Boolean(document.getElementById('homeGames')), 'Home opened after the test sign-in');
+    finish();
+  }
+
+  // Colours with alpha, in the forms the browser gives back (rgb(), rgba(), color(srgb ...)).
+  function rgba(str) {
+    if (!str) return null;
+    const m = /rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?/.exec(str);
+    if (m) return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : m[4].endsWith('%') ? parseFloat(m[4]) / 100 : Number(m[4])];
+    const c = /color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+%?))?/.exec(str);
+    if (c) return [Number(c[1]) * 255, Number(c[2]) * 255, Number(c[3]) * 255, c[4] === undefined ? 1 : c[4].endsWith('%') ? parseFloat(c[4]) / 100 : Number(c[4])];
+    const p = parseColor(str);
+    return p ? [...p, 1] : null;
+  }
+  const over = (fg, bg) => [0, 1, 2].map((i) => fg[i] * fg[3] + bg[i] * (1 - fg[3]));
+  function backdrop(el) {
+    const layers = [];
+    for (let p = el; p && p.nodeType === 1; p = p.parentElement) {
+      const c = rgba(getComputedStyle(p).backgroundColor);
+      if (c && c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+    }
+    let bg = [255, 255, 255];
+    if (!layers.length || layers[layers.length - 1][3] < 1) bg = rgba(getComputedStyle(document.body).backgroundColor)?.slice(0, 3) ?? [255, 255, 255];
+    for (const l of layers.reverse()) bg = over(l, bg);
+    return bg;
+  }
+  // Text that has words of its own, shown, with its worst contrast against what is behind it.
+  function lowContrast(root) {
+    const bad = [];
+    let seen = 0;
+    for (const el of root.querySelectorAll('*')) {
+      if (['SCRIPT', 'STYLE', 'SVG', 'PATH', 'OPTION', 'CANVAS', 'VIDEO', 'IMG'].includes(el.tagName.toUpperCase())) continue;
+      if (!el.childNodes) continue;
+      const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 1);
+      if (!own || !visible(el)) continue;
+      if (el.disabled || el.closest?.('[disabled], [aria-disabled=true]')) continue;
+      const cs = getComputedStyle(el);
+      const fg = rgba(cs.color);
+      if (!fg) continue;
+      let opacity = 1;
+      for (let p = el; p && p.nodeType === 1; p = p.parentElement) opacity *= Number(getComputedStyle(p).opacity || 1);
+      const bg = backdrop(el);
+      const text = over([fg[0], fg[1], fg[2], fg[3] * opacity], bg);
+      const ratio = contrastRatio(text.map(Math.round), bg.map(Math.round));
+      seen++;
+      if (ratio < 4.5) bad.push({ ratio, what: `${nameOf(el)} ${ratio}:1` });
+    }
+    bad.sort((a, b) => a.ratio - b.ratio);
+    return { bad, seen };
+  }
+
+  async function look() {
+    const buttons = [...document.querySelectorAll('nav button[data-tab]')].filter((b) => !b.hidden && !b.closest('[hidden]') && !b.disabled);
+    const tabs = [...new Set(buttons.map((b) => b.dataset.tab))].filter((t) => document.getElementById(t) && document.getElementById(t).dataset.guide !== 'off');
+    run.metrics.tabs = tabs.length;
+    let n = 0;
+    for (const tab of tabs) {
+      const name = navButton(tab)?.textContent.replace(/\s+/g, ' ').trim().replace(/\d+$/, '').trim() || tab;
+      run.scene = name;
+      event('scene', name);
+      errors = [];
+      try {
+        const sec = document.getElementById(tab);
+        if (sec) delete sec.dataset.ready;
+        if (['home', 'backlog', 'report', 'changes', 'talk', 'roadmap'].includes(tab)) await ready(tab, () => openTab(tab, name), name);
+        else { openTab(tab, name); await sleep(700); }
+      } catch (e) {
+        check(name, `#${tab}`, false, e.message);
+        continue;
+      }
+      await sleep(200);
+      const section = document.getElementById(tab);
+      if (!section.classList.contains('on')) { check(name, `#${tab}`, false, 'the tab did not open'); continue; }
+      const wide = tooWide(section);
+      check(name, `#${tab}`, !wide.length && !sideways(), wide.length ? `wider than the screen: ${wide.join('; ')}` : sideways() ? sidewaysWords() : `nothing wider than ${vwNow()}px`);
+      const { bad, seen } = lowContrast(section);
+      check(name, `#${tab} text`, !bad.length, bad.length ? `${bad.length} of ${seen} text elements under 4.5:1: ${bad.slice(0, 3).map((b) => b.what).join('; ')}` : `${seen} text elements all at least 4.5:1`);
+      run.progress = ++n / tabs.length;
+    }
+    finish();
+  }
+
   async function start(id) {
     if (status === 'running') return;
-    if (!['smoke', 'viewer', 'rail'].includes(id)) throw new Error(`unknown scenario ${id}`);
+    if (!SCENARIOS.some((x) => x.id === id)) throw new Error(`unknown scenario ${id}`);
     run = fresh(id);
     errors = [];
+    checks = [];
     status = 'running';
     event('start', id);
     try {
-      await (id === 'viewer' ? viewer() : id === 'rail' ? rail() : smoke());
+      await ({ viewer, rail, roadmap, report, 'phone-cockpit': phoneCockpit, signin, look }[id] ?? smoke)();
       run.outcome = 'done';
       status = 'done';
       event('end', 'done');

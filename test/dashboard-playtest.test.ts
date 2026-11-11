@@ -49,7 +49,7 @@ test('smoke lists a stable id and passes every tab', async () => {
   const g = page();
   const pt = g.hawkesPlaytest;
   assert.equal(pt.version, 1);
-  assert.equal(JSON.stringify(pt.scenarios().map((s: any) => s.id)), '["smoke","viewer","rail"]');
+  assert.equal(JSON.stringify(pt.scenarios().map((s: any) => s.id)), '["smoke","viewer","rail","roadmap","report","phone-cockpit","signin","look"]');
   pt.start('smoke');
   await finished(g);
   const r = pt.report();
