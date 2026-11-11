@@ -2963,7 +2963,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
     c = getChange(id)!;
     // A playtest on request: its results join what the change already had (sha, preview, canon), and it's ready again.
     if (ph.requested) {
-      const keep = Object.fromEntries(['scenario', 'options', 'canon', 'pendingGpu', 'unityCheck', 'compileCheck', 'qualityScan'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
+      const keep = Object.fromEntries(['scenario', 'options', 'canon', 'visible', 'capture', 'showcase', 'pendingGpu', 'unityCheck', 'compileCheck', 'qualityScan'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
       const verify = { ...keep, ...ph.verify, sha: ph.tip ?? c.verify?.sha, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null, asked: { at: Date.now(), by: ph.requested } };
       addLog(id, `playtest (asked by ${ph.requested}): ${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${verify.error ? ` · ${verify.error}` : ''}`);
       await attachShowcase(getChange(id)!, verify);
@@ -2998,7 +2998,8 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
     // A GPU task's change that shipped stand-ins: merged, but its task waits for GPU (pm.ts) and runs again.
     const pendingGpu = c.task && (needsGpu(c) || roleOf(c) === 'content') ? pendingGpuOf(c.worktree, c.summary ?? '') : null;
     if (pendingGpu) addLog(id, `stand-ins: still to make on the GPU: ${pendingGpu.split('\n')[0].slice(0, 200)}`);
-    const done = { ...verify, sha: ph.tip, preview, ...(ph.unity ? { unityCheck: ph.unity } : {}), ...(ph.compile ? { compileCheck: ph.compile } : {}), ...(ph.quality ? { qualityScan: { ok: ph.quality.ok, files: ph.quality.files, summary: ph.quality.summary, known: ph.quality.known.length } } : {}), try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
+    const visible = await visibleOf(c);
+    const done = { ...verify, sha: ph.tip, preview, ...(visible !== null ? { visible } : {}), ...(ph.unity ? { unityCheck: ph.unity } : {}), ...(ph.compile ? { compileCheck: ph.compile } : {}), ...(ph.quality ? { qualityScan: { ok: ph.quality.ok, files: ph.quality.files, summary: ph.quality.summary, known: ph.quality.known.length } } : {}), try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
     // A video waits for J's screening (videos.ts): never merged by itself, its version kept, notes he left meanwhile sent back.
     if (c.task && isVideoTask(c.task)) {
       update(id, { status: 'ready', detail: 'ready to screen', verify: done, phase: null, auto_merge: null });
@@ -3060,6 +3061,19 @@ export function unityVisibleFiles(files: string[]) {
   return files.filter((f) => !UNITY_UNSEEN.test(f) && (UNITY_SEEN.test(f) || (/\.cs$/i.test(f) && FELT_CS.test(f))));
 }
 
+/** Server-side code and tooling: never a visible change on its own, whatever its extension. */
+const SERVER_ONLY = /(^|\/)(server|api|backend|functions|lambda|scripts?|bin|deploy|tools|migrations|db)\//i;
+/**
+ * Whether a change touches what a player sees: scenes, art, UI, shaders, content (and a web page's code). Docs, tests,
+ * server code and CI never count, so they are never counted as "no capture yet" (J, 2026-11-11: captures are attached
+ * by the milestone's play, never required before a merge). Pure.
+ */
+export function isVisibleChange(files: string[], { unity = false, infra = false }: { unity?: boolean; infra?: boolean } = {}) {
+  if (infra) return false;
+  const seen = unity ? unityVisibleFiles(files) : visibleFiles(files);
+  return seen.some((f) => unity || !SERVER_ONLY.test(f));
+}
+
 /** The pull request's "From the built game" section: shots, motion sheets and the walk-through video, or null. Pure. */
 export function showcaseSection(v: any) {
   if (!v || !playtested(v) || (!v.video && !v.shots?.length)) return null;
@@ -3100,6 +3114,41 @@ async function attachShowcase(c: Change, v: any) {
   } catch (e: any) {
     addLog(c.id, `couldn't add the shots to pull request #${c.pr}: ${String(e.message ?? e).slice(0, 200)}`);
   }
+}
+
+/** Whether a change touches what a player sees, from its branch's files; null when they can't be read. */
+async function visibleOf(c: Change): Promise<boolean | null> {
+  if (c.infra) return false;
+  try {
+    const files = (await gitAsync(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`])).out.split('\n').map((f) => f.trim()).filter(Boolean);
+    return isVisibleChange(files, { unity: isUnity(c.product) });
+  } catch { return null; }
+}
+
+/** What a milestone's play shows: still shots (a phone's marked 390x844), motion sheets and one clip. */
+export type MilestoneCapture = { run: string; scenario?: string; outcome?: string; shots: { asset: string; t?: number; reason?: string; phone?: boolean }[]; sheets: any[]; video: string | null; phone: boolean };
+
+/**
+ * A milestone's beta run finished: its shots and clip go on every visible change merged into beta before it that has no
+ * capture yet (J, 2026-11-11: the milestone's one play is the only play; nothing is gated on it). Each gets
+ * verify.capture and the pull request's "From the built game" section; the Home count drops. Returns the change ids.
+ */
+export async function attachMilestoneCapture(cap: MilestoneCapture, product: string, before = Date.now()): Promise<string[]> {
+  if (!cap.shots.length && !cap.video) return [];
+  const rows = db.prepare(`SELECT id FROM changes WHERE product = ? AND status = 'merged' AND merged_at IS NOT NULL AND merged_at <= ?
+    AND json_extract(verify, '$.visible') = 1 AND json_extract(verify, '$.capture') IS NULL`).all(product, before) as { id: string }[];
+  const done: string[] = [];
+  for (const { id } of rows) {
+    const c = getChange(id);
+    if (!c) continue;
+    const v: any = { ...(c.verify ?? {}), playtest: cap.run, outcome: cap.outcome ?? 'played', scenario: cap.scenario, shots: cap.shots, sheets: cap.sheets, video: cap.video };
+    await attachShowcase(c, v);
+    const verify = { ...(c.verify ?? {}), ...(v.showcase ? { showcase: v.showcase } : {}), capture: { at: Date.now(), run: cap.run, shots: cap.shots.length, phone: cap.phone, video: cap.video } };
+    update(id, { verify });
+    addLog(id, `seen in engine: milestone play ${cap.run} attached ${cap.shots.length} shot${cap.shots.length === 1 ? '' : 's'}${cap.video ? ' and a clip' : ''}${cap.phone ? ' (with a 390x844 phone shot)' : ''}`);
+    done.push(id);
+  }
+  return done;
 }
 
 /** A ready change's one line: whether it was playtested (only on request), its review and criteria, its preview. */

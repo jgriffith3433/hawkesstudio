@@ -1235,6 +1235,37 @@ export function waitForAi(rs: string, rev: any, pending: PendingReview, what: st
   return true;
 }
 
+/** What a run's finished plays show, for visible changes' captures: the reviews' frames and motion sheets, a play's clip; null when nothing. */
+export function captureOfSteps(run: string, steps: { kind: string; name: string; status: string; job?: string | null; data?: any }[], clip: string | null): import('./agents.ts').MilestoneCapture | null {
+  const shots: any[] = [];
+  const sheets: any[] = [];
+  let phone = false;
+  for (const st of steps) {
+    if (st.kind !== 'review' || st.status !== 'done') continue;
+    const isPhone = /:phone\b/.test(st.name);
+    const d = st.data ?? {};
+    for (const f of ((d.frames ?? []) as any[]).filter((x) => x?.asset).slice(0, isPhone ? 2 : 4)) shots.push({ asset: f.asset, t: f.t, reason: isPhone ? `phone 390x844${f.reason ? `: ${f.reason}` : ''}` : f.reason, ...(isPhone ? { phone: true } : {}) });
+    if (!isPhone) for (const m of ((d.motion?.sheets ?? []) as any[]).filter((x) => x?.asset).slice(0, 2)) sheets.push({ asset: m.asset, start: m.start, end: m.end, reason: m.reason });
+    if (isPhone && d.frames?.some((x: any) => x?.asset)) phone = true;
+  }
+  if (!shots.length && !clip) return null;
+  const first = steps.find((s) => s.kind === 'playtest' && s.status === 'done');
+  return { run, scenario: first?.name?.replace(/@.*$/, ''), outcome: 'played', shots, sheets, video: clip, phone };
+}
+
+async function attachRunCapture(run: string, product: string) {
+  const steps = (db.prepare(`SELECT * FROM steps WHERE run = ? AND kind IN ('playtest', 'review')`).all(run) as any[]).map(rowToStep);
+  let clip: string | null = null;
+  for (const st of steps.filter((x) => x.kind === 'playtest' && x.status === 'done' && x.job && !/:phone\b/.test(x.name))) {
+    clip = (await gen.job(st.job!).catch(() => null))?.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
+    if (clip) break;
+  }
+  const cap = captureOfSteps(run, steps, clip);
+  if (!cap) return;
+  const ids = await (await import('./agents.ts')).attachMilestoneCapture(cap, product);
+  if (ids.length) console.log(`[studio] milestone play ${run}: capture attached to ${ids.length} visible change${ids.length === 1 ? '' : 's'}`);
+}
+
 /** A finished review filed: findings into the backlog, the step done, a task's criteria judged (pm.ts reads them). */
 async function fileReview(rs: string, p: Product, run: string, name: string, rev: any, x: PendingReview, playResult: any) {
   const v = rev.result;
@@ -1771,6 +1802,8 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       await Promise.all(firstFiveOnBuild(p).map((ft) => playtestProduct(id, p, ft, { mode: 'regression', abandon: newerBuild })));
       if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
     }
+    // The milestone's one play is the capture of every visible change on beta that has none yet (agents.ts attachMilestoneCapture).
+    if (play === 'milestone' && !runCancelled(id)) await attachRunCapture(id, p.id).catch((e) => console.warn(`[studio] capture for run ${id}: ${e.message ?? e}`));
     closeRun(id, `beta ${p.id}`);
     // The owner said to keep going live (golive-policy.ts): beta's run passed, so it goes live by itself.
     void (await import('./golive-policy.ts')).autoGoLive(p.id, `beta run ${id}`);

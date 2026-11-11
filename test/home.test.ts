@@ -47,3 +47,51 @@ test('an inbox item with no game gets a Studio card, so the total always has a l
   assert.equal(h.totals.needs, h.games.reduce((n, g) => n + g.needs, 0));
   if (h.loose) { assert.ok(studio); assert.equal(studio!.needs, h.loose); } else assert.equal(studio, undefined);
 });
+
+test('Home counts visible changes on beta with no capture; docs, test and server-only changes are never counted', async () => {
+  const { isVisibleChange } = await import('../src/agents.ts');
+  assert.equal(isVisibleChange(['src/ui/menu.tsx', 'public/hero.png']), true);
+  assert.equal(isVisibleChange(['docs/a.md', 'test/a.test.ts']), false);
+  assert.equal(isVisibleChange(['server/routes.ts', 'api/user.js']), false);
+  assert.equal(isVisibleChange(['src/server.ts']), true, 'only server folders are excluded, not any file named server');
+  assert.equal(isVisibleChange(['Assets/Scenes/Main.unity'], { unity: true }), true);
+  assert.equal(isVisibleChange(['Assets/Editor/Tool.cs', 'Assets/Tests/A.cs'], { unity: true }), false);
+  assert.equal(isVisibleChange(['src/ui/menu.tsx'], { infra: true }), false);
+  const p = loadProducts()[0];
+  const mk = (id: string, verify: any, status = 'merged') => db.prepare(`INSERT INTO changes (id, product, findings, status, title, verify, created, merged_at) VALUES (?, ?, '[]', ?, ?, ?, ?, ?)`).run(id, p.id, status, id, JSON.stringify(verify), Date.now(), Date.now() - 1000);
+  mk('c_vis1', { visible: true });
+  mk('c_vis2', { visible: true });
+  mk('c_docs', { visible: false });
+  mk('c_old', {});
+  mk('c_open', { visible: true }, 'ready');
+  const g = (await home()).games.find((x) => x.id === p.id)!;
+  assert.equal(g.uncaptured, 2);
+  assert.deepEqual(g.uncapturedList.sort(), ['c_vis1', 'c_vis2']);
+});
+
+test('a milestone play attaches its shots and clip to each visible change it covered, and the count drops', async () => {
+  const { attachMilestoneCapture, getChange } = await import('../src/agents.ts');
+  const { captureOfSteps } = await import('../src/pipeline.ts');
+  const p = loadProducts()[0];
+  const steps = [
+    { kind: 'playtest', name: 'smoke@local', status: 'done', job: 'j1' },
+    { kind: 'review', name: 'smoke@local', status: 'done', data: { frames: [{ asset: 'a_desk1', t: 3, reason: 'menu' }], motion: { sheets: [{ asset: 'a_sheet', start: 1, end: 4, reason: 'walk' }] } } },
+    { kind: 'review', name: 'smoke@local:phone', status: 'done', data: { frames: [{ asset: 'a_phone1', t: 2 }] } },
+  ];
+  const cap = captureOfSteps('r_x', steps, 'a_clip')!;
+  assert.equal(cap.phone, true);
+  assert.equal(cap.video, 'a_clip');
+  assert.equal(cap.shots.length, 2);
+  assert.ok(cap.shots[1].reason?.includes('390x844') && cap.shots[1].phone);
+  assert.equal(captureOfSteps('r_y', [{ kind: 'playtest', name: 's', status: 'done' }], null), null, 'no shots and no clip: nothing attached');
+  assert.deepEqual(await attachMilestoneCapture({ ...cap, shots: [], video: null }, p.id), []);
+  const ids = (await attachMilestoneCapture(cap, p.id)).sort();
+  assert.deepEqual(ids, ['c_vis1', 'c_vis2']);
+  const v = getChange('c_vis1')!.verify;
+  assert.equal(v.capture.run, 'r_x');
+  assert.equal(v.capture.phone, true);
+  assert.equal(getChange('c_docs')!.verify.capture, undefined);
+  assert.equal(getChange('c_open')!.verify.capture, undefined, 'unmerged changes are untouched');
+  assert.equal((await home()).games.find((x) => x.id === p.id)!.uncaptured, 0);
+  assert.deepEqual(await attachMilestoneCapture(cap, p.id), [], 'a change already captured is not attached again');
+});
