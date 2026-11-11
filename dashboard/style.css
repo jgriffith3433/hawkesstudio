@@ -914,3 +914,9 @@ body.lt-big-open { overflow: hidden; }
 .rail .rs.failed { color: var(--danger); }
 .rail .rs.failed .rs-dot { color: var(--on-solid); background: var(--danger); border-color: var(--danger); }
 .rail .rs.failed .rs-detail { font-weight: 600; }
+
+/* The critic section (app.js criticHtml): rows that wrap, so the report reads at 390 px with no sideways scroll. */
+.critic-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line, #2a2f3a); min-width: 0; }
+.critic-row > div { min-width: 0; overflow-wrap: anywhere; }
+.critic-score { flex: 0 0 auto; min-width: 2ch; font-size: 1.3em; text-align: center; }
+.critic-row img { display: block; max-width: 100%; height: auto; margin-top: 6px; border-radius: 6px; }

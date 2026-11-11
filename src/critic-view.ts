@@ -1,0 +1,16 @@
+// The critic section of a report as Markdown lines (report.ts): one bullet per dimension, no table, so it reads at 390 px.
+import { fileUrl } from './gen.ts';
+
+export function criticLines(d: any): string[] {
+  if (!d || d.verdict !== 'judged' || !Array.isArray(d.scores) || !d.scores.length) {
+    return [`**Unjudged.** ${d?.summary ?? 'The critic did not run.'} No scores are given, and this is not a pass.`];
+  }
+  const L: string[] = [];
+  const mean = Math.round((d.scores.reduce((n: number, x: any) => n + (x.score ?? 0), 0) / d.scores.length) * 10) / 10;
+  L.push(`${d.summary ?? ''} **${mean}/10** on average, reviewing **${d.scenario ?? 'the run'}**${d.next?.length ? ` (not reviewed yet: ${d.next.join(', ')})` : ''}.`, '');
+  for (const s of d.scores) {
+    const evidence = [s.frame ? `[frame](${fileUrl(s.frame)})` : '', s.at].filter(Boolean).join(' ');
+    L.push(`- **${s.dimension}: ${s.score}/10** vs ${s.reference}${evidence ? ` (${evidence})` : ''}. ${s.why} *Fix:* ${s.fix}`);
+  }
+  return L;
+}

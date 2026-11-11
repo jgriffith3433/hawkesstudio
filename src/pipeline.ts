@@ -270,6 +270,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(run) as any).c;
   db.prepare(`UPDATE runs SET status = ?, finished = ?, cost = ? WHERE id = ?`).run(endStatus({ ...runCounts(run), failed: 0 }, runCancelled(run)), Date.now(), cost, run);
   kickFollowups();
+  // The critic (critic.ts): when it is due for a game of this run; it adds its step and writes the report again.
+  if (isServer() && !runCancelled(run)) await import('./critic.ts').then((m) => m.afterRun(run)).catch(() => {});
   const report = writeReport(run);
   db.prepare(`UPDATE runs SET detail = ?, report = ? WHERE id = ?`).run(report.headline, J({ file: report.file, date: report.date }), run);
   // On the server, agents start on the worst new findings (within the day's budget); J approves the results.
@@ -1311,6 +1313,8 @@ export function closeRun(id: string, label: string) {
   const status = endStatus(n, runCancelled(id));
   db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(status, runCancelDetail(id, `${label}${n.failed ? ' failed' : status === 'done' ? '' : ` ${status}`}`), Date.now(), cost, id);
   kickFollowups();
+  // The critic judges the game when any run of it ends and its week is up, and on a milestone's beta run (critic.ts).
+  if (isServer() && status !== 'cancelled') void import('./critic.ts').then((m) => m.afterRun(id)).catch(() => {});
   // A one-off playtest or a beta run ended: its review may have left the project fix-first or broken (verdictwork.ts).
   if (isServer() && status !== 'cancelled') void import('./verdictwork.ts').then((m) => m.actOnRun(id)).catch((e) => console.warn(`[studio] verdicts after ${id}: ${e.message ?? e}`));
 }
