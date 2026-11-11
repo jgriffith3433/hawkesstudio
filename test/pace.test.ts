@@ -155,6 +155,17 @@ test('idle slots with nothing to start: a scout per idle product, then ONE quest
   assert.equal(asked.length, 1);
   // Nothing idle: nothing asked.
   assert.equal(pace.idleWatch({ free: 2, started: 0 }, deps([]), t1 + 4 * 3600_000), 'nothing idle');
+  // Where the PM answers it itself (walk-away in J's own Studio), the same products are scouted again hours later, not
+  // a week later: the roadmap that ran dry again after one fill stayed dry (2026-11-11).
+  const self = { ...d, selfFills: () => true };
+  assert.equal(pace.idleWatch({ free: 2, started: 0 }, self, t1 + 3 * 3600_000), 'already asked', 'not straight away');
+  for (const [id, s] of scouts) scouts.set(id, { ...s, status: 'done' });
+  assert.equal(pace.idleWatch({ free: 2, started: 0 }, self, t1 + 5 * 3600_000), 'scouting', 'scouted again');
+  for (let i = 1; i <= 3 && asked.length < 2; i++) {
+    for (const [id, s] of scouts) if (s.status === 'running') scouts.set(id, { ...s, status: 'done', report: '## Proposed roadmap item\n- Title: More' });
+    pace.idleWatch({ free: 2, started: 0 }, self, t1 + 5 * 3600_000 + i * 60_000);
+  }
+  assert.equal(asked.length, 2, 'and asked (answered by the PM) once the scouts are in');
 });
 
 test("the idle products are those with no planned or running work; the idle question is J's alone to answer", async () => {

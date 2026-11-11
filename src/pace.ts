@@ -143,6 +143,12 @@ export const IDLE_MS = () => Number(process.env.STUDIO_IDLE_MS ?? 30 * 60_000);
 const SCOUT_WAIT_MS = 3 * 3600_000;
 /** The same idle products aren't asked about again for this long (a newly idle product is). */
 const REASK_MS = 7 * 86_400_000;
+/**
+ * Where the PM answers the idle question itself (J's own Studio in walk-away mode), nobody is nagged, so the same
+ * products are scouted again after this long instead of REASK_MS: with the week-long gate, the roadmap filled once and
+ * then stayed empty for the rest of the week once that work was done (2026-11-11, stall-paths.md).
+ */
+const SELF_REASK_MS = 4 * 3600_000;
 /** The question's subject: one card, merged by subject, never one per product. */
 export const IDLE_SUBJECT = 'idle-slots';
 
@@ -159,6 +165,8 @@ export type IdleDeps = {
   askJ: (text: string, o: { subject: string; options: string[]; recommend: string; topic: string; from: string; context: string }) => { id: string };
   log: (detail: string) => void;
   name?: (product: string) => string;
+  /** Whether the PM answers the idle question itself (walk-away in J's own Studio): then it may ask again sooner. */
+  selfFills?: () => boolean;
 };
 
 /** A scout report's proposed roadmap item (its "## Proposed roadmap item" section), short. */
@@ -196,7 +204,7 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
   const idle = deps.idleProducts();
   if (!idle.length) return 'nothing idle';
   const fresh = idle.some((p) => !st.askedFor.includes(p));
-  if (st.asked && now - st.asked < REASK_MS && !fresh) return 'already asked';
+  if (st.asked && now - st.asked < (deps.selfFills?.() ? SELF_REASK_MS : REASK_MS) && !fresh) return 'already asked';
   const name = deps.name ?? ((p: string) => p);
   for (const p of idle) {
     if (st.scouts[p] && now - st.scouts[p].at < 86_400_000) continue;
