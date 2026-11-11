@@ -43,9 +43,11 @@
   // the link itself, which also opens the viewer.
   const fileEmbed = (url, label) => {
     const k = mediaKind[genId(url)];
-    const src = relay(url);
-    if (k === 'image') return `<img class="talk-img" src="${src}" alt="${label}" data-full="${src}" loading="lazy">`;
-    if (k === 'video') return `<video class="talk-video" src="${src}" controls preload="metadata" playsinline></video>`;
+    // The served link keeps its whole signed query (?exp=..&sig=..); the relay is only the fallback if it fails to load.
+    const src = /sig=/.test(url) ? url : relay(url);
+    const fb = `this.onerror=null;this.src='${relay(url)}'`;
+    if (k === 'image') return `<img class="talk-img" src="${src}" alt="${label}" data-full="${src}" loading="lazy" onerror="${fb}">`;
+    if (k === 'video') return `<video class="talk-video" src="${src}" controls preload="metadata" playsinline onerror="${fb}"></video>`;
     return `<a href="${url}" target="_blank" rel="noopener" data-media="${url}" data-embed="${genId(url)}">${label}</a>`;
   };
 
