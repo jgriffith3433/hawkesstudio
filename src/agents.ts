@@ -108,7 +108,8 @@ import { kickFollowups } from './followup-kick.ts';
 import { POLISH_BY } from './polish.ts';
 import { sessionGone, freshSessionPrompt } from './sessiongone.ts';
 import { memLow, memRoom, memFreed, memSummary } from './memgate.ts';
-import { queueHold, parkedOut } from './queue-heal.ts';
+import { queueHold, parkedOut, failStreak } from './queue-heal.ts';
+import { duplicateHold } from './dup-merged.ts';
 import { refreshFromTask } from './queue-follow.ts';
 import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './inflight.ts';
 import { noteRail, betaPart } from './change-rail.ts';
@@ -2122,6 +2123,8 @@ function aheadOf(product: string) {
   const busy = [...listChanges({ status: ACTIVE, product }), ...listChanges({ status: 'queued', product }).filter((c) => !heldInQueue(c))];
   return busy.length >= perProductLimit(product) ? ` behind ${busy[0].id}` : '';
 }
+/** A change that failed and was left waiting for memory: it goes behind others while memory is low. */
+export const memoryStarved = (c: Pick<Change, 'id' | 'log'>) => failStreak(c) > 0 && /waiting for memory|waits for memory/.test((c.log ?? []).slice(-6).join('\n'));
 /** A queued change the pump passes by for now (and so ahead of nothing): parked, waiting for disk room, or not due yet. */
 function heldInQueue(c: Change) {
   if (parkedOut(c) || waitsForDisk(c.id)) return true;
@@ -2448,7 +2451,7 @@ async function pumpPass() {
   const freeOnce = () => (free === undefined ? (free = freeHarness()) : free);
   // A change checks its task as it is about to start (queue-follow.ts): a rewritten task gives it the new request, a gone
   // one closes it.
-  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce) && refreshFromTask(c.id));
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce) && refreshFromTask(c.id) && duplicateHold(c.id));
   // Each change's shape (its task, earlier changes and files: git) once per pass, however many candidates it sits beside.
   const shapes = new Map<string, WorkShape>();
   const shape = (c: Change) => shapes.get(c.id) ?? (shapes.set(c.id, shapeOf(c)), shapes.get(c.id)!);
@@ -2469,6 +2472,10 @@ async function pumpPass() {
   const own = (c: Change) => studioOwn(c.product);
   // Agents paused (maxConcurrent 0) pause Studio's own lane too.
   const ownFree = s.maxConcurrent > 0 ? OWN_LANE_SLOTS() - slotHolders(true) : 0;
+  // A change that already waited for memory and failed (queue-heal.ts) goes behind the others while memory is low: the one
+  // start memory allows goes to a change that can use it, and the starved one never holds its product's slot (2026-11-11).
+  const starvedLast = memLow() ? (a: Change, b: Change) => Number(memoryStarved(a)) - Number(memoryStarved(b)) : () => 0;
+  queued.sort(starvedLast);
   const ownPicks = pickQueued(queued.filter(own).map((c) => ({ id: c.id, product: lane(c) })), busy, ownFree, { limit, fit });
   const picks = [...ownPicks, ...pickQueued(queued.filter((c) => !own(c)).map((c) => ({ id: c.id, product: lane(c) })), busy, s.maxConcurrent - slotHolders(), { limit, fit })];
   // A queued change's " behind c_..." names what it waits for now, not one that finished since (J, 2026-10-18).
