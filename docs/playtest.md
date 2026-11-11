@@ -359,6 +359,50 @@ for loudness:
 The quality gate's `sound-design` rule holds them (`docs/quality.md`). One finding per broken limit names the action or
 sample and its time. A short timeline summary goes into `playtest.review` (`audio` param) and the critic's sound axis.
 
+## UI
+
+A phone is judged by thumb: a 30 px button, a control under the notch, one that runs off a landscape screen, or a press that
+does nothing you can see or hear reads as a broken game (Apple HIG 44 pt, Material 48 dp, Poki's phone-UX review, Hades'
+menus answering within a frame). The **UI probe** checks that while a playtest runs; the rubric rule is `menus-and-ui`
+(docs/quality.md).
+
+- **Web** (`clients/web/hawkes-ui.js`, started by `hawkes-playtest.js` on a touch or phone-sized page; `ui: false` turns it
+  off, `ui: { always: true }` runs it on desktop): reads the DOM's controls (buttons, links, inputs, `[role=button]`,
+  `[onclick]`, `[data-ui]`; hidden and disabled ones left out; a control inside a scroller is reachable by scrolling) a
+  moment after every scene change and pushes `ui-layout` events: controls, viewport, orientation, and each problem:
+  `small` (under 44 px either way), `spacing` (a neighbour under 8 px away), `reach` (a fixed control outside the thumb
+  zone: 0.66 of the height from the nearest bottom corner in portrait, 0.45 of the width in landscape), `inset` (a control
+  fixed to an edge, or on a page that doesn't scroll, under the simulated notch, Dynamic Island or home bar: portrait top
+  47 / bottom 34 px, landscape left and right 47 / bottom 21 px) and `offscreen`. A page that has a small, inset or
+  offscreen control gets those controls **outlined and named on screen for 1.5 s** (`data-hawkes-ui-overlay`), so the
+  recording and the review's screenshot show them.
+- **Both orientations.** The runner plays one viewport (390x844 touch). The probe reads the other one (844x390) once per run by
+  loading the same page in an off-screen frame at the swapped size and reading its first screen (`layoutOtherOrientation`,
+  `ui-layout` with `source: "frame"`); a frame that can't load (cross-origin) reports nothing, and a game's own landscape
+  run (a runner that plays 844x390) reports its landscape layouts as ordinary `ui-layout` events. Each orientation is
+  counted and reported separately (`ui.portrait.*`, `ui.landscape.*`).
+- **Presses.** Every `pointerdown` (and Enter or Space) on a control logs `ui-press`: whether anything on screen answered
+  within 100 ms (a DOM change outside the probe's overlay, or a change in the control's or its ancestors' colour, transform,
+  opacity, shadow or class, sampled every frame), and how fast. No answer is a **dead** press.
+- **Canvas and WebGL** (no DOM controls): `t.ui([{ id, label, x, y, w, h }])` when a menu opens (CSS px, y down) and
+  `t.uiPress('Play', { changed: true, ms: 16 })` on each press; `ui: { canvas: true }` stops the DOM reading.
+- **Unity** (`clients/unity/com.hawkes.playtest/Runtime/HawkesUiRects.cs`): `HawkesUiRects.Report(controls)` with
+  `HawkesUiRects.Control(label, rectTransform)` for each control, and `HawkesUiRects.Press(label, changed)`. It does the same
+  checks in points and adds `Screen.safeArea` to the simulated insets.
+
+**Studio** (`src/ui.ts`) turns the events into metrics (a control counts once per orientation): `ui.smallTargets`,
+`ui.insetOverlaps`, `ui.offscreen`, `ui.deadPresses`, `ui.silentPresses` (rubric limits, all 0) and `ui.spacingTight`,
+`ui.outOfReach` (readings), plus `ui.layouts`, `ui.presses`, `ui.controls` and the per-orientation versions. A press is
+**silent** when the audio probe saw no `sound-start` from just before it to 150 ms after (only when the audio probe ran; a
+run without it reports no `ui.silentPresses`, never a pass). It files one bug per control and orientation ("Target under
+44 px: Options (landscape)", "Control off screen: Play (landscape)", "Control under the notch or home bar: ...") and per
+button ("Dead press: Shop", "Silent press: Shop"), each with the rect, the viewport and the fix. A short summary of each
+screen and press goes to the review (`audio` param) and the fun review, which comments on every menu screen it sees (the
+`menus` field of the fun review; `.claude/agents/fun-reviewer.md`).
+
+Not yet: Hawkes Gen plays one viewport per run, so the other orientation comes from the frame above. When Gen's `playtest.run`
+takes a landscape touch viewport, add a `:landscape` twin of the phone playtest and the same events arrive from a real 844x390 play.
+
 ## Explore
 
 The **explore bot** (`clients/web/hawkes-explore.js`, copy it next to `hawkes-playtest.js`) plays a level the way a

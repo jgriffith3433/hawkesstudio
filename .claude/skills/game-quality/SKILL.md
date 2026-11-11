@@ -94,3 +94,12 @@ where and when it happens. On-screen text is a last resort, one line at most.
 ```
 
 Ask the fun-reviewer subagent to judge the bible, or the build, and fix what it calls a demo.
+
+## Menus and UI on a phone (the `menus-and-ui` rule)
+
+Build every control at least 44x44 px (CSS px; a small icon gets padding or a larger hit area), 8 px from its neighbours, inside
+the safe area (`viewport-fit=cover` and `env(safe-area-inset-*)`; `Screen.safeArea` in Unity), low on the screen for the main
+actions, and on screen at 390x844 and 844x390. Every press shows a pressed state at once, the result inside 100 ms, and plays a
+UI click inside 150 ms. The playtest UI probe (`hawkes-ui.js`; canvas games `t.ui(rects)` and `t.uiPress(label)`; Unity
+`HawkesUiRects`) reports `ui.smallTargets`, `ui.insetOverlaps`, `ui.offscreen`, `ui.deadPresses` and `ui.silentPresses`, which
+must all be 0 (docs/playtest.md#ui).
