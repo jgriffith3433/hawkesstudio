@@ -237,6 +237,50 @@ export function pointPage(html: string, url: string): string {
   return head ? html.slice(0, head.index + head[0].length) + `\n  ${tag}` + html.slice(head.index + head[0].length) : `${tag}\n${html}`;
 }
 
+// ------------------------------------------------------------------ one publish per commit
+
+/** Builds of a commit being started now, before their row exists (product:build:sha): the claim is one synchronous step. */
+const starting = new Set<string>();
+const commitKey = (product: string, build: string, sha: string) => `${product}:${build}:${sha.toLowerCase()}`;
+
+/**
+ * Whether a start is deduplicated by its commit: an automatic one (a push, beta catching up, a play republishing the
+ * beta site), not a person's, a retry, a build-* tag, the go-live release, an agent change or an Actions artifact.
+ */
+export const dedupesByCommit = (o: Pick<StartOptions, 'trigger' | 'change' | 'artifact' | 'retry' | 'resume'>, cause: string) =>
+  Boolean(o.trigger) && !o.change && !o.artifact && !o.retry && !o.resume && !['person', 'retry', 'tag', 'release'].includes(cause);
+
+/**
+ * Claims this commit's build for one start, or says it is taken: published already (ready), being built (its row, or a
+ * start that claimed it a moment ago). Synchronous, so two starts at once can't both build it. true: taken, no build.
+ * A failed or cancelled build of the commit doesn't take it: building it again is a retry, not a second publish.
+ */
+export function claimCommit(product: string, build: string, sha: string): boolean {
+  const key = commitKey(product, build, sha);
+  if (starting.has(key)) return true;
+  const row = db.prepare("SELECT 1 FROM builds WHERE product = ? AND build = ? AND sha = ? AND change IS NULL AND status IN ('ready', 'building') LIMIT 1").get(product, build, sha);
+  if (row) return true;
+  starting.add(key);
+  return false;
+}
+/** A claimed start ended (its run closed): its build row, if any, speaks for the commit from now on. */
+export const releaseCommit = (product: string, build: string, sha: string) => starting.delete(commitKey(product, build, sha));
+/** For tests: forget the claims of starts in flight. */
+export const resetCommitClaims = () => starting.clear();
+
+/** The commit a branch of the project's repo is at on GitHub now, or null. */
+async function commitOfRef(p: Product, ref: string): Promise<string | null> {
+  const slug = String((p as any).github ?? '');
+  if (!slug) return null;
+  try {
+    const { repoToken, githubFetch } = await import('./ghtoken.ts');
+    const { githubCommit } = await import('./sitestore.ts');
+    return await githubCommit(slug, ref, githubFetch(await repoToken(slug)));
+  } catch {
+    return null;
+  }
+}
+
 // ------------------------------------------------------------------ runs
 
 /**
@@ -245,6 +289,7 @@ export function pointPage(html: string, url: string): string {
  */
 export async function startBuild(projectId: string, o: StartOptions = {}): Promise<{ id: string; builds: string[]; done: Promise<void> } | null> {
   const p = getProduct(projectId);
+  let claimed: [string, string][] = [];
   const all = buildsOf(p);
   if (!all.length) throw new StudioError(`${p.name} has no builds (docs/builds.md: set "builds" on the project)`, 409);
   let specs = o.build ? all.filter((b) => b.id === o.build) : o.trigger ? all.filter((b) => triggersOf(b).includes(o.trigger!)) : all;
@@ -260,6 +305,18 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
     console.log(`[builds] ${p.id}: ${unity.map((b) => b.id).join(', ')} ${verdict.why}`);
     o.onHeld?.(verdict.why, unity.map((b) => b.id));
     if (!specs.length) return null;
+  }
+  // One publish per commit (J, 2026-11-11: "One site publish per push: deduplicate by commit"; that morning each beta
+  // push started two or three site runs: the push, the beta site catching up, a play republishing it). A start that
+  // nobody asked for by hand, of a commit this build has already published or is building now, starts no run at all.
+  if (dedupesByCommit(o, cause)) {
+    const sha = o.sha ?? (await commitOfRef(p, o.ref ?? 'beta'));
+    if (sha) {
+      specs = specs.filter((b) => !claimCommit(p.id, b.id, sha));
+      if (!specs.length) { console.log(`[builds] ${p.id}: ${sha.slice(0, 7)} is published or being built already: no second build`); return null; }
+      o = { ...o, sha };
+      claimed = specs.map((b) => [b.id, sha]);
+    }
   }
   if (specs.some((b) => b.tool === 'unity')) await requireCloudBuilds();
   // A stuck "building" row from before (its run gone) is settled now, so it never stands in this build's way.
@@ -282,6 +339,7 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
     try {
       for (const b of specs) await buildOne(id, p, b, o);
     } finally {
+      for (const [b, sha] of claimed) releaseCommit(p.id, b, sha);
       closeRun(id, `build ${p.id}`);
     }
   })().catch((e) => console.warn(`[builds] ${p.id}: ${e?.message ?? e}`));

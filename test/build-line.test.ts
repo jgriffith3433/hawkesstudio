@@ -135,8 +135,10 @@ test('4. through startBuild: merges in a row make one waiting build; superseded 
     runs.push(r!.id);
     await tick(); await tick();
   }
-  // The same commit as the waiting one: joins it.
-  const joined = await B.startBuild('webby', { trigger: 'beta', sha: sha('4') });
+  // The same commit as the waiting one, started automatically again (a push, a republish): no second run at all
+  // (one publish per commit, J 2026-11-11). A person's start of it joins it.
+  assert.equal(await B.startBuild('webby', { trigger: 'beta', sha: sha('4') }), null);
+  const joined = await B.startBuild('webby', { trigger: 'beta', sha: sha('4'), cause: 'person' });
   runs.push(joined!.id);
   for (let i = 0; i < 20 && L.lineState(key).waiting !== sha('4'); i++) await tick();
   assert.deepEqual(L.lineState(key), { building: sha('1'), waiting: sha('4') });
