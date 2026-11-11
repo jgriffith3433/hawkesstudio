@@ -159,6 +159,26 @@
         { "id": "voice-duck", "kind": "playtest", "what": "Music ducks at least 6 dB under voice.", "metric": "audio.voiceDuckDb", "min": 6, "optional": true },
         { "id": "silence-in-play", "kind": "playtest", "what": "Longest silence in play at most 10 s (menus and loading excluded).", "metric": "audio.longestSilenceS", "max": 10, "optional": true }
       ]
+    },
+    {
+      "id": "menus-and-ui",
+      "title": "Every control is big enough, in reach, on screen, and answers a press",
+      "why": "Apple's HIG asks for 44 pt targets and Material for 48 dp; Poki rejects games whose phone UX confuses; Hades' menus answer every press within a frame. On a phone a 30 px button, a control under the notch or home bar, one off the edge of a landscape screen, or a button that does nothing you can see or hear reads as a broken game.",
+      "build": [
+        "Every control is at least 44x44 px (CSS px) with at least 8 px between neighbours; make a small picture a big target with padding, never leave the hit area at the picture's size.",
+        "Keep controls clear of the notch and home bar (env(safe-area-inset-*) with viewport-fit=cover; Screen.safeArea in Unity) and inside the thumb zone: the main actions low on the screen, near the bottom corners.",
+        "Everything is on screen and usable at 390x844 portrait and at 844x390 landscape; nothing runs off an edge.",
+        "Every press shows a pressed state at once and the result within 100 ms, and plays a UI sound within 150 ms. No dead buttons, no silent buttons.",
+        "Web games: the playtest UI probe (hawkes-ui.js) reads the DOM; canvas and Unity UI report rects (t.ui(rects) or the Unity UiRects reporter) and presses (t.uiPress)."
+      ],
+      "checks": [
+        { "id": "small-targets", "kind": "playtest", "what": "Controls under 44 px (390x844 and 844x390). A control counted once per orientation.", "metric": "ui.smallTargets", "max": 0, "optional": true, "problem": "quality.small-targets" },
+        { "id": "inset-overlaps", "kind": "playtest", "what": "Controls under a simulated notch, Dynamic Island or home bar.", "metric": "ui.insetOverlaps", "max": 0, "optional": true, "problem": "quality.inset-overlaps" },
+        { "id": "offscreen-controls", "kind": "playtest", "what": "Controls partly or wholly off the screen at either orientation.", "metric": "ui.offscreen", "max": 0, "optional": true, "problem": "quality.offscreen-controls" },
+        { "id": "dead-presses", "kind": "playtest", "what": "A press with no visual change within 100 ms.", "metric": "ui.deadPresses", "max": 0, "optional": true, "problem": "quality.dead-presses" },
+        { "id": "silent-presses", "kind": "playtest", "what": "A press with no sound start within 150 ms (the audio probe's events).", "metric": "ui.silentPresses", "max": 0, "optional": true, "problem": "quality.silent-presses" },
+        { "id": "menu-review", "kind": "review", "what": "The fun reviewer comments on the menu screens it sees: size, reach, safe areas, feedback, and whether they look like this game's own." }
+      ]
     }
   ]
 }

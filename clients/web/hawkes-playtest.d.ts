@@ -52,6 +52,10 @@ export interface Tracker {
   readonly spot: { x: number; y: number; z: number; yaw?: number } | null;
   /** An intended cut, respawn or teleport: the feel sensor rests for `seconds` (default 0.75). */
   cut(seconds?: number): void;
+  /** A UI layout check now (a menu just opened): the DOM's controls, or `rects` (CSS px, y down) for a canvas game (docs/playtest.md#ui). */
+  ui(rects?: { id?: string; label?: string; x: number; y: number; w: number; h: number; fixed?: boolean }[], options?: { label?: string }): unknown;
+  /** A press on a control the DOM doesn't know (canvas): `changed` says the screen answered, `ms` how fast. */
+  uiPress(label: string, options?: { changed?: boolean; ms?: number; rect?: number[] }): void;
   /** Real time (not scaled by speed). */
   wait(ms: number): Promise<void>;
   until(test: () => unknown, timeoutMs?: number, what?: string): Promise<void>;
@@ -74,6 +78,8 @@ export interface PlaytestOptions {
   explore?: boolean | ExploreOptions;
   /** The audio probe (hawkes-audio.js): false turns it off. On by default for every run. */
   audio?: false | AudioOptions;
+  /** The UI probe (hawkes-ui.js, docs/playtest.md#ui): on for touch or phone-sized pages; false turns it off, always runs it on desktop too, canvas stops the DOM reading. */
+  ui?: false | { always?: boolean; canvas?: boolean; otherOrientation?: boolean; thresholds?: Record<string, unknown> };
 }
 
 export interface AudioOptions {

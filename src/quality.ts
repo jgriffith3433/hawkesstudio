@@ -350,6 +350,11 @@ const LIMIT_FIX: Record<string, string> = {
   'first-five-taps': 'At most 2 taps from the first screen to play: fold the menu chain into one Play button, remove modal walls.',
   'first-five-words': 'Teach by doing, not by paragraphs: cut the first minute to 40 words or fewer.',
   'first-five-dev-ui': 'Hide developer panels and debug controls behind a flag that is off in the public build (FPS counters, level pickers, cheat menus).',
+  'small-targets': 'Make each named control at least 44x44 px (padding or a larger hit area; the picture can stay small) with 8 px between neighbours, at 390x844 and 844x390.',
+  'inset-overlaps': 'Keep controls out of the notch and home-bar areas: env(safe-area-inset-*) padding with viewport-fit=cover, or Screen.safeArea in Unity.',
+  'offscreen-controls': 'Bring every control on screen at 390x844 and 844x390: wrap or scroll the layout and size with vw/vh.',
+  'dead-presses': 'Answer each press on the frame it arrives: a pressed state, then the result, within 100 ms.',
+  'silent-presses': 'Play a UI click through the WebAudio context within 150 ms of each press (tag it __hawkesSampleId = "ui-click").',
   'silence-in-play': 'Fill quiet gaps in play with ambient, footsteps or reactive SFX (menus and loading excluded).',
 };
 
@@ -377,7 +382,7 @@ export function qualityFindings(p: Pick<Product, 'id' | 'engine' | 'kind'> & { t
     if (!c?.metric || !f.evidence.startsWith(`${c.metric} = `)) return [];
     return [{
       title: `Quality limit broken: ${c.id} (${f.title})`,
-      severity: 'bug', area: c.id.startsWith('first-five') ? 'onboarding' : c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : (c.rule === 'sound-design' || c.id.startsWith('audio') || ['loudness', 'true-peak', 'silent-actions', 'identical-repeats', 'voice-duck', 'silence-in-play'].includes(c.id) ? 'audio' : 'gameplay'),
+      severity: 'bug', area: c.id.startsWith('first-five') ? 'onboarding' : c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : (c.rule === 'sound-design' || c.id.startsWith('audio') || ['loudness', 'true-peak', 'silent-actions', 'identical-repeats', 'voice-duck', 'silence-in-play'].includes(c.id) ? 'audio' : c.rule === 'menus-and-ui' ? 'mobile' : 'gameplay'),
       detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${firstFiveEvidence(c.id, r)}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
       shots: c.id === 'first-five-dev-ui' ? (r.ftue?.devUi ?? []).map((d: any) => d.shot).filter(Boolean) : [],
       fix: LIMIT_FIX[c.id] ?? `Bring ${c.metric} inside its limit, then play the scenario again.`,

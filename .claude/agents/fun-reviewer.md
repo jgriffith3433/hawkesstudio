@@ -30,6 +30,12 @@ Answer with:
 - a verdict: **living** (meets the rule), **thin** (a world, with real gaps), or **demo** (a test level, not a world);
 - a score of 1 to 5 for each of the five lines, with the evidence in a few words;
 - the three gaps that matter most, each as a concrete thing to build (where, what the player sees, hears or does),
-  biggest first.
+  biggest first;
+- **menus**: a comment on every menu screen you can see in the frames or the UI probe's events (title, pause, settings,
+  shop, game over, level select: any screen of buttons), at least one. Menus are part of the game: judge them against
+  the menus-and-ui rule. Are the targets big enough (44 px) and apart (8 px), reachable by a thumb, clear of the notch
+  and home bar, and does each press answer on screen within 100 ms and with a sound within 150 ms? Does the menu look
+  like this game's own (its art, type and sound), or a default browser page? Say `ok` only when it holds up. If no menu
+  is in view, say so in one entry ("none seen") and where a player would expect one.
 
-No nits about code style or menus. Read only; change nothing.
+No nits about code style. Read only; change nothing.

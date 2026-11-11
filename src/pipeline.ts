@@ -24,6 +24,7 @@ import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
 import { feelFindings, feelSensorFindings } from './feel.ts';
 import { audioFindings, audioTimelineSummary, enrichAudio, loudnessFromAsset } from './audio.ts';
+import { enrichUi, uiFindings, uiSummary } from './ui.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { isGame, effectiveBar, qualityFindings } from './quality.ts';
 import { funReview } from './fun-review.ts';
@@ -936,7 +937,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     updateStep(s, { detail: `played in software (${r.fps?.average ?? '?'} fps)${r.softwareBecause ? `: ${String(r.softwareBecause).slice(0, 120)}` : ''}; reviewed anyway, it is not GPU-bound` });
   }
   // Audio layer: event timeline metrics always; ebur128 loudness when the recording has a Gen video asset.
-  const audioResult = await withAudio(r, job).catch(() => enrichAudio(r));
+  const audioResult = enrichUi(await withAudio(r, job).catch(() => enrichAudio(r)));
   if (audioResult?.metrics) {
     try {
       const cur = (db.prepare(`SELECT data FROM steps WHERE id = ?`).get(s) as any)?.data;
@@ -987,6 +988,7 @@ function fileFeel(run: string, p: Product, name: string, scenario: string, r: an
       ...feelSensorFindings(r, { scenario }),
       ...feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined }),
       ...audioFindings(r, { scenario }),
+      ...uiFindings(r, { scenario }),
       // A measured limit the play broke (a hitch in play over 250 ms, input latency): a bug the agents fix on beta, so
       // the go-live gate clears by itself (deploy.ts qualityBlockers), never a "fix it" for the owner.
       ...qualityFindings(p, r, scenario),
@@ -1146,7 +1148,8 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   const wasReview = resumedStep(rs);
   if (wasReview && wasReview.status !== 'running') return job;
   const previous = lastStep(p.id, 'review', name, run)?.data ?? null;
-  const audioSummary = isGame(p) ? audioTimelineSummary(r) : '';
+  // The phone UI layer's readings (ui.*, each screen's problems, each press) ride along: the judge sees frames, not the DOM.
+  const audioSummary = isGame(p) ? [audioTimelineSummary(r), uiSummary(r) ? `UI (menus, targets, presses):\n${uiSummary(r)}` : ''].filter(Boolean).join('\n') : '';
   const revParams = reviewParams(p, job.id, reviewMode, {
     ...(focus ? { focus } : {}),
     ...(criteria?.length ? { criteria } : {}),
