@@ -14,6 +14,14 @@ export type UiLayout = {
 };
 export type UiPress = { t: number; id: string; label: string; orientation?: string; scene?: string; visual: boolean; visualMs: number | null; rect?: number[]; sound?: boolean };
 
+export type UiTransition = { t: number; from?: string | null; to?: string; ms: number; plannedMs: number; reduced: boolean };
+
+/** A screen slide runs this long (ms); with reduced motion on it runs 0 (a small timer slack is allowed on the upper bound). */
+export const TRANSITION_MIN_MS = 150;
+export const TRANSITION_MAX_MS = 200;
+/** Two ui-press entries for the same control this close together are one press logged twice. */
+export const DUPLICATE_PRESS_S = 0.03;
+
 /** A press with no visual change within this long is dead; one with no sound start within SOUND_MS is silent. */
 export const VISUAL_MS = 100;
 export const SOUND_MS = 150;
@@ -57,6 +65,30 @@ export function uiEventsOf(result: any): { layouts: UiLayout[]; presses: UiPress
   return { layouts, presses };
 }
 
+/** The `ui-transition` events the UI kit logs (a screen slide: its length, and whether reduced motion was on). */
+export function uiTransitionsOf(result: any): UiTransition[] {
+  const out: UiTransition[] = [];
+  for (const e of Array.isArray(result?.events) ? result.events : []) {
+    if (e?.type !== 'ui-transition') continue;
+    const d = parse(e);
+    if (!d) continue;
+    out.push({ t: Number(e.t) || 0, from: d.from ?? null, to: d.to != null ? String(d.to) : undefined, ms: Number(d.ms) || 0, plannedMs: Number(d.plannedMs) || 0, reduced: Boolean(d.reduced) });
+  }
+  return out;
+}
+
+/** Presses of one control logged twice inside DUPLICATE_PRESS_S: the press logger must write exactly one entry per press. */
+export function duplicatePresses(presses: UiPress[]): number {
+  let n = 0;
+  const last = new Map<string, number>();
+  for (const p of [...presses].sort((a, b) => a.t - b.t)) {
+    const prev = last.get(p.id);
+    if (prev != null && p.t - prev < DUPLICATE_PRESS_S) n++;
+    last.set(p.id, p.t);
+  }
+  return n;
+}
+
 /** Each press checked against the sound starts (audio probe): heard when one starts from just before the press to 150 ms after. */
 function withSound(presses: UiPress[], sounds: number[], audioOn: boolean): UiPress[] {
   return presses.map((p) => ({ ...p, sound: audioOn ? sounds.some((s) => s >= p.t - 0.03 && s <= p.t + SOUND_MS / 1000) : undefined }));
@@ -90,6 +122,16 @@ export function uiMetricsFromEvents(result: any) {
     }
     metrics['ui.deadPresses'] = deadSet.size;
     if (audioOn) metrics['ui.silentPresses'] = silentSet.size;
+    metrics['ui.duplicatePresses'] = duplicatePresses(presses);
+  }
+  // The UI kit's screen transitions: 150-200 ms, and 0 ms with reduced motion (readings the review and the criteria judge).
+  const transitions = uiTransitionsOf(result);
+  if (transitions.length) {
+    const off = transitions.filter((t) => (t.reduced ? t.ms !== 0 : t.ms < TRANSITION_MIN_MS || t.ms > TRANSITION_MAX_MS + 40));
+    metrics['ui.transitions'] = transitions.length;
+    metrics['ui.transitionsOffSpec'] = off.length;
+    const full = transitions.filter((t) => !t.reduced).map((t) => t.ms);
+    if (full.length) { metrics['ui.transitionMsMin'] = Math.min(...full); metrics['ui.transitionMsMax'] = Math.max(...full); }
   }
   return { metrics, layouts, presses: heard };
 }

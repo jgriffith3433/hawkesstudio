@@ -48,7 +48,7 @@ test("every role and skill is the customer plugin's, with none of J's world", ()
     assert.deepEqual(leaks(`${role.description}\n${role.body}`), [], `${name}: ${leaks(role.body).join(', ')}`);
   }
   const skills = R.listSkills().map((s) => s.name).sort();
-  assert.deepEqual(skills, ['builds', 'game-quality', 'gen-assets', 'onboarding', 'playtest-scenario', 'shared-memory']);
+  assert.deepEqual(skills, ['builds', 'game-feel', 'game-quality', 'gen-assets', 'level-design', 'onboarding', 'playtest-scenario', 'shared-memory', 'story-through-play', 'ui-kit']);
   for (const s of skills) {
     const text = fs.readFileSync(path.join(R.PLUGIN_DIR(), 'skills', s, 'SKILL.md'), 'utf8');
     assert.deepEqual(leaks(text), [], `${s}: ${leaks(text).join(', ')}`);

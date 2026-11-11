@@ -294,7 +294,7 @@ export function createSoundKit(opts = {}) {
   const cleanups = [];
   const onGesture = (e) => {
     unlock();
-    if (opts.autoUi === false || e.type !== 'pointerdown') return;
+    if (api.autoUi === false || e.type !== 'pointerdown') return;
     const el = e.target?.closest?.(CONTROL);
     if (el && el.getAttribute('data-hawkes-ui') !== 'off') play('ui-press');
   };
@@ -308,9 +308,11 @@ export function createSoundKit(opts = {}) {
   // Prepare the default ui set now so the very first press already has a buffer.
   if (opts.autoUi !== false) defineSet('ui-press', { bus: 'ui', synth: { kind: 'click', count: 4 } });
 
-  return {
+  const api = {
+    autoUi: opts.autoUi !== false,
     ctx, buses: bus, defineSet, load, play, speak, music, startMusic, setStem, stopMusic, setBusVolume, unlock,
     sets, duckDb, state: () => ctx.state,
     dispose() { stopMusic(); for (const c of cleanups) { try { c(); } catch {} } },
   };
+  return api;
 }
