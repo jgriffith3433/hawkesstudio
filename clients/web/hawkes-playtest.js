@@ -251,7 +251,7 @@ export function installPlaytest(opts) {
           if (r !== run) return;
           r.audio = r.audio || [];
           r.audio.push(ev);
-          if (ev.type === 'sound-start' || ev.type === 'input' || ev.type === 'audiocontext-resume') {
+          if (ev.type === 'sound-start' || ev.type === 'input' || ev.type === 'audiocontext-resume' || ev.type === 'bus-gain') {
             tracker.event(ev.type, JSON.stringify(ev));
           } else if (ev.type === 'audio-sensor') {
             tracker.event('audio-sensor', JSON.stringify(ev));

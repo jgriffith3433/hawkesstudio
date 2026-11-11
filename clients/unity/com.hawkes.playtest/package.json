@@ -1,6 +1,6 @@
 {
   "name": "com.hawkes.playtest",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "displayName": "Hawkes Playtest",
   "description": "The Hawkes playtest contract (v2) for Unity games: register scenarios and a bot coroutine, and a Hawkes runner can start, watch and report a playtest. WebGL: from the browser (window.hawkesPlaytest). Windows, Linux and macOS (Mono or IL2CPP): over a local WebSocket when the runner launches the game with HAWKES_PLAYTEST. Costs nothing until a playtest starts. Spec: hawkesstudio/docs/playtest.md.",
   "unity": "2021.3",

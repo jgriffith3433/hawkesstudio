@@ -10,7 +10,7 @@ import path from 'node:path';
 
 export type AudioEvent = {
   type: string; t: number; sample?: string; bus?: string; rate?: number; gain?: number;
-  action?: string; how?: string; scene?: string; silent?: boolean; id?: string;
+  action?: string; how?: string; scene?: string; silent?: boolean; id?: string; dur?: number;
 };
 export type AudioFinding = { title: string; severity: string; area: string; detail: string; fix: string; shots: string[]; replay: null };
 export type Loudness = { lufsIntegrated: number | null; truePeakDb: number | null; raw?: string };
@@ -26,7 +26,7 @@ export function audioEventsOf(result: any): AudioEvent[] {
   const push = (e: any) => {
     if (!e || typeof e !== 'object') return;
     const type = String(e.type ?? '');
-    if (!['sound-start', 'input', 'audiocontext-resume'].includes(type)) return;
+    if (!['sound-start', 'input', 'audiocontext-resume', 'bus-gain'].includes(type)) return;
     const t = Number(e.t);
     const row: AudioEvent = {
       type, t: Number.isFinite(t) ? t : 0,
@@ -39,6 +39,7 @@ export function audioEventsOf(result: any): AudioEvent[] {
       scene: e.scene != null ? String(e.scene).slice(0, 80) : undefined,
       silent: Boolean(e.silent),
       id: e.id != null ? String(e.id) : undefined,
+      dur: Number.isFinite(Number(e.dur)) && Number(e.dur) > 0 ? Number(e.dur) : undefined,
     };
     const key = row.id || `${row.type}|${row.t}|${row.sample ?? ''}|${row.action ?? ''}|${row.how ?? ''}`;
     if (seen.has(key)) return;
@@ -55,7 +56,7 @@ export function audioEventsOf(result: any): AudioEvent[] {
   };
   for (const e of Array.isArray(result?.events) ? result.events : []) {
     if (e?.type === 'audio') { push(fromDetail(e) ?? e); continue; }
-    if (e?.type === 'sound-start' || e?.type === 'input' || e?.type === 'audiocontext-resume') {
+    if (e?.type === 'sound-start' || e?.type === 'input' || e?.type === 'audiocontext-resume' || e?.type === 'bus-gain') {
       push(fromDetail(e) ?? e);
     }
   }
@@ -120,13 +121,20 @@ export function audioMetricsFromEvents(events: AudioEvent[], opts: { silentMs?: 
   let hadVoice = false;
   let musicGain = 1;
   const voiceUntil: number[] = [];
-  for (const s of sounds) {
+  // Sounds and the kit's bus-gain changes (hawkes-sound.js / HawkesSound: music's gain moves while a clip plays), in time order.
+  for (const s of events.filter((e) => e.type === 'sound-start' || e.type === 'bus-gain')) {
     const bus = String(s.bus ?? 'sfx').toLowerCase();
     const g = s.gain ?? 1;
+    if (s.type === 'bus-gain') {
+      if (bus !== 'music') continue;
+      musicGain = g;
+      if (voiceUntil.some((u) => s.t <= u) && g > 0 && g < 1) voiceDuckDb = Math.max(voiceDuckDb, -20 * Math.log10(Math.max(1e-6, g)));
+      continue;
+    }
     if (bus === 'music') musicGain = g;
     if (bus === 'voice') {
       hadVoice = true;
-      voiceUntil.push(s.t + 2);
+      voiceUntil.push(s.t + (s.dur && s.dur > 0 ? s.dur : 2));
       if (musicGain > 0 && musicGain < 1) voiceDuckDb = Math.max(voiceDuckDb, -20 * Math.log10(Math.max(1e-6, musicGain)));
     } else if (bus === 'music' && voiceUntil.some((u) => s.t <= u) && g > 0 && g < 1) {
       voiceDuckDb = Math.max(voiceDuckDb, -20 * Math.log10(Math.max(1e-6, g)));
