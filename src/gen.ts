@@ -86,12 +86,43 @@ export function ensureGen(): Promise<boolean> {
   return restarting;
 }
 
+/** When Gen says a job started, in ms (a number or a date string), else null. */
+function startedAt(j: any): number | null {
+  const v = j?.started ?? j?.startedAt ?? j?.started_at;
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : Date.parse(String(v));
+  return Number.isFinite(n) && n > 0 ? (n < 1e12 ? n * 1000 : n) : null;
+}
+/** When a job was made (Gen's `created`), else when the wait began. */
+function queuedSince(j: any, fallback: number): number {
+  const v = j?.created ?? j?.createdAt ?? j?.created_at;
+  const n = v == null ? NaN : typeof v === 'number' ? v : Date.parse(String(v));
+  return Number.isFinite(n) && n > 0 ? (n < 1e12 ? n * 1000 : n) : fallback;
+}
+
 /**
  * Waits for a Gen job. A busy or restarting service is retried for a few minutes (jobs resume after a Gen
  * restart), so one missed look doesn't fail a long build. Never throws for a failed job: returns it.
  */
-export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, halt?: () => string | null, { api = gen, events = genEvents, pollMs = 2000 }: { api?: { job(id: string): Promise<any>; cancel(id: string): Promise<any> }; events?: JobFollower; pollMs?: number } = {}) {
-  const end = Date.now() + timeoutMs;
+export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, halt?: () => string | null, { api = gen, events = genEvents, pollMs = 2000, fromStart = false }: { api?: { job(id: string): Promise<any>; cancel(id: string): Promise<any> }; events?: JobFollower; pollMs?: number; fromStart?: boolean } = {}) {
+  // fromStart: timeoutMs times the job itself, from when Gen reports it started (status running, or its `started`), never
+  // the time it sat queued behind other jobs (a builder lane runs 2 at a time; 2026-11-11 two Unity builds were cancelled
+  // at 22 min having never started). The queue is not limited here: the run's halt and Gen's own limits end it.
+  // The job's start and queue time are put on the job it returns (queuedMs, ranMs) for the report.
+  const t0 = Date.now();
+  let end = fromStart ? Infinity : t0 + timeoutMs;
+  let begun: number | null = null;
+  const noteStart = (job: any) => {
+    if (begun !== null || !job) return;
+    const at = startedAt(job);
+    if (at === null && String(job.status) !== 'running') return;
+    begun = at ?? Date.now();
+    if (fromStart) end = begun + timeoutMs;
+  };
+  const timed = (job: any) => {
+    if (begun === null) return { ...job, queuedMs: Math.max(0, Date.now() - queuedSince(job, t0)), ranMs: 0 };
+    return { ...job, queuedMs: Math.max(0, begun - queuedSince(job, t0)), ranMs: Math.max(0, Date.now() - begun) };
+  };
   let last = '';
   let misses = 0;
   // Its job's events wake it (genevents.ts); it asks Gen itself at the start, at its timeout, for the whole job once it
@@ -126,6 +157,7 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
           heard = Date.now();
         }
       }
+      noteStart(j);
       const sig = `${j.status}|${j.detail}`;
       if (sig !== last) {
         last = sig;
@@ -133,17 +165,17 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
       }
       if (terminal(j)) {
         if (!fromGet) { look = true; continue; }
-        return j;
+        return timed(j);
       }
       // The run it belongs to was cancelled (cancel.ts haltOf): the job is cancelled at once, whenever it was submitted.
       const why = halt?.();
       if (why) {
         await api.cancel(id).catch(() => {});
-        return { ...j, status: 'cancelled', error: why, halted: true };
+        return { ...timed(j), status: 'cancelled', error: why, halted: true };
       }
       if (Date.now() > end) {
         if (!fromGet) { look = true; continue; }
-        return { ...j, status: 'failed', error: `timed out after ${Math.round(timeoutMs / 60000)} min`, timedOut: true, lastDetail: j.detail ?? null };
+        return { ...timed(j), status: 'failed', error: `timed out after ${Math.round(timeoutMs / 60000)} min${fromStart ? ' of building' : ''}`, timedOut: true, lastDetail: j.detail ?? null };
       }
       const { due, ms } = nextLook(f.live(), { pollMs, heard, deadlines: [end + 1], localMs: halt ? pollMs : undefined });
       const ev = await f.next(ms);
@@ -212,8 +244,9 @@ export async function outstandingUnityBuilds(product: string, api: Pick<GenApi, 
  * replaces while it waits; paramsNow: the params made again for a request that waited its turn (a fresh token).
  * api, events, pollMs: test seams (Gen's client and its event stream by default).
  */
-export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit, halt, priority, paramsNow, api = gen as any, events = genEvents, pollMs }: { job?: string; onSubmit?: (id: string) => void; halt?: () => string | null; priority?: UnityPriority; paramsNow?: () => Promise<Record<string, unknown>>; api?: GenApi; events?: JobFollower; pollMs?: number } = {}) {
-  const waitOpts = { api, events, ...(pollMs ? { pollMs } : {}) };
+export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit, halt, priority, paramsNow, identity, fromStart, api = gen as any, events = genEvents, pollMs }: { job?: string; onSubmit?: (id: string) => void; halt?: () => string | null; priority?: UnityPriority; paramsNow?: () => Promise<Record<string, unknown>>; identity?: string; fromStart?: boolean; api?: GenApi; events?: JobFollower; pollMs?: number } = {}) {
+  // A unity.build's limit counts from when Gen starts it, not from the submit (fromStart; a queue can be an hour).
+  const waitOpts = { api, events, ...(pollMs ? { pollMs } : {}), ...(fromStart ?? tool === 'unity.build' ? { fromStart: true } : {}) };
   // Cancelled before it was submitted: nothing is submitted.
   if (!reuse) {
     const before = halt?.();
@@ -223,7 +256,7 @@ export async function genRun(tool: string, project: string, params: Record<strin
     const cancel = api === (gen as any)
       ? async (id: string, why: string) => (await import('./cancel.ts')).cancelJob(id, 'Studio', why)
       : (id: string) => api.cancel(id);
-    return unitySlot({ product: project, params, priority, reuse, halt, onSubmit, paramsNow }, {
+    return unitySlot({ product: project, params, priority, reuse, halt, onSubmit, paramsNow, identity }, {
       submit: (p) => submitGen(tool, project, p, api),
       wait: (id, upd) => genWait(id, upd, timeoutMs, halt, waitOpts),
       job: (id) => api.job(id),

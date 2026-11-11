@@ -36,6 +36,11 @@ export type UnitySlotRequest = {
   onSubmit?: (id: string) => void;
   /** The params again, made fresh (a new GitHub token) for a request that waited for its turn. */
   paramsNow?: () => Promise<Record<string, unknown>>;
+  /**
+   * What makes this the same build as another request when its params name no commit (a beta run's build of a local
+   * folder, a site repo branch): the same identity joins the one in Hawkes Gen instead of building twice.
+   */
+  identity?: string;
 };
 
 export type UnitySlotDeps = {
@@ -78,7 +83,7 @@ export function unityIdentity(params: any): string | null {
   return `${params.check ? 'check' : 'build'}|${sha}|${String(params.path ?? params.project ?? '')}`;
 }
 
-const short = (key: string) => key.startsWith('once:') ? 'a Unity build' : `${key.split('|')[0] === 'check' ? 'the compile check' : 'the Unity build'} of ${key.split('|')[1].slice(0, 7)}`;
+const short = (key: string) => key.startsWith('once:') || key.startsWith('same:') ? 'a Unity build' : `${key.split('|')[0] === 'check' ? 'the compile check' : 'the Unity build'} of ${key.split('|')[1].slice(0, 7)}`;
 
 /** The result a request ends with when it never ran: replaced while it waited, or halted before its turn. */
 export const supersededJob = (why: string) => ({ id: null, status: 'cancelled', error: why, halted: true, superseded: true }) as any;
@@ -91,7 +96,7 @@ const fanout = (updates: Set<(j: any) => void>) => (j: any) => { for (const f of
 export async function unitySlot(req: UnitySlotRequest, deps: UnitySlotDeps, onUpdate?: (job: any) => void): Promise<any> {
   const { product } = req;
   const priority: UnityPriority = req.priority ?? 'auto';
-  const key = unityIdentity(req.params) ?? `once:${++anon}`;
+  const key = unityIdentity(req.params) ?? (req.identity ? `same:${req.identity}` : `once:${++anon}`);
   let slot = slots.get(product);
   if (!slot) slots.set(product, (slot = { holder: null, waiter: null }));
 

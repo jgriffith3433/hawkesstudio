@@ -908,3 +908,46 @@ test('a Gen that refuses github.refresh gets the same build again at once withou
     B.resetRefreshRefused();
   }
 });
+
+test('a Unity build that waits in Gen\'s queue longer than the limit, then builds, ends done: the limit counts from Gen\'s start, and the two times are told apart', async () => {
+  const { db } = await import('../src/db.ts');
+  fastHistory(db, 'game-queued');
+  process.env.STUDIO_BUILD_SLOW_FLOOR_MS = '400';
+  const t0 = Date.now();
+  const made = { status: 'done', result: { ok: true, artifact: { asset: 'a_out', bytes: unityTar.length }, unity: '6000.3.7f1' } };
+  const g = genStandIn(['j_queued1'], () => {
+    const at = Date.now() - t0;
+    return at < 1500 ? { status: 'queued', detail: '3rd of 3 waiting (2 builder-cloud jobs already running)' } : { ...made, started: t0 + 1500 };
+  });
+  try {
+    const r = (await B.startBuild('game-queued', {}))!;
+    await r.done;
+    const run = await runOf(r.id);
+    assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+    assert.deepEqual(g.cancels, [], 'it was never cancelled, though it waited past the 400 ms limit');
+    assert.deepEqual(g.posted, ['j_queued1'], 'one Gen job, never built again');
+    const row = db.prepare("SELECT status, detail FROM builds WHERE product = 'game-queued' AND version = 4").get() as any;
+    assert.equal(row.status, 'ready');
+    assert.match(row.detail, /started in Hawkes Gen at once|waited \d+ min in Hawkes Gen's queue; built in \d+ min/);
+  } finally {
+    g.restore();
+    delete process.env.STUDIO_BUILD_SLOW_FLOOR_MS;
+  }
+});
+
+test('two starts of the same product and commit together submit one Gen build, and both use its result', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-twice', name: 'Game twice', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const t0 = Date.now();
+  const g = genStandIn(['j_twice1', 'j_twice2'], () => (Date.now() - t0 < 600 ? { status: 'running' } : { status: 'done', result: { ok: true, artifact: { asset: 'a_out', bytes: unityTar.length }, unity: '6000.3.7f1' } }));
+  try {
+    const [a, b] = await Promise.all([B.startBuild('game-twice', {}), B.startBuild('game-twice', {})]);
+    await Promise.all([a!.done, b!.done]);
+    assert.deepEqual(g.posted, ['j_twice1'], 'one build in Hawkes Gen');
+    const runs = [await runOf(a!.id), await runOf(b!.id)];
+    for (const run of runs) assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM builds WHERE product = 'game-twice' AND status = 'ready'").get() as any).n, 1, 'one published build, shared');
+  } finally {
+    g.restore();
+  }
+});

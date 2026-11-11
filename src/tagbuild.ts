@@ -125,7 +125,7 @@ export type TagBuildDeps = {
   startStep: (run: string, product: string, kind: string, name: string, detail?: string) => string;
   updateStep: (id: string, patch: { status?: string; detail?: string; job?: string; data?: unknown; cost?: number; finished?: boolean }) => void;
   resumedStep: (id: string) => { status: string; job?: string | null; data?: any } | null;
-  unityBuild: (project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, opts?: { job?: string; onSubmit?: (id: string) => void; log?: (s: string) => void; halt?: () => string | null; priority?: 'person' | 'auto' }) => Promise<any>;
+  unityBuild: (project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, opts?: { job?: string; onSubmit?: (id: string) => void; log?: (s: string) => void; halt?: () => string | null; priority?: 'person' | 'auto'; identity?: string }) => Promise<any>;
   /** The highest Game/v<n> Studio built for the product. */
   builtMax: (productId: string) => number;
   /** The Game/v<n> numbers on a website repo branch. */
@@ -151,7 +151,7 @@ export async function buildTag(run: string, p: Product, tag: BuildTag, d: TagBui
   const params = tagBuildParams(p, tag, { repos, version });
   d.updateStep(s, { data: { tag: tag.name, beta: tag.sha, pinned: version ?? null, fingerprint: null } });
   const job = await d.unityBuild(p.id, params, (j) => d.updateStep(s, { job: j.id, detail: j.detail }),
-    { job: was?.job ?? undefined, onSubmit: (id) => d.updateStep(s, { job: id }), log: (m) => d.updateStep(s, { detail: m }), halt: d.halt, priority: 'person' });
+    { job: was?.job ?? undefined, onSubmit: (id) => d.updateStep(s, { job: id }), log: (m) => d.updateStep(s, { detail: m }), halt: d.halt, priority: 'person', identity: `tag|${p.id}|${tag.sha.toLowerCase()}` });
   if (job.status === 'cancelled') {
     d.updateStep(s, { status: 'cancelled', job: job.id ?? undefined, detail: `cancelled: ${job.error ?? job.detail ?? 'not built'}`, data: { tag: tag.name, cancelled: true, fingerprint: null }, finished: true });
     return { ...job, status: 'cancelled' };

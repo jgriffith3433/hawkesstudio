@@ -449,6 +449,9 @@ export async function reconcileBuilds(o: { only?: string; product?: string; now?
     } else if (status === 'failed') {
       db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
       fail(`the Unity build ${status}: ${job?.error ?? 'no reason given'}`, job);
+    } else if (!orphan && status === 'queued') {
+      // Still waiting for a builder in Hawkes Gen with its run going: waiting isn't stuck, and its wait limit counts from
+      // Gen's start (gen.ts genWait fromStart). It ends when Gen says so, or when its run does.
     } else {
       const text = old ? `timed out after ${age} in Hawkes Gen (job ${b.gen_job} was still ${status || 'running'}); cancelled it` : `stopped: ${why}; cancelled Gen job ${b.gen_job}`;
       fail(text, job);
@@ -1070,6 +1073,14 @@ export async function replaceQueuedGen(n: { project: string; slug: string; ref: 
 
 const mins = (ms: number) => Math.round(ms / 60_000);
 
+/** "waited 41 min in Hawkes Gen's queue; built in 23 min": the report's two times, apart (genWait puts them on the job). */
+export function timingWords(job: any): string {
+  const q = Number(job?.queuedMs), r = Number(job?.ranMs);
+  if (!Number.isFinite(q) || !Number.isFinite(r)) return '';
+  const queue = q >= 60_000 ? `waited ${mins(q)} min in Hawkes Gen's queue` : 'started in Hawkes Gen at once';
+  return `${queue}; built in ${mins(r)} min`;
+}
+
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
 async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; row?: string; onSubmit?: (id: string) => void; onDone?: () => void; halt?: () => string | null; started?: number; priority?: 'person' | 'auto' } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
@@ -1090,7 +1101,9 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // Every Gen job this build tried and why each failed, and what Gen kept of the last one (buildfail.ts): the failure keeps them.
   const tried: { id: string; error: string }[] = [];
   const note = (j: any) => { if (j?.status === 'failed' || j?.status === 'cancelled') tried.push({ id: String(j.id ?? ''), error: String(j.error ?? 'no reason given').slice(0, 300) }); };
-  const firstWait = resume.job && resume.started ? Math.max(5 * 60_000, limit - (Date.now() - resume.started)) : limit;
+  // The limit counts from when Gen starts the job (gen.ts genWait fromStart), so a build resumed after a restart gets the same
+  // whole limit: Gen's own start time tells how much of it is already used, and time spent queued is never counted.
+  const firstWait = limit;
   let job: any = await submit(first, { job: resume.job, onSubmit: resume.onSubmit }, firstWait);
   note(job);
   // An older Gen that refuses github.refresh: remembered, and the same build sent again at once without it.
@@ -1160,8 +1173,9 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   const tmp = await downloadBuild(() => gen.request(`/files/${asset}`, { raw: true }), say);
   const learned = learnMachine(p.id, b, job.result);
   if (learned) say(learned);
+  const timing = timingWords(job);
   const ran = job.result?.machine?.name ? `on ${job.result.machine.name} (${job.result.machine.cpu} vCPU, ${job.result.machine.memoryGiB} GiB)` : '';
-  const detail = [job.result?.unity ? `Unity ${job.result.unity}` : '', ran, learned ?? ''].filter(Boolean).join('; ');
+  const detail = [timing, job.result?.unity ? `Unity ${job.result.unity}` : '', ran, learned ?? ''].filter(Boolean).join('; ');
   // A site with its own game page loads the build's own folder (PlaceDepartment/Build/...): never unwrap it.
   return { ...(await folderOutput(tmp, tmp, b.publish?.page === 'site')), detail: detail || undefined };
 }
