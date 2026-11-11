@@ -7,10 +7,17 @@
 // conversation and on the Talk tab, like the Inbox's.
 (() => {
   const el = (s) => document.querySelector(s);
-  // A deep link (?conversation=<id>#talk, from the morning brief notification) opens that conversation.
+  // What J typed and didn't send is kept per conversation, and the conversation on screen is remembered, so a reload
+  // comes back to both (talk-resume.js). Without storage (a private window) Talk works as before.
+  const drafts = (() => {
+    try { return talkResume.store(localStorage); } catch { return talkResume.store({ getItem: () => null, setItem() {}, removeItem() {} }); }
+  })();
+  // A deep link (?conversation=<id>#talk, from the morning brief notification) opens that conversation; otherwise the
+  // one J had on screen.
   const params = new URLSearchParams(location.search);
-  let current = params.get('conversation');
-  if (current) history.replaceState(null, '', location.pathname + location.hash);
+  let current = params.get('conversation') || drafts.current();
+  if (params.get('conversation')) history.replaceState(null, '', location.pathname + location.hash);
+  drafts.setCurrent(current);
   let conv = null; // the conversation on screen as last fetched (all its messages)
   let rows = []; // the HTML of each row the log shows (a row: a message, its turn mark, the cards asked after it)
   const msgHtml = []; // per message: { key, html } (Markdown is rendered once per message)
@@ -266,7 +273,8 @@
   }
   const tail = () => el('#talkLog .talk-tail');
 
-  /** The bubble the active brain is writing into, or "thinking…" (the only part redrawn while an answer streams). */
+  /** The bubble the active brain is writing into, with a working line, or "thinking…" (the only part redrawn while an
+   *  answer streams). Once the answer is over the line is gone; a cut answer offers Retry instead. */
   function renderTail() {
     const t = tail();
     if (!t) return;
@@ -276,17 +284,26 @@
     const hName = esc(conv?.label || harnessName(conv?.harness || window.talkBrain?.harness));
     const mName = conv?.model || window.talkBrain?.model;
     const who = mName ? `${hName} (${esc(mName)})` : hName;
-    t.innerHTML = !thinking ? '' : live?.text
-      ? `<div class="talk-msg assistant streaming">${md(live.text)}<span class="talk-caret"></span></div>`
-      : `<div class="talk-tool">${conv.messages.at(-1)?.notice ? `Studio asked ${who} to explain the result…` : `${who} is thinking…`}</div>`;
+    const lost = thinking && live?.es?.readyState === EventSource.CLOSED;
+    const working = lost
+      ? `<div class="talk-working lost" role="status"><span>Lost the connection to Studio while ${who} answers. It picks up again when Studio is back.</span></div>`
+      : `<div class="talk-working" role="status"><span class="talk-dots" aria-hidden="true"><i></i><i></i><i></i></span>${conv?.messages.at(-1)?.notice ? `Studio asked ${who} to explain the result…` : `${who} is ${live?.text ? 'writing' : 'thinking'}…`}</div>`;
+    t.innerHTML = thinking
+      ? (live?.text ? `<div class="talk-msg assistant streaming">${md(live.text)}<span class="talk-caret"></span></div>` : '') + working
+      : talkResume.cutAnswer(conv)
+        ? `<div class="talk-tool talk-cut" role="alert"><span>Studio restarted while answering.</span> <button class="small primary" data-retry title="Send the same question again">Retry</button></div>`
+        : '';
     if (atBottom) log.scrollTop = log.scrollHeight;
   }
   let tailFrame = 0;
   const tailSoon = () => { if (!tailFrame) tailFrame = requestAnimationFrame(() => { tailFrame = 0; renderTail(); }); };
 
-  /** Follows the answer as Claude writes it (talk.ts talkEvents), while the conversation on screen is thinking. */
+  /** Follows the answer as Claude writes it (talk.ts talkEvents), while the conversation on screen is thinking. The
+   *  browser retries a dropped stream by itself; one it gave up on (the server answered with an error while Studio
+   *  restarts) is opened again by the next thing that asks for the conversation: the push stream's reconnect or talk
+   *  event, the browser's online event, a tab coming back (loadConversation). Nothing re-tries on a timer. */
   function follow(id) {
-    if (live?.id === id) return;
+    if (live?.id === id && live.es.readyState !== EventSource.CLOSED) return;
     unfollow();
     const es = new EventSource(`/api/talk/${id}/events`);
     live = { id, es, text: '', ended: false };
@@ -294,6 +311,7 @@
       if (live?.es !== es) return;
       let e;
       try { e = JSON.parse(m.data); } catch { return; }
+      // A hello after a reconnect carries the answer so far (the server's partial reply): the text picks up from it.
       if (e.type === 'hello' && e.status !== 'thinking') { unfollow(); loadConversation().catch(() => {}); return; } // it just ended
       if (e.type === 'hello') { live.text = e.partial ?? ''; live.ended = false; }
       else if (e.type === 'start') { live.text = ''; live.ended = false; }
@@ -301,6 +319,11 @@
       else if (e.type === 'end') live.ended = true; // the block becomes a message: it comes with the next fetch
       else if (e.type === 'idle') { unfollow(); loadConversation().catch(() => {}); loadList().catch(() => {}); return; }
       if (!document.hidden) tailSoon();
+    };
+    es.onerror = () => {
+      if (live?.es !== es) return;
+      // Still connecting: the browser retries it. Given up on: show it and wait for the next trigger (no retry loop here).
+      if (es.readyState === EventSource.CLOSED) { try { es.close(); } catch {} tailSoon(); }
     };
   }
   function unfollow() {
@@ -329,7 +352,7 @@
     const after = Math.max(0, have - 1);
     const r = await approvals.call(`/api/talk/${id}${after ? `?after=${after}` : ''}`);
     if (id !== current) return; // J switched meanwhile
-    if (r.error) { current = null; return loadConversation(); }
+    if (r.error) { current = null; drafts.setCurrent(null); return loadConversation(); }
     const messages = r.from === after && after <= have ? [...(conv?.id === id ? conv.messages.slice(0, after) : []), ...r.messages] : r.from === 0 ? r.messages : null;
     if (!messages || messages.length !== r.total) { conv = null; return loadConversation(); } // out of step: everything again
     const c = { ...r, messages };
@@ -430,39 +453,64 @@
     }
   }
 
+  /** Opens another conversation (null: a new one). What J typed in the one he leaves was kept as he typed; the draft of
+   *  the one he opens goes into the box. */
+  function choose(id) {
+    current = id || null;
+    drafts.setCurrent(current);
+    el('#talkInput').value = drafts.draft(current);
+  }
+
+  /** One message (and its files) to the conversation on screen, or to a new one; the answer streams in after it. */
+  async function post(text, files) {
+    const c = await api('/api/talk', { method: 'POST', body: { conversation: current, message: text, files, context: window.studioContext?.() ?? undefined } });
+    current = c.id;
+    drafts.setCurrent(current);
+    await loadList();
+    await loadConversation();
+    const lg = el('#talkLog'); if (lg) lg.scrollTop = lg.scrollHeight; // your own message: show it
+  }
+
   async function send() {
     const text = el('#talkInput').value.trim();
     if (pending.some((f) => !f.blob)) return alert('Wait for the upload to finish');
     if (!text && !pending.length) return;
     const files = pending;
     el('#talkInput').value = '';
+    drafts.saveDraft(current, '');
     pending = [];
     renderPending();
     try {
-      const c = await api('/api/talk', { method: 'POST', body: { conversation: current, message: text, files, context: window.studioContext?.() ?? undefined } });
-      current = c.id;
-      await loadList();
-      await loadConversation();
-      const lg = el('#talkLog'); if (lg) lg.scrollTop = lg.scrollHeight; // your own message: show it
+      await post(text, files);
     } catch (e) {
       alert(e.message);
       el('#talkInput').value = text;
+      drafts.saveDraft(current, text);
       pending = files;
       renderPending();
     }
+  }
+
+  /** Retry on a cut answer (Studio restarted while answering): the same question, with its files, goes again. */
+  async function retry() {
+    const m = conv?.messages.at(-1);
+    if (!m || m.role !== 'user' || conv.status === 'thinking') return;
+    try { await post(m.text ?? '', m.files ?? []); } catch (e) { alert(e.message); }
   }
 
   document.addEventListener('click', async (e) => {
     const start = e.target.closest('[data-ask]');
     if (start) {
       el('#talkInput').value = start.dataset.ask;
+      drafts.saveDraft(current, start.dataset.ask);
       if (window.studioMe?.ai && !window.studioMe.ai.ready) el('#talkInput').focus(); else send();
       return;
     }
     if (e.target.id === 'talkReadAll') { markAllRead(e.target); return; }
-    if (e.target.id === 'talkNew') { current = null; el('.talk').classList.remove('lists'); loadList(); loadConversation(); el('#talkInput').focus(); }
+    if (e.target.id === 'talkNew') { choose(null); el('.talk').classList.remove('lists'); loadList(); loadConversation(); el('#talkInput').focus(); }
     const item = e.target.closest('[data-conv]');
-    if (item) { current = item.dataset.conv; el('.talk').classList.remove('lists'); loadList(); loadConversation(); }
+    if (item) { choose(item.dataset.conv); el('.talk').classList.remove('lists'); loadList(); loadConversation(); }
+    if (e.target.closest('[data-retry]')) { retry(); return; }
     if (e.target.id === 'talkLists') el('.talk').classList.toggle('lists');
     if (e.target.id === 'talkAttach') el('#talkFile').click();
     const un = e.target.closest('[data-unattach]');
@@ -475,7 +523,7 @@
       }
       if (e.target.id === 'talkDelete' && current && confirm('Delete this conversation?')) {
         await api(`/api/talk/${current}`, { method: 'DELETE' });
-        current = null;
+        choose(null);
         await loadList();
         await loadConversation();
       }
@@ -509,6 +557,11 @@
   el('#talkSend').addEventListener('click', send);
   el('#talkFile').addEventListener('change', (e) => { attach([...e.target.files]); e.target.value = ''; });
   el('#talkInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); send(); } });
+  // The unsent text is kept as J types (per conversation, so a reload or a switch brings it back; talk-resume.js).
+  el('#talkInput').addEventListener('input', () => drafts.saveDraft(current, el('#talkInput').value));
+  el('#talkInput').value = drafts.draft(current);
+  // The network is back: the conversation on screen catches up (a held answer's stream reconnects). An event, not a timer.
+  addEventListener('online', () => { if (current && window.__talkLoaded && onScreen()) loadConversation().catch(() => {}); });
   // Pasting an image (a screenshot) attaches it.
   el('#talkInput').addEventListener('paste', (e) => {
     const files = [...(e.clipboardData?.files ?? [])];
@@ -586,7 +639,7 @@
   el('#dockBtn').addEventListener('click', () => setDocked(!docked));
   el('#dockClose').addEventListener('click', () => setDocked(false));
   el('#dockFull').addEventListener('click', () => show('talk'));
-  el('#dockConv').addEventListener('change', (e) => { current = e.target.value || null; loadConversation().catch(() => {}); });
+  el('#dockConv').addEventListener('change', (e) => { choose(e.target.value); loadConversation().catch(() => {}); });
 
   /** Opens the dock without remembering it (guide.js, when Talk takes J away from the Talk tab). */
   window.talkDock = { open: () => { if (!docked) setDocked(true, false); } };
@@ -595,7 +648,7 @@
   window.talkConversation = () => current;
   /** Opens a conversation (the Activity panel's links). */
   window.openTalk = (id) => {
-    current = id;
+    choose(id);
     el('.talk').classList.remove('lists');
     window.__talkLoaded = true;
     show('talk');
