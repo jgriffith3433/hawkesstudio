@@ -404,6 +404,9 @@ export async function staleBeta(p: Product): Promise<string | null> {
 }
 
 /** Beta's newest commit as the server's clone knows it, after a sync (null when there's no clone or no beta branch). */
+/** beta's newest commit of a product's repo (deploywait.ts: a newer deployed commit is beta moving on). */
+export const betaTipFor = (p: Product) => betaTipOf(p);
+
 async function betaTipOf(p: Product): Promise<string | null> {
   const top = p.repo.split('/')[0];
   if (!repoMap()[top]) return null;
@@ -689,10 +692,33 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
       const pub = ub ? BB.publishedBuild(p.id, ub.id) : null;
       if (pub?.sha) played = { branch: BETA, sha: pub.sha, title: `${ub!.id} ${pub.version}`, madeFrom: true };
     }
-    // A web app its own CI deploys (Product.versionPath): what's played is the commit its beta says it runs.
+    // A web app its own CI deploys (Product.versionPath): what's played is the commit its beta says it runs, once that
+    // is the commit this play is for (deploywait.ts, J 2026-11-11): a go live's commit, else beta's head. While beta
+    // still runs an older one, the play waits for the deploy's own announce (no polling); a deploy that never comes
+    // ends the step as stale (nothing judged on the wrong build, no claim on it).
     if (t.where === 'local' && !was?.data?.played && p.versionPath) {
-      const d = await (await import('./deployed.ts')).deployedOf(p, 'beta');
-      if (d?.commit) played = { branch: BETA, sha: d.commit, title: `deployed beta${d.version ? ` ${d.version}` : ''}` };
+      const W = await import('./deploywait.ts');
+      const dir = repoDirs(p).source;
+      const asked = W.goLiveTarget((db.prepare('SELECT options FROM runs WHERE id = ?').get(run) as any)?.options);
+      const target = asked ? (shaOf(dir, asked) ?? asked) : await betaTipOf(p).catch(() => null);
+      const got = target ? await W.untilDeployed(p, target, {
+        tip: betaTipOf, sameCode: (_x, a, b) => W.sameCodeIn(dir, a, b),
+        onWait: (now) => updateStep(s, { detail: `waiting for beta's deploy of ${target.slice(0, 7)} (beta runs ${now.slice(0, 7)}); plays when it has deployed` }),
+      }) : null;
+      if (got && !got.ok) {
+        console.warn(`[studio] ${p.id} ${name} (${run}): ${got.why}`);
+        updateStep(s, { status: 'failed', detail: got.why, data: { stale: true, wrongBuild: true, expected: target, deployed: got.commit }, finished: true });
+        return null;
+      }
+      if (runCancelled(run)) {
+        updateStep(s, { status: 'cancelled', detail: runCancelDetail(run, 'cancelled while waiting for beta\'s deploy'), data: { cancelled: true }, finished: true });
+        return null;
+      }
+      if (got?.ok && got.sameCode) played = { branch: BETA, sha: target!, title: 'deployed beta (the same code: only docs changed since its deploy)' };
+      else {
+        const d = await (await import('./deployed.ts')).deployedOf(p, 'beta');
+        if (d?.commit) played = { branch: BETA, sha: d.commit, title: `deployed beta${d.version ? ` ${d.version}` : ''}` };
+      }
     }
     const build = played ? String(played.build ?? played.sha) : null;
     // Never twice on the same build (play-policy.ts): a scenario that already played to an end on this build, or is

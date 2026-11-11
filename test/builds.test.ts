@@ -157,9 +157,8 @@ test("a published build's widget root is the project's site, where /dev/__studio
 });
 
 test('the same commit is never built twice; a new one is version 2; beta rolls back by its pointer', async () => {
-  const again = (await B.startBuild('site', { trigger: 'beta' }))!;
-  await again.done;
-  assert.match((await runOf(again.id)).steps[0].detail, /built already/);
+  // One publish per commit (J, 2026-11-11): a push asking again for a commit already published starts no run at all.
+  assert.equal(await B.startBuild('site', { trigger: 'beta' }), null);
   betaOf['acme/site'] = SHA2;
   const two = (await B.startBuild('site', { trigger: 'beta' }))!;
   await two.done;
@@ -205,7 +204,9 @@ test("an Actions build: the workflow's artifact is published when its run report
   assert.match((await page('/o/acme-1a2b/godot/')).body, /godot/);
   // A beta push starts the builds it triggers; an Actions build starts itself (its own workflow), so not from here.
   const push = await B.onRepoHook({ repository: 'acme/site', ref: 'refs/heads/beta', sha: SHA1 }, {});
-  assert.ok(push && 'site' in push.runs && !('godot' in push.runs));
+  assert.ok(push && !('godot' in push.runs));
+  // SHA1 is published already for 'site': the push starts no second run of it (one publish per commit, J 2026-11-11).
+  assert.ok(!/^r_/.test(String((push.runs as any).site ?? '')), 'no second run of a published commit');
 });
 
 test('a beta push that builds nothing (Hawkes Studio itself) asks the go-live policy, which waits for CI by itself', async () => {

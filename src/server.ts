@@ -65,6 +65,8 @@ async function readJson(req: http.IncomingMessage): Promise<any> {
 }
 
 const memo = new Map<string, { at: number; value: any }>();
+/** Repo and lane whose deploy announce is being read now (POST /api/hooks/deployed): one read at a time each. */
+const deployReads = new Set<string>();
 /** Caches slow reads (git status on big repos, the build server over SSH) for a few seconds. */
 async function cached<T>(key: string, ms: number, f: () => T | Promise<T>): Promise<T> {
   const hit = memo.get(key);
@@ -1239,6 +1241,41 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, state: rec?.state ?? null, detail: rec?.detail ?? null });
       } catch (e: any) {
         return send(res, 400, { error: String(e?.message ?? e) });
+      }
+    }
+    // A web app its own CI deploys says its lane now runs a new revision (hawkesgen src/studioannounce.ts, J 2026-11-11:
+    // a go-live play waits for the deploy's completion, not polling). A Google-signed ID token for Studio's address, from
+    // a service account; the body only says which repo and lane: Studio reads what the lane runs itself (deploywait.ts),
+    // so the call can't make Studio believe a commit. One read per repo and lane at a time.
+    if (route === '/api/hooks/deployed' && method === 'POST') {
+      const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+      if (!token) return send(res, 401, { error: 'a Google-signed ID token is required' });
+      const { googleIdToken } = await import('./gcp.ts');
+      const claims = await googleIdToken(token).catch((e: any) => ({ error: String(e?.message ?? e) }) as any);
+      if (claims.error) return send(res, 401, { error: claims.error });
+      const audiences = [...new Set([process.env.STUDIO_PUBLIC_URL?.replace(/\/+$/, ''), 'https://studio.hawkesgen.ai'].filter(Boolean) as string[])];
+      if (!audiences.includes(String(claims.aud).replace(/\/+$/, ''))) return send(res, 401, { error: 'token is not for this Studio' });
+      if (!claims.email_verified || !/\.gserviceaccount\.com$/.test(claims.email)) return send(res, 403, { error: 'only a deployed service may say so' });
+      const b = (await readJson(req).catch(() => ({}))) as any;
+      const repo = String(b?.repo ?? '');
+      const lane = b?.lane === 'live' ? 'live' : 'beta';
+      const commit = /^[0-9a-f]{7,40}$/i.test(String(b?.commit ?? '')) ? String(b.commit).toLowerCase() : null;
+      const { betaFolderFor } = await import('./betawatch.ts');
+      const folder = betaFolderFor(repo);
+      if (!folder) return send(res, 404, { error: `${repo} isn't a project's repo here` });
+      const key = `${folder}:${lane}`;
+      if (deployReads.has(key)) return send(res, 202, { ok: true, seen: false, note: 'already reading it' });
+      deployReads.add(key);
+      try {
+        const { loadProducts, managedElsewhere } = await import('./config.ts');
+        const ps = loadProducts().filter((x) => !managedElsewhere(x) && x.repo.split('/')[0] === folder);
+        const W = await import('./deploywait.ts');
+        const P = await import('./pipeline.ts');
+        const r = await W.onDeployAnnounced(ps, lane, commit, { tip: (x) => P.betaTipFor(x) });
+        console.log(`[deployed] ${repo} ${lane} ${commit?.slice(0, 7) ?? '?'}: ${r.products.map((x) => `${x.product} runs ${x.runs?.slice(0, 7) ?? '?'}${x.woke ? `, woke ${x.woke} play(s)` : ''}`).join('; ') || 'no project with a versionPath'}`);
+        return send(res, 200, { ok: true, ...r });
+      } finally {
+        deployReads.delete(key);
       }
     }
     if ((route === '/api/hooks/github' || route === '/api/hooks/github-beta') && method === 'POST') {
