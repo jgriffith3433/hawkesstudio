@@ -147,7 +147,8 @@ test('gpuReruns ignores STUDIO_FAILED_SQL runs, and answerQuestion("try again") 
   for (let i = 0; i < pm.MAX_GPU_RERUNS; i++) {
     const cid = `c_wfail000000${i}`;
     change(cid, t.id, 'failed');
-    db.prepare(`UPDATE changes SET phase = ? WHERE id = ?`).run(JSON.stringify({ step: 'agent', failed: true }), cid);
+    // Hours ago: Studio's own failures hold the task back for a while (infraHoldOf), long over by now.
+    db.prepare(`UPDATE changes SET phase = ?, created = ?, updated = ? WHERE id = ?`).run(JSON.stringify({ step: 'agent', failed: true }), Date.now() - 6 * 3600_000 + i, Date.now() - 6 * 3600_000 + i, cid);
     rm.logDecision('gpu-rerun', t.id, 'gwart', `run ${cid}`);
   }
   assert.equal(pm.gpuReruns(t.id), 0);

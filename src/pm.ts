@@ -986,11 +986,19 @@ export function findingStartsToday(findingId: string, now = Date.now()): number 
 }
 
 /** Agents working now, and the PM's starts today. */
+/**
+ * How many more changes the PM may start now. A queued change takes a place as much as a running one: it is work the
+ * agents' queue already has and hasn't started. Counting only the running ones let the PM queue one more change per
+ * product on every pass while nothing could start (no disk room, low memory, a held provider): on 2026-11-10 it queued
+ * about 20 at 16:37 and 20 more at 18:15, and the queue reached 111, each one more change for the full disk to refuse.
+ */
 export function capacity() {
   const s = pmSettings();
-  const active = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${RUNNING.map(() => '?').join(',')})`).get(...RUNNING) as any).n as number;
+  const count = (st: string[]) => (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${st.map(() => '?').join(',')})`).get(...st) as any).n as number;
+  const active = count(RUNNING);
+  const queued = count(['queued']);
   const started = startsToday();
-  return { active, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active, s.maxStartsPerDay - started)) };
+  return { active, queued, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active - queued, s.maxStartsPerDay - started)) };
 }
 
 /**
@@ -1010,7 +1018,7 @@ export function startWaitReason(t?: Pick<Task, 'id' | 'product'>, now = Date.now
     if (hold) return `Studio could not run its agent ${hold.n} time${hold.n === 1 ? '' : 's'} in a row (${hold.why.slice(0, 160)}); trying again ${new Date(hold.until).toISOString().slice(11, 16)} UTC`;
   }
   if (cap.started >= s.maxStartsPerDay) return `daily start limit ${cap.started}/${s.maxStartsPerDay} reached, resets ${new Date(dayBounds(now).next).toISOString().slice(11, 16)} UTC`;
-  if (cap.active >= s.maxConcurrent) return `all ${s.maxConcurrent} agent slot${s.maxConcurrent === 1 ? ' is' : 's are'} busy (${cap.active} working); it starts when one finishes`;
+  if (cap.active + cap.queued >= s.maxConcurrent) return `all ${s.maxConcurrent} agent slot${s.maxConcurrent === 1 ? ' is' : 's are'} busy (${cap.active} working${cap.queued ? `, ${cap.queued} queued` : ''}); it starts when one finishes`;
   return null;
 }
 
@@ -1035,7 +1043,7 @@ export async function limitNotices(now = Date.now()): Promise<LimitNotice[]> {
     out.push({ cause, label, used, limit, resets, raise, waiting: n, text: `${label}: ${used} of ${limit} used, so ${n} roadmap task${n === 1 ? ' waits' : 's wait'}. ${resets ? `It resets at ${resets}. ` : ''}Raise it: ${raise}.` });
   const cap = capacity();
   if (cap.started >= s.maxStartsPerDay) mk('starts-per-day', 'Daily start limit', cap.started, s.maxStartsPerDay, reset, 'Settings → PM → Starts per day');
-  else if (cap.active >= s.maxConcurrent) mk('concurrency', 'Agents at once', cap.active, s.maxConcurrent, null, 'Settings → PM → Agents at once (it also frees when an agent finishes)');
+  else if (cap.active + cap.queued >= s.maxConcurrent) mk('concurrency', 'Agents at once', cap.active + cap.queued, s.maxConcurrent, null, 'Settings → PM → Agents at once (it also frees when an agent finishes)');
   const { costToday, agentSettings } = await changes();
   const a = agentSettings();
   const t = costToday();
@@ -1065,7 +1073,7 @@ export async function notifyLimits(now = Date.now()) {
  * start (exponential: 10 min, 20, 40, ... up to 4 hours; infraWaitMs). A task's first failure retries at once (afterFailed
  * already waited its grace); a finding's first already waits (INFRA_WAIT_MS). null when its latest attempt wasn't one.
  */
-export function infraHoldOf(subject: string, now = Date.now()): { n: number; why: string; until: number; change: string } | null {
+export function infraHoldOf(subject: string, now = Date.now(), o: { firstWaits?: boolean } = {}): { n: number; why: string; until: number; change: string } | null {
   const isFinding = subject.startsWith('f_');
   const rows = (isFinding
     ? db.prepare(`SELECT id, detail, updated, created, ${INFRA_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT 12`).all(`%"${subject}"%`)
@@ -1073,7 +1081,7 @@ export function infraHoldOf(subject: string, now = Date.now()): { n: number; why
   let n = 0;
   while (n < rows.length && rows[n].infra) n++;
   if (!n) return null;
-  const wait = isFinding ? infraWaitMs(n) : infraWaitMs(n - 1);
+  const wait = isFinding || o.firstWaits ? infraWaitMs(n) : infraWaitMs(n - 1);
   const last = rows[0];
   const until = (last.updated ?? last.created ?? 0) + wait;
   return until > now ? { n, why: String(last.detail ?? '?'), until, change: last.id } : null;
@@ -1350,6 +1358,13 @@ export async function rerunGpuWaits(free: number, taken = new Set<string>(), dep
       continue;
     }
     if (free <= out.length || taken.has(t.product) || await slotHeld(t.product, await taskShape(t))) continue;
+    // Studio failed to run its last runs for this task (a full disk, a clone killed): it waits, longer each time, like
+    // every other start (infraHoldOf). Such a run isn't counted against MAX_GPU_RERUNS (gpuReruns) and puts the task
+    // straight back to waiting for GPU, so without this a GPU server that is up made a new change on every PM pass:
+    // 2026-11-10 16:37-16:39, "Layered island sound" (k_d9e3d07e803e) got 42 changes, one every 3 s, each failing at once
+    // on "in-memory disk is full".
+    // Its first such failure waits too: no grace period came before this start (afterFailed's does for other tasks).
+    if (infraHoldOf(t.id, Date.now(), { firstWaits: true })) continue;
     try {
       const { getChange } = await changes();
       const prev = t.change ? getChange(t.change) : null;
@@ -2877,7 +2892,7 @@ What came in since your last PM turn:
 ${evs.length ? evs.map((e) => `- ${e.kind}${e.subject ? ` (${e.subject})` : ''}: ${e.text}`).join('\n') : '- nothing new'}
 ${daily ? '\nThis is also the daily PM turn: triage the backlog and look over the roadmap.\n' : ''}
 J's Inbox: ${inbox ?? 'empty'}.
-Limits now: ${cap.active} agents working (at most ${s.maxConcurrent}), ${cap.started} of ${s.maxStartsPerDay} starts used today, ${s.maxTries} tries per task. Delegated merges into beta: ${s.delegatedMerges ? 'ON' : 'OFF (J approves merges)'}.
+Limits now: ${cap.active} agents working and ${cap.queued} queued (at most ${s.maxConcurrent} together), ${cap.started} of ${s.maxStartsPerDay} starts used today, ${s.maxTries} tries per task. Delegated merges into beta: ${s.delegatedMerges ? 'ON' : 'OFF (J approves merges)'}.
 ${s.walkAway ? (customer ? `Walk-away mode: ON (J turned it on in Settings). Decide routine calls yourself and log them; J's Inbox is
 only for going live, rollbacks, GPU spending above J's caps ($${s.walkAwayGpuPerTask} a task, $${s.walkAwayGpuPerDay} a day), failures
 after all tries, milestones and real direction choices. Criteria misses on beta are decided by Studio (retry, park, or

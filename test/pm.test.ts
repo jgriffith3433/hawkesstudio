@@ -473,7 +473,7 @@ test('priorities: a blocked high-priority task waits for an unblocked normal one
     const listed = rm.listItems({ product: 'pmfourth' }).flatMap((i) => i.tasks).find((t) => t.id === thb.id)!;
     assert.deepEqual(listed.blocked_by.map((d) => d.title), ['The groundwork']);
     // One free agent slot: the unblocked normal task takes it.
-    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 1, maxStartsPerDay: 1000 });
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + pm.capacity().queued + 1, maxStartsPerDay: 1000 });
     await pm.startWork();
     assert.equal(rm.getTask(tnu.id)!.status, 'working');
     assert.equal(rm.getTask(thb.id)!.status, 'planned');
@@ -537,7 +537,7 @@ test('a task is started once: a failed try is retried, the retry merges, and not
   const old = Date.now() - 3600_000;
   try {
     // Walk-away mode off: a real miss asks J (on, the PM decides it: walkaway.test.ts).
-    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000, walkAway: false });
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + pm.capacity().queued + 5, maxStartsPerDay: 1000, walkAway: false });
     const it = rm.addItem({ product: 'pmfifth', title: 'Powered by', status: 'planned', ord: -900 });
     const crit = ['Landing page shows Powered by HAWKES GEN', 'Landing page links to the parent'];
     const t = rm.addTask({ item: it.id, request: 'Add the footer', criteria: crit });
@@ -713,7 +713,7 @@ test('an agent that changed nothing because J already decided it is not a failed
   const change = (id: string, product: string, findings: string[], detail: string, task: string | null = null, summary = '') => db.prepare(`INSERT INTO changes (id, product, findings, status, detail, summary, repo, slug, branch, base, worktree, title, notes, log, created, updated, task)
     VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, 'fix/z', 'beta', ?, 'Something', '[]', '[]', ?, ?, ?)`).run(id, product, J(findings), detail, summary, product, `x/${product}`, path.join(tmp, 'none', id), old, old, task);
   try {
-    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000 });
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + pm.capacity().queued + 5, maxStartsPerDay: 1000 });
     // A bug: three earlier attempts, but they all said J already decided it: none is a try, so it can start.
     const now = Date.now();
     db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen, seen) VALUES ('f_7a2000000001', 'pmseventh', 'kd', 'The door is locked', 'bug', 'open', ?, ?, 99)`).run(now, now);
@@ -761,7 +761,7 @@ test('an automatic error from a beta build older than a fix waits; "already done
   const beta = { status: 'ready', sha: 'bbbbbbb', at: t2 };
   const queued = (f: string) => (db.prepare(`SELECT id FROM changes WHERE findings LIKE ? AND status = 'queued'`).all(`%"${f}"%`) as any[]).map((r) => r.id);
   try {
-    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000 });
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + pm.capacity().queued + 5, maxStartsPerDay: 1000 });
     db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, updated, merged_at)
       VALUES ('c_9a0000000001', 'pmninth', '[]', 'merged', 'merged into beta', 'pmninth', 'x/pmninth', 'fix/r', 'beta', ?, 'Restart restarts', '[]', '[]', ?, ?, ?)`).run(path.join(tmp, 'none', 'c_9a0000000001'), t1, t1, t1);
     const f = { product: 'pmninth', source: 'auto', report: report('aaaaaaa', t0) };

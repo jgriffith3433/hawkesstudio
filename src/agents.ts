@@ -85,7 +85,7 @@ import { roleArgs, loadRole, PLUGIN_DIR, type RoleName } from './roles.ts';
 import { passLimitMs, roleTune } from './tuning.ts';
 import { routeFor, routeLine, routingSettings, premiumFor, usePremium, modelPin, type Route } from './routing.ts';
 import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
-import { markModelUnavailable, refusedModelOf } from './models.ts';
+import { markModelUnavailable, refusedModelOf, contextRefused } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, stopDetached, detachMode, type DetachRec } from './detach.ts';
 import { cloudMcp, setWorkspaceRestorer, MERGE_BASE_FILE } from './cloudjob.ts';
@@ -304,6 +304,8 @@ export function listChanges(q: { status?: string; product?: string; limit?: numb
   if (q.product) { where.push('product = ?'); args.push(q.product); }
   return (db.prepare(`SELECT * FROM changes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ? OFFSET ?`).all(...args, q.limit ?? 100, Math.max(0, q.offset ?? 0)) as any[]).map(toChange);
 }
+/** The columns update() writes (besides updated). */
+const CHANGE_COLS = ['status', 'detail', 'pr', 'pr_url', 'title', 'summary', 'commits', 'diffstat', 'verify', 'notes', 'log', 'cost', 'session', 'phase', 'auto_merge'];
 function update(id: string, patch: Partial<Record<string, any>>) {
   // A pass the stuck-work watchdog gave up on (checkStuck) writes nothing more: it ends here, and the pass that took over owns the change.
   const ctx = passCtx.getStore();
@@ -319,6 +321,9 @@ function update(id: string, patch: Partial<Record<string, any>>) {
     if (next.status !== cur.status || step !== stepOf(cur.phase)) noteTimeline(id, next.status ?? null, step);
   }
   for (const k of ['findings', 'commits', 'verify', 'notes', 'log', 'phase']) if (patch[k] !== undefined) next[k] = patch[k] === null ? null : J(patch[k]);
+  // Nothing changed: no write. Every write rewrites the whole row (its log of up to 400 lines) and goes to the replica's
+  // WAL; a loop setting the same status and detail over and over wrote ~13 MB/s on 2026-11-11 (the disk-wait loop).
+  if (cur && CHANGE_COLS.every((k) => (next[k] ?? null) === (cur[k] ?? null))) return;
   db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, auto_merge=?, updated=? WHERE id=?`)
     .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.auto_merge ?? null, next.updated, id);
   // A bug is consumed when an agent takes it (startFix marks it fixed). If that attempt fails, for whatever reason, the
@@ -511,14 +516,21 @@ export function resumeGate(h: { at: number; parks?: number[]; capped?: boolean }
  * run the pass again on the next tier down. Not a try, not a hold. Null when it wasn't that, or the model was already
  * known as refused (so a requeue never loops).
  */
-function modelRefused(r: { ok: boolean; sawResult: boolean; result: string; stderr?: string; harness?: Harness }, ph: Phase) {
+export function modelRefused(r: { ok: boolean; sawResult: boolean; result: string; stderr?: string; harness?: Harness; model?: string }, ph: Phase, ranModel?: string | null) {
+  const harness = (r.harness ?? (isHarness(ph.brain) ? ph.brain : brainId())) as Harness;
+  // The model's context can't hold Studio's instructions there: the provider answers with that one line (a "result"),
+  // so it is read whether or not the pass looked clean (2026-11-10: c_cad9c740157e failed as "made no commit").
+  const tooBig = contextRefused(String(r.result ?? '')) || (!r.sawResult && contextRefused(String(r.stderr ?? '').slice(-600)));
+  const known = r.model || ranModel;
+  if (tooBig && known && known !== 'auto') return markModelUnavailable(harness, known) ? { model: known, harness, why: 'context' as const } : null;
   if (r.ok && r.sawResult) return null;
   const model = refusedModelOf(`${r.result ?? ''}\n${r.stderr ?? ''}`);
-  const harness = (r.harness ?? (isHarness(ph.brain) ? ph.brain : brainId())) as Harness;
   return model && markModelUnavailable(harness, model) ? { model, harness } : null;
 }
-function requeueForModel(id: string, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, gone: { model: string; harness: Harness }) {
-  addLog(id, `${HARNESS_LABEL[gone.harness]} doesn't have the model ${gone.model} on this account: it is skipped from now on and the pass runs again on the next one down (not a try)`);
+function requeueForModel(id: string, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, gone: { model: string; harness: Harness; why?: 'context' }) {
+  addLog(id, gone.why === 'context'
+    ? `${HARNESS_LABEL[gone.harness]} wouldn't run ${gone.model}: Studio's instructions and tools don't fit that model's context there. It is skipped there from now on and the pass runs again on another model (not a try)`
+    : `${HARNESS_LABEL[gone.harness]} doesn't have the model ${gone.model} on this account: it is skipped from now on and the pass runs again on the next one down (not a try)`);
   save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined }, { status: 'queued', detail: `${gone.model} isn't available: trying the next model` });
   setTimeout(() => void pump(), 0).unref();
 }
@@ -1913,6 +1925,9 @@ export function startTask(productId: string, request: string, { criteria = [], t
   // Handed over to another Studio: its agents work on it there (config.ts managedBy).
   if (p && managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   if (!request.trim()) throw new Error('Say what to do');
+  // One attempt per roadmap task at a time, whichever path asks (the PM's starts and reruns, a revision).
+  const other = task ? liveChangeOfTask(task) : null;
+  if (other) throw new StudioError(`task ${task} already has change ${other.id} (${other.status}): no second one beside it`, 409);
   // J (2026-10-17): queue, don't refuse. One change runs per product; this one waits for it (pump starts it after).
   const ahead = aheadOf(target.id);
   if (inf && repoTarget) throw new StudioError(`${inf.name} has no website repo (leave target empty)`);
@@ -1957,6 +1972,18 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   for (const f of findings) updateFinding(f.id, { status: 'fixed', note: `agent change ${id}` });
   void pump();
   return id;
+}
+
+/** A change on its way (not ended): one per roadmap task at a time. */
+const TASK_LIVE = ['queued', 'working', 'verifying', 'revising', 'ready', 'needs answer', WAITING_GEN];
+/**
+ * The task's change that is on its way, other than `except`, or null. On 2026-11-10 one task ("Layered island sound")
+ * got 42 changes in two minutes, and several of the failed ones were later revised back to life beside each other: four
+ * merged into beta for the same task. A task has one change on its way, so starting or reviving a second is refused.
+ */
+export function liveChangeOfTask(task: string, except?: string): { id: string; status: string } | null {
+  const rows = db.prepare(`SELECT id, status FROM changes WHERE task = ? AND status IN (${TASK_LIVE.map(() => '?').join(',')}) ORDER BY created DESC`).all(task, ...TASK_LIVE) as { id: string; status: string }[];
+  return rows.find((r) => r.id !== except) ?? null;
 }
 
 /** The statuses of a change that holds one of its product's running slots. */
@@ -2466,12 +2493,12 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
         // No disk room (it is memory on Cloud Run) is a wait, not a failure (J, 2026-11-10: three changes failed at
         // "preparing" this way and sat failed): back in the queue, picked again once work beside it ends.
-        const full = await import('./disksweep.ts').then((d) => d.ensureDiskRoom(d.WORKTREE_NEED, { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).then(() => null, (e) => {
-          const m = String(e?.message ?? e);
-          return /(in-memory|working) disk is full/.test(m) ? m : null;
-        });
-        if (full) return void waitForDisk(id, full);
+        // The room is checked inside the checkout's turn, for every checkout under way (this one and the others in their
+        // turn): checked before the turn, each of several changes saw room for one worktree and all of them wrote one.
+        let full: string | null = null;
         await checkoutSlot(() => critical(`making the worktree of ${id}`, async () => {
+          full = await diskRoomForCheckouts(id);
+          if (full) return;
           // Studio on Cloud Run starts with no checkouts: the product's repo is cloned the first time it's needed.
           await ensureCloned(c.repo, c.slug);
           const beta = await ensureBeta(repoDir);
@@ -2491,6 +2518,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
           const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m), onKilled: lowerCheckouts });
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         }));
+        if (full) return void waitForDisk(id, full);
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
         await checkoutSlot(async () => {
           await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
@@ -2541,7 +2569,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       const saved = await saveWork(cw.worktree, cw.branch, cw.base);
       if ('pushed' in saved) addLog(id, `saved ${cw.branch} to GitHub (${saved.pushed.slice(0, 7)})`);
       else if ('error' in saved) addLog(id, `couldn't save ${cw.branch} to GitHub yet: ${saved.error}`);
-      const gone = modelRefused(r, ph);
+      const gone = modelRefused(r, ph, currentBrain(id)?.model);
       if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
@@ -3434,7 +3462,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       const saved = await saveWork(cw.worktree, cw.branch, cw.base);
       if ('pushed' in saved) addLog(id, `saved ${cw.branch} to GitHub (${saved.pushed.slice(0, 7)})`);
       else if ('error' in saved) addLog(id, `couldn't save ${cw.branch} to GitHub yet: ${saved.error}`);
-      const gone = modelRefused(r, ph);
+      const gone = modelRefused(r, ph, currentBrain(id)?.model);
       if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
@@ -4501,6 +4529,9 @@ export function revise(id: string, note: string, by = 'J') {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
   if (!['ready', 'failed'].includes(c.status)) throw new Error(`The change is ${c.status}`);
+  // A failed attempt of a task that has a newer one on its way stays ended: reviving it would run two beside each other.
+  const other = c.task ? liveChangeOfTask(c.task, id) : null;
+  if (other) throw new StudioError(`task ${c.task} already has change ${other.id} (${other.status}): revise that one, or close it first`, 409);
   // A person's revision: the conflict passes start over, and an approval waiting to merge (Studio/Gen) is for what was.
   db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL, revisions = COALESCE(revisions, 0) + 1 WHERE id = ?').run(id);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
@@ -4575,6 +4606,8 @@ export function resumeChange(id: string, by = 'J') {
   const c = getChange(id);
   if (!c) throw new StudioError('No such change');
   if (c.status !== 'cancelled') throw new StudioError(`Change ${id} is ${c.status}, not cancelled`);
+  const other = c.task ? liveChangeOfTask(c.task, id) : null;
+  if (other) throw new StudioError(`task ${c.task} already has change ${other.id} (${other.status}) on its way: close one of them first`, 409);
   if (!c.worktree || !fs.existsSync(c.worktree)) throw new StudioError(`Change ${id} has no worktree any more: close it and start the task again`);
   assertWorktree(c.worktree, path.join(PROJECTS, c.repo));
   const old = phaseOf(id);
@@ -4687,6 +4720,19 @@ let lowerUntil = 0;
 /** A checkout was killed for memory (signal 9): one at a time for the next 10 minutes (J, 2026-11-05: make checkouts reliable). */
 export function lowerCheckouts(now = Date.now()) { lowerUntil = now + 10 * 60_000; }
 export const checkoutLimit = (now = Date.now()) => (now < lowerUntil || memLow() ? 1 : Math.max(1, Number(process.env.STUDIO_CHECKOUTS) || 2));
+/**
+ * Room for one more worktree beside the checkouts under way now (each counted at WORKTREE_NEED, this one included), or
+ * why there is none ("... disk is full ..."). Called inside checkoutSlot, so two checkouts can't both see the same room.
+ */
+export async function diskRoomForCheckouts(id: string, active = checkoutsActive): Promise<string | null> {
+  const d = await import('./disksweep.ts');
+  return d.ensureDiskRoom(d.WORKTREE_NEED * Math.max(1, active), { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) }).then(() => null, (e) => {
+    const m = String(e?.message ?? e);
+    if (/(in-memory|working) disk is full/.test(m)) return m;
+    throw e;
+  });
+}
+export const checkoutsUnderWay = () => checkoutsActive;
 export async function checkoutSlot<T>(fn: () => Promise<T>): Promise<T> {
   while (checkoutsActive >= checkoutLimit()) await new Promise<void>((r) => checkoutWaiters.push(r));
   checkoutsActive++;
