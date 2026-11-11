@@ -112,7 +112,7 @@ window.addEventListener('focus',function(){if(waiting)setTimeout(back,1200);});
 document.addEventListener('visibilitychange',function(){if(!document.hidden&&waiting)setTimeout(back,1200);});
 var q=new URLSearchParams(location.search).get('gerr');if(q){gerr.hidden=false;gerr.textContent=q;retry.hidden=false;}
 var cfg={client_id:${JSON.stringify(id)},callback:function(r){done=true;fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{done=false;if(j.waitlist){waiting=false;busy.hidden=true;tap.hidden=false;gerr.hidden=false;gerr.className='ok';gerr.textContent=j.error;}else show(j.error||('HTTP '+x.status));}});}).catch(function(){done=false;show('Could not reach Studio. Try again.');});}};
-if(phone){cfg.ux_mode='redirect';cfg.login_uri=location.origin+'/auth/google?next='+encodeURIComponent(${JSON.stringify(next)});}
+if(phone){cfg.ux_mode='redirect';cfg.login_uri=location.origin+'/auth/google';document.cookie='hs_next='+encodeURIComponent(${JSON.stringify(next)})+'; path=/auth/google; max-age=600; SameSite=None'+(location.protocol==='https:'?'; Secure':'');}
 google.accounts.id.initialize(cfg);
 google.accounts.id.renderButton(el,{theme:dark?'filled_black':'outline',size:'large',text:'continue_with',shape:'pill',locale:'en',width:Math.min(400,Math.max(200,Math.round((w||320)/1.1))),click_listener:press});}</script>
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
@@ -289,7 +289,11 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
     // GIS redirect mode (phones): Google posts the credential as a form with its csrf token in a cookie too.
     if (f.g_csrf_token) {
       const ck = /(?:^|;\s*)g_csrf_token=([^;]+)/.exec(String(req.headers.cookie ?? ''))?.[1];
-      const to = A.safeNext(url.searchParams.get('next'));
+      // login_uri carries no query (Google matches it exactly against the registered redirect URIs), so the page left where to go next in a cookie.
+      const nextCk = /(?:^|;\s*)hs_next=([^;]+)/.exec(String(req.headers.cookie ?? ''))?.[1];
+      let nextRaw: string | null = url.searchParams.get('next');
+      if (!nextRaw && nextCk) { try { nextRaw = decodeURIComponent(nextCk); } catch { nextRaw = null; } }
+      const to = A.safeNext(nextRaw);
       try {
         if (!ck || ck !== f.g_csrf_token) throw new StudioError('Sign-in could not be checked. Try again.');
         const u = A.googleUser(await verifyGoogleProfile(String(f.credential ?? '')), meta(req));
