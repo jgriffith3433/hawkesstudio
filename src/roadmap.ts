@@ -185,7 +185,9 @@ const toItem = (r: any): Item => ({ ...r, priority: r.priority ?? 'normal', crit
 // Task rows are read with their item's priority alongside (TASK_SELECT), for the effective priority.
 const TASK_SELECT = `SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t LEFT JOIN items i ON i.id = t.item`;
 const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, target: r.target ?? null, kind: r.kind ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null, bar: parse(r.bar) ?? null });
-const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
+// Only a list marker comes off ("- ", "* ", "2. ", "3) "): a criterion's own leading number stays ("0 errors", "60 fps";
+// Nov 11 a criterion "0 console errors" was stored as "console errors").
+const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*(?:[-*•]+|\d+[.)])\s+/, '').trim()).filter(Boolean).slice(0, 20);
 export const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
   if (p) return p.id;
@@ -464,7 +466,8 @@ export function addTask(a: { item: string; title?: string; request: string; crit
 }
 
 /**
- * The GPU items a task added without its own should have: those of the first GPU task it follows up, found from what
+ * The GPU items a task added without its own should have: those of the first GPU task it follows up (one that has run;
+ * a GPU task not started yet is work ahead of it, never copied), found from what
  * it depends on and the tasks (k_...) and changes (c_...) its request names, following a chain of follow-ups (each
  * added before this fix without items) back to the task that had them. Same product only. null: none found.
  */
@@ -480,7 +483,13 @@ export function inheritedGpu(a: { product: string; request: string; depends?: st
     const t = queue.shift()!;
     if (seen.has(t.id)) continue;
     seen.add(t.id);
-    if (t.gpu?.items?.length) return { items: t.gpu.items, from: t.id };
+    // A GPU task that hasn't started yet is work ahead of this one, not work it follows up: depending on it means "after
+    // its assets exist", and copying its items would make (and pay for) them twice (Nov 11: a fishing task that depends on
+    // the sea task got the sea's GPU list). Only GPU work that has run is followed up.
+    if (t.gpu?.items?.length) {
+      if (!t.change && (t.status === 'planned' || t.status === 'idea')) continue;
+      return { items: t.gpu.items, from: t.id };
+    }
     queue.push(...refs(t.request, t.depends));
   }
   return null;
