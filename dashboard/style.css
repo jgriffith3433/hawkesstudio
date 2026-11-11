@@ -425,6 +425,32 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .pt-sbs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-bottom: 10px; }
 .pt-sbs.phone { grid-template-columns: repeat(2, minmax(0, 300px)); }
 .pt-pairs { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+/* The playtest viewer's scrubber: markers for findings (circles, by severity) and scenario events (squares, pass / fail). */
+.pt-scrub { margin: 6px 0 4px; user-select: none; }
+.pt-lane { position: relative; height: 30px; margin: 0 14px; }
+.pt-track { position: relative; height: 28px; margin: 0 14px; touch-action: none; cursor: pointer; border-radius: var(--radius-sm); }
+.pt-track::before { content: ""; position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 3px; background: var(--border); }
+.pt-fill { position: absolute; left: 0; top: 11px; height: 6px; border-radius: 3px; background: var(--accent); opacity: .55; width: 0; }
+.pt-head { position: absolute; top: 3px; width: 4px; height: 22px; margin-left: -2px; border-radius: 2px; background: var(--text); left: 0; }
+.pt-track:focus-visible { outline: 2px solid var(--accent); }
+.pt-mark { position: absolute; top: 3px; width: 24px; height: 24px; margin-left: -12px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.pt-mark::before { content: ""; position: absolute; left: 5px; top: 5px; width: 14px; height: 14px; border-radius: 50%; background: var(--violet); border: 2px solid var(--surface-raised); box-sizing: border-box; }
+.pt-mark.event::before { border-radius: 2px; transform: rotate(45deg) scale(.85); }
+.pt-mark.blocker::before, .pt-mark.fail::before { background: var(--danger); }
+.pt-mark.bug::before { background: var(--bug); }
+.pt-mark.pass::before { background: var(--success); }
+.pt-mark.on::before, .pt-mark:focus-visible::before { box-shadow: 0 0 0 3px var(--accent); }
+.pt-legend2 { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--text-xs); color: var(--text-muted); align-items: center; }
+.pt-legend2 .meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+.pt-legend2 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; background: var(--violet); }
+.pt-legend2 .dot.blocker, .pt-legend2 .dot.fail { background: var(--danger); } .pt-legend2 .dot.bug { background: var(--bug); } .pt-legend2 .dot.pass { background: var(--success); }
+.pt-flist { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+.pt-fitem { display: flex; gap: 8px; align-items: center; min-height: 44px; padding: 6px 10px; text-align: left; background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-sm); color: inherit; cursor: pointer; }
+.pt-fitem .pt-ftitle { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pt-fitem.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised)); }
+.pt-fitem.untimed { opacity: .65; cursor: default; }
+.pt-strip figure.now img { border-color: var(--accent); outline: 2px solid var(--accent); }
+@media (max-width: 760px) { .pt-top video { max-height: none; } }
 #ptDetail h3 { margin: 18px 0 8px; font-size: var(--text-lg); }
 @media (max-width: 760px) {
   .pt-row { grid-template-columns: 80px 1fr; } .pt-thumb { width: 80px; height: 46px; } .pt-when { grid-column: 2; }

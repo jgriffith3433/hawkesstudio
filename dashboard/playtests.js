@@ -156,6 +156,7 @@ async function loadPlaytest() {
   const rv = d.review?.data;
   const phone = p.device === 'phone';
   const shots = rec?.shots ?? [];
+  const mk = ptMarkers({ findings: rv?.findings ?? [], events: res.events ?? [], shots });
   $('#ptDetail').innerHTML = `
     <div class="bar"><button id="ptBack">← All playtests</button>
       <span class="meta">${new Date(p.started).toLocaleString()} · run ${esc(p.run)}</span>
@@ -169,7 +170,7 @@ async function loadPlaytest() {
     ${data.s3?.error ? `<p class="meta" style="color:var(--amber)">S3 upload failed: ${esc(data.s3.error)}</p>` : ''}
 
     <div class="pt-top${phone ? ' phone' : ''}">
-      <div>${p.video ? `<video id="ptVideo" src="${esc(p.video)}" controls preload="metadata"></video>` : '<div class="empty">No video.</div>'}</div>
+      <div>${p.video ? `<video id="ptVideo" src="${esc(p.video)}" controls playsinline preload="metadata"></video>${scrubHtml(mk)}` : '<div class="empty">No video.</div>'}</div>
       <div class="pt-side">
         ${rv ? `<div class="scores">${Object.entries(rv.scores ?? {}).map(([k, n]) => `<div class="score"><b>${n}</b><span>${esc(k)}</span></div>`).join('')}</div>
           ${rv.phone ? `<div class="scores pt-phone">${['touch', 'text', 'layout'].map((k) => `<div class="score"><b>${rv.phone[k]}</b><span>📱 ${k}</span></div>`).join('')}</div><p class="meta">${esc(rv.phone.notes)}</p>` : ''}
@@ -200,6 +201,7 @@ async function loadPlaytest() {
 
     ${rec?.job?.log?.length ? `<details><summary class="meta">Runner log</summary><pre>${esc(rec.job.log.join('\n'))}</pre></details>` : ''}`;
   $('#ptBack').onclick = closePlaytest;
+  wireScrub(mk, shots, Math.max(p.seconds ?? 0, ...shots.map((x) => x.t ?? 0), ...(res.events ?? []).map((x) => x.t ?? 0), 1));
   const vs = $('#ptVs');
   if (vs) vs.onchange = () => openPlaytest(pt.open, vs.value || null);
 }
@@ -213,9 +215,104 @@ $('#ptDetail').addEventListener('click', (e) => {
     if (v) { v.currentTime = Math.max(0, Number(fig.dataset.seek) - 0.5); v.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
     return;
   }
+  const mark = e.target.closest('[data-mseek]');
+  if (mark) return ptSeekTo(Number(mark.dataset.mseek), mark.dataset.mkey);
   const bl = e.target.closest('[data-ptbacklog]');
   if (bl) { $('#blProduct').value = bl.dataset.ptbacklog; show('backlog'); }
 });
+
+// ------------------------------------------------------------ the scrubber with markers (ptmarkers.js has the times)
+
+const SEV_CLASS = { blocker: 'blocker', bug: 'bug' };
+const fmtT = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+
+/** The bar under the video: one lane of finding markers, one of event markers (pass / fail), a playhead; and the list of
+ *  findings below it. Positions are set by wireScrub once the video's length is known. */
+function scrubHtml({ markers, untimed }) {
+  const lane = (kind) => markers.filter((m) => m.kind === kind).map((m) => `<button type="button" class="pt-mark ${kind} ${m.kind === 'finding' ? SEV_CLASS[m.sev] ?? 'polish' : m.tone}" data-mseek="${m.t}" data-mkey="${m.key}" data-t="${m.t}" aria-label="${kind === 'finding' ? 'Finding' : 'Event'} at ${fmtT(m.t)}: ${esc(m.label)}" title="${fmtT(m.t)} · ${esc(m.label)}"></button>`).join('');
+  const list = [...markers.filter((m) => m.kind === 'finding'), ...untimed].sort((a, b) => (a.t ?? 1e9) - (b.t ?? 1e9));
+  const events = markers.filter((m) => m.kind === 'event');
+  return `<div class="pt-scrub" id="ptScrub" aria-label="Playtest timeline">
+      <div class="pt-lane" data-lane="finding">${lane('finding')}</div>
+      <div class="pt-track" id="ptTrack" role="slider" aria-label="Video position" tabindex="0"><div class="pt-fill" id="ptFill"></div><div class="pt-head" id="ptHead"></div></div>
+      <div class="pt-lane" data-lane="event">${lane('event')}</div>
+      <div class="pt-legend2"><span><i class="dot blocker"></i>blocker</span><span><i class="dot bug"></i>bug</span><span><i class="dot polish"></i>polish</span><span><i class="dot pass"></i>event passed</span><span><i class="dot fail"></i>event failed</span><span class="meta" id="ptNow">0:00</span></div>
+    </div>
+    ${list.length || events.length ? `<div class="pt-flist" id="ptFlist">${list.map((m) => `<button type="button" class="pt-fitem${m.t == null ? ' untimed' : ''}" ${m.t == null ? 'disabled' : `data-mseek="${m.t}" data-mkey="${m.key}"`}><span class="pill ${esc(m.sev)}">${esc(m.sev)}</span><span class="pt-ftitle">${esc(m.label)}</span><span class="meta">${m.t == null ? 'no time recorded' : fmtT(m.t)}</span></button>`).join('')}
+      ${events.map((m) => `<button type="button" class="pt-fitem ev ${m.tone}" data-mseek="${m.t}" data-mkey="${m.key}"><span class="pill ${m.tone === 'pass' ? 'ship' : 'failed'}">${m.tone}</span><span class="pt-ftitle">${esc(m.label)}</span><span class="meta">${fmtT(m.t)}</span></button>`).join('')}</div>` : ''}`;
+}
+
+let ptDuration = 1;
+let ptShots = [];
+
+/** Seek the video to a marker's moment, highlight it (marker and list entry), and bring the strip to that moment. */
+function ptSeekTo(t, key) {
+  const v = $('#ptVideo');
+  if (!v) return;
+  v.currentTime = Math.max(0, t - 0.5);
+  v.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  ptHighlight(key);
+  ptSync();
+}
+function ptHighlight(key) {
+  document.querySelectorAll('#ptDetail .pt-mark.on, #ptDetail .pt-fitem.on').forEach((n) => n.classList.remove('on'));
+  if (!key) return;
+  document.querySelectorAll(`#ptDetail [data-mkey="${key}"]`).forEach((n) => n.classList.add('on'));
+  document.querySelector(`#ptFlist [data-mkey="${key}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+/** The playhead, the time and the screenshot strip follow the video's current time. */
+function ptSync() {
+  const v = $('#ptVideo');
+  if (!v) return;
+  const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : ptDuration;
+  const pct = Math.min(100, (100 * v.currentTime) / d);
+  const head = $('#ptHead');
+  if (head) { head.style.left = `${pct}%`; $('#ptFill').style.width = `${pct}%`; $('#ptNow').textContent = `${fmtT(v.currentTime)} / ${fmtT(d)}`; $('#ptTrack').setAttribute('aria-valuenow', Math.round(v.currentTime)); $('#ptTrack').setAttribute('aria-valuemax', Math.round(d)); }
+  const i = ptShotIndexAt(ptShots, v.currentTime + 0.5);
+  const strip = document.querySelector('#ptDetail .pt-strip');
+  if (!strip) return;
+  const figs = strip.querySelectorAll('figure');
+  if (strip.dataset.now === String(i)) return;
+  strip.dataset.now = String(i);
+  figs.forEach((f, n) => f.classList.toggle('now', n === i));
+  const f = figs[i];
+  // Scroll only the strip sideways, never the page under the viewer's thumb.
+  if (f) { const fr = f.getBoundingClientRect(), sr = strip.getBoundingClientRect(); strip.scrollTo({ left: strip.scrollLeft + fr.left - sr.left - (sr.width - fr.width) / 2, behavior: 'smooth' }); }
+}
+
+function wireScrub(mk, shots, fallbackDuration) {
+  const v = $('#ptVideo');
+  const track = $('#ptTrack');
+  if (!v || !track) return;
+  ptShots = shots;
+  ptDuration = fallbackDuration;
+  const place = () => {
+    const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : ptDuration;
+    document.querySelectorAll('#ptScrub .pt-mark').forEach((m) => { m.style.left = `${Math.min(100, (100 * Number(m.dataset.t)) / d)}%`; });
+    ptSync();
+  };
+  v.addEventListener('loadedmetadata', place);
+  v.addEventListener('durationchange', place);
+  v.addEventListener('timeupdate', ptSync);
+  v.addEventListener('seeked', ptSync);
+  place();
+  // Dragging or tapping the track seeks (pointer events: mouse, pen and touch alike; touch-action none keeps the page still).
+  const at = (e) => {
+    const r = track.getBoundingClientRect();
+    const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : ptDuration;
+    v.currentTime = Math.min(d, Math.max(0, ((e.clientX - r.left) / r.width) * d));
+    ptSync();
+  };
+  track.addEventListener('pointerdown', (e) => { track.setPointerCapture?.(e.pointerId); track.dataset.drag = '1'; ptHighlight(null); at(e); });
+  track.addEventListener('pointermove', (e) => { if (track.dataset.drag) at(e); });
+  const end = () => { delete track.dataset.drag; };
+  track.addEventListener('pointerup', end);
+  track.addEventListener('pointercancel', end);
+  track.addEventListener('keydown', (e) => {
+    const step = e.key === 'ArrowRight' ? 5 : e.key === 'ArrowLeft' ? -5 : 0;
+    if (step) { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime + step); ptSync(); }
+  });
+}
 
 function metricsTable(m) {
   const rows = Object.entries(m ?? {});

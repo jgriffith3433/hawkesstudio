@@ -6,6 +6,9 @@
   const SCENARIOS = [{
     id: 'smoke', title: 'Every main tab loads', seconds: 40, tags: ['smoke'],
     description: 'Home, Roadmap, Backlog, Reports (opens the newest report), Changes (opens one change) and Talk: each waits for its data, with no console errors and nothing wider than the screen.',
+  }, {
+    id: 'viewer', title: 'Playtest viewer: markers and seeking', seconds: 40, tags: ['viewer'],
+    description: 'Opens the newest playtest that has a video, checks the scrubber carries markers for its findings and events, taps a finding and sees the video jump to its moment with the finding highlighted, and checks the viewer fits the screen (video full width, touch targets 44px high).',
   }];
   const READY_TIMEOUT_MS = 20000;
   const t0 = () => Date.now();
@@ -194,15 +197,72 @@
     await step('Talk', 'talk', () => openTab('talk', 'Talk'));
   }
 
+  // Resolves when the selector matches (watching the DOM for changes, never on a timer), or fails after READY_TIMEOUT_MS.
+  function appears(sel, what, root = document) {
+    return new Promise((resolve, reject) => {
+      const hit = () => root.querySelector(sel);
+      if (hit()) return resolve(hit());
+      const mo = new MutationObserver(() => { if (hit()) { mo.disconnect(); clearTimeout(timer); resolve(hit()); } });
+      const timer = setTimeout(() => { mo.disconnect(); reject(new TabFailure(`${what} did not appear after ${READY_TIMEOUT_MS / 1000}s`)); }, READY_TIMEOUT_MS);
+      mo.observe(root.body ?? root, { childList: true, subtree: true });
+    });
+  }
+
+  async function viewer() {
+    run.scene = 'Playtests list';
+    event('scene', 'Playtests list');
+    openTab('playtests', 'Playtests');
+    await appears('#ptList .pt-row', 'the playtest list');
+    const rows = [...document.querySelectorAll('#ptList .pt-row')];
+    if (!rows.length) { log('Playtests: none yet, the empty page is what a person sees'); return; }
+    // The newest with a video (its row ends with the play mark).
+    const row = rows.find((r) => r.querySelector('.pt-when')?.textContent.includes('▶'));
+    if (!row) { log('Playtests: none has a video yet'); return; }
+    run.scene = 'Playtest viewer';
+    event('scene', 'Playtest viewer');
+    row.click();
+    await appears('#ptScrub', 'the scrubber under the video');
+    const video = document.getElementById('ptVideo');
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const box = video.getBoundingClientRect();
+    if (vw <= 480 && box.width < vw * 0.85) fail('Viewer', `the video is ${Math.round(box.width)}px wide on a ${vw}px screen, not full width`);
+    event('pass:video-width', `${Math.round(box.width)}px of ${vw}px`);
+    const marks = [...document.querySelectorAll('#ptScrub .pt-mark')];
+    const findings = marks.filter((m) => m.classList.contains('finding'));
+    const events = marks.filter((m) => m.classList.contains('event'));
+    run.metrics.markers = marks.length;
+    event('pass:markers', `${findings.length} finding marks, ${events.length} event marks`);
+    for (const m of marks) {
+      const r = m.getBoundingClientRect();
+      if (r.width < 24 || r.height < 24) fail('Viewer', 'a marker is smaller than a thumb can hit (24px)');
+    }
+    const item = document.querySelector('#ptFlist .pt-fitem[data-mseek]:not(.ev)');
+    if (!item) { log('Viewer: this playtest has no timed findings, markers for events only'); event('pass:viewer', 'no findings to tap'); return; }
+    const small = [...document.querySelectorAll('#ptFlist .pt-fitem')].find((b) => b.getBoundingClientRect().height < 40);
+    if (small) fail('Viewer', 'a finding row is under 40px high, too small to tap');
+    const want = Number(item.dataset.mseek);
+    const seeked = new Promise((r) => { video.addEventListener('seeked', r, { once: true }); setTimeout(r, 5000); });
+    item.click();
+    await seeked;
+    if (Math.abs(video.currentTime - Math.max(0, want - 0.5)) > 1.5 && video.readyState > 0) fail('Viewer', `tapping a finding at ${want}s left the video at ${video.currentTime.toFixed(1)}s`);
+    if (!item.classList.contains('on')) fail('Viewer', 'the tapped finding was not highlighted');
+    event('pass:seek', `finding at ${want}s, video at ${video.currentTime.toFixed(1)}s`);
+    const over = tooWide(document.getElementById('ptDetail'));
+    if (over.length) fail('Viewer', `sticks out past the screen: ${over.join('; ')}`);
+    event('pass:fits', `${vw}px`);
+    run.metrics.tabsPassed = 1;
+    run.progress = 1;
+  }
+
   async function start(id) {
     if (status === 'running') return;
-    if (id !== 'smoke') throw new Error(`unknown scenario ${id}`);
+    if (id !== 'smoke' && id !== 'viewer') throw new Error(`unknown scenario ${id}`);
     run = fresh(id);
     errors = [];
     status = 'running';
     event('start', id);
     try {
-      await smoke();
+      await (id === 'viewer' ? viewer() : smoke());
       run.outcome = 'done';
       status = 'done';
       event('end', 'done');
