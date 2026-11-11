@@ -205,3 +205,34 @@ test('the re-check puts tasks parked on an empty "cannot be shaped" back to plan
   assert.equal(rm.getTask(real)!.status, 'idea');
   assert.deepEqual(tb.recheckEmptyParks(), []);
 });
+
+test('a "cannot" that says the task can be shaped ("Empty: the work is bounded...") never parks it', async () => {
+  for (const cannot of ['Empty: the work is bounded. It names the sound groups, file specs and manifest entry.', 'Empty. The task can be shaped: the layout and tap targets are specified.', 'None', 'N/A']) {
+    assert.equal(tb.saysShapeable(cannot), true, cannot);
+    assert.equal(tb.refuses({ cannot }), false, cannot);
+  }
+  assert.equal(tb.refuses({ cannot: 'the work is an open-ended audit with no end to measure' }), true);
+  assert.equal(tb.refuses({ shapeable: false, cannot: 'Empty: unclear what it should deliver' }), true);
+  assert.equal(tb.refuses({ shapeable: true, cannot: 'whatever' }), false);
+  const id = rm.addTask({ item: rm.addItem({ product: 'tbgame', title: `Empty cannot ${Math.random()}`, goal: 'A world you can hear', status: 'planned' }).id, request: 'Make real sound for jumps, landings and the crowd, with three variants each and a pitch spread, lazy-loaded with a silent fallback so nothing breaks when a file is missing on a slow phone connection.', criteria: ['A jump plays one of 3 jump sounds', '[phone] At 390x844 a landing plays a sound within 100 ms'] }).id;
+  const r = await tb.gateTask(rm.getTask(id)!, { ask: answer({ cannot: 'Empty: the work is bounded. It names the sound groups.', goal: 'The player hears every jump and landing.', reference: 'Super Mario Odyssey: the landing thud and crowd', axis: 'sound', phone: 'Plays the same on a phone', outcome: '', work: 'Make real sound for jumps, landings and the crowd.', criteria: ['A jump plays one of 3 jump sounds', '[phone] At 390x844 a landing plays a sound within 100 ms'] }) });
+  assert.equal(r, 'ok');
+  assert.equal(rm.getTask(id)!.status, 'planned');
+});
+
+test('the re-check puts tasks parked on an "Empty: ... is bounded" reason back to planned', () => {
+  const it = rm.addItem({ product: 'tbgame', title: `Recheck words ${Math.random()}`, goal: 'Combat that lands', status: 'planned' }).id;
+  const mk = (note: string) => {
+    const t = rm.addTask({ item: it, request: shaped.request, criteria: shaped.criteria });
+    rm.setBar(t.id, { ...(rm.getTask(t.id)!.bar ?? {}), gate: { verdict: 'parked', reasons: [], at: 1, hash: 'x' } });
+    rm.updateTask(t.id, { status: 'idea', note });
+    return t.id;
+  };
+  const wordy = mk('parked by the task bar: cannot be shaped: Empty: the work is bounded. It names the sound groups.; no player goal; no reference');
+  const shapes = mk('parked by the task bar: cannot be shaped: Empty. The task can be shaped: the layout is specified.; no outcome');
+  const real = mk('parked by the task bar: cannot be shaped: the work is an open-ended audit');
+  const restored = tb.recheckEmptyParks();
+  assert.ok(restored.includes(wordy) && restored.includes(shapes));
+  assert.ok(!restored.includes(real));
+  assert.equal(rm.getTask(real)!.status, 'idea');
+});
