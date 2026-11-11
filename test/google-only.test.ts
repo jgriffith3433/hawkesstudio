@@ -63,6 +63,24 @@ test('Continue with Google stays English, matches the card, and keeps a 44px ful
   assert.match(page.body, /renderButton\([^)]*width:Math\.min\(400/);
 });
 
+test('phone redirect mode: login_uri has no query (Google matches it to a registered redirect URI), next travels in a cookie', async () => {
+  const page = res();
+  await handleAuthRoute(req(), page, new URL('http://x/auth/signin?next=/talk'));
+  // f_33db36348aa3: "?next=" in login_uri made Google answer 400 redirect_uri_mismatch on phones.
+  assert.match(page.body, /cfg\.login_uri=location\.origin\+'\/auth\/google';/);
+  assert.doesNotMatch(page.body, /login_uri=[^;]*\?/);
+  assert.match(page.body, /hs_next=/);
+  // Google's POST comes back with no query; the cookie says where to go.
+  const post: any = req('POST', 'credential=bad&g_csrf_token=t1', '/auth/google');
+  post.headers.origin = 'https://accounts.google.com';
+  post.headers.cookie = 'g_csrf_token=t1; hs_next=' + encodeURIComponent('/talk');
+  const out = res();
+  await handleAuthRoute(post, out, new URL('http://x/auth/google'));
+  assert.equal(out.status, 303);
+  // bad credential: back to sign-in carrying the cookie's next and the error
+  assert.match(String(out.headers.Location), /^\/auth\/signin\?next=%2Ftalk&gerr=/);
+});
+
 test('STUDIO_PASSWORD_LOGIN=1 brings the password form back', async () => {
   process.env.STUDIO_PASSWORD_LOGIN = '1';
   try {
