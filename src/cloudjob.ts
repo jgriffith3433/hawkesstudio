@@ -541,6 +541,18 @@ function dropJob(f: Follow, why: string) {
  * executions) is given up on and started again (J, 2026-11-10: a reattached agent sat 40 minutes with nothing behind it).
  */
 export const JOB_START_MS = () => Number(process.env.STUDIO_JOB_START_MS) || 15 * 60_000;
+/** How long a job Cloud Run calls over may take to upload its last output before Studio reads it as ended. */
+export const JOB_GONE_GRACE_MS = () => Number(process.env.STUDIO_JOB_GONE_MS) || 30_000;
+/**
+ * Why a job that ended without its result was stopped from outside Studio, or null when it ended by itself (a crash, out
+ * of memory, its own time limit). Studio's own stop (the change cancelled: stopAsked) is not from outside.
+ */
+export function stoppedOutside(st: { done: boolean; message: string } | null, f: { stopAsked?: number | null }): string | null {
+  if (f.stopAsked) return null;
+  if (!st) return 'deleted';
+  if (/\bcancel(?:l?ed|ling)?\b/i.test(st.message ?? '')) return 'cancelled';
+  return null;
+}
 /** A started job that sends no output for this long (its runner hung) is given up on and started again. */
 export const JOB_SILENT_MS = () => Number(process.env.STUDIO_JOB_SILENT_MS) || 60 * 60_000;
 
@@ -644,8 +656,19 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
         }
         if (!st || st.done) {
           goneAt ||= Date.now();
-          if (Date.now() - goneAt > 30_000) {
-            await pull(f, r);
+          if (Date.now() - goneAt > JOB_GONE_GRACE_MS()) {
+            if ((await pull(f, r)).includes('exit.json')) {
+              await finish(f, r, cwd, env);
+              return true;
+            }
+            // Stopped from outside Studio (cancelled in the console or Cloud Shell, deleted, a region cleared during an
+            // outage): the job didn't fail, it was taken away. The pass starts again with a new job, not as a try
+            // (2026-11-11 ~00:35: the executions cancelled to free CPU ended c_88cdeb289512 and others as failed).
+            const why = stoppedOutside(st, f);
+            if (why) {
+              dropJob(f, `the Cloud Run job was ${why} outside Studio before it sent its result: starting it again`);
+              return true;
+            }
             end(f, { code: null, signal: null, error: `the Cloud Run job ended without its result${st?.message ? `: ${st.message}` : ''}` });
             return true;
           }

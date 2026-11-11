@@ -19,6 +19,15 @@ const load = (): Gone => {
 /** The model a harness refused, from its output, or null. */
 export const refusedModelOf = (text: string): string | null => REFUSED.exec(text)?.[1] ?? null;
 
+/**
+ * The provider wouldn't run the pass on this model because Studio's own instructions and tools don't fit the model's
+ * context there (2026-11-10, c_cad9c740157e on Copilot with claude-sonnet-5.5: "No response was returned because static
+ * system messages and tool definitions exceed this model's context budget."). Nothing the agent did: the model is out
+ * for that provider, like a refused one. Only a short text is the provider's own message.
+ */
+const CONTEXT_REFUSED = /(?:system messages|tool definitions|prompt|input)[^.\n]{0,80}exceed[s]?\s+(?:this|the)\s+model'?s\s+context|context[_ ]length[_ ]exceeded|prompt is too long for (?:this|the) model/i;
+export const contextRefused = (text: string): boolean => text.trim().length > 0 && text.trim().length < 600 && CONTEXT_REFUSED.test(text);
+
 export function unavailableModels(now = Date.now()): { harness: Harness; model: string; at: number }[] {
   return Object.entries(load()).filter(([, at]) => now - at < REFUSAL_MS).map(([k, at]) => {
     const [harness, ...m] = k.split('|');
