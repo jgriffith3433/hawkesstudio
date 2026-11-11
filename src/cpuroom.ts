@@ -16,9 +16,9 @@
 // learned the hard way: the CPU in use when Cloud Run last left one of its jobs unstarted for want of room (noteNoRoom).
 // With none of those known, starts are not held (work never stops for a gate that can't see).
 
-// With the jobs in a project of their own (jobsproject.ts) they share no quota with the server: nothing to keep back,
-// and the room is that project's quota (STUDIO_JOBS_CPU_QUOTA, else learned), counted over that project's jobs.
-import { jobsApart, jobsProject } from './jobsproject.ts';
+// With the jobs in a region (or project) of their own (jobsproject.ts) they share no quota with the server: nothing to
+// keep back, and the room is that place's quota (STUDIO_JOBS_CPU_QUOTA, else learned), counted over that place's jobs.
+import { jobsApart, jobsPlace } from './jobsproject.ts';
 
 export const RESERVE_VCPU = () => Number(process.env.STUDIO_CPU_RESERVE ?? (jobsApart() ? 0 : 8));
 export const AGENT_JOB_VCPU = () => Number(process.env.STUDIO_AGENT_JOB_CPU ?? 2);
@@ -41,28 +41,30 @@ export const roomHooks: { limit?: () => Promise<number | null>; used?: () => Pro
 
 async function limitNow(): Promise<number | null> {
   if (roomHooks.limit) return roomHooks.limit();
-  if (jobsApart()) { const n = Number(process.env.STUDIO_JOBS_CPU_QUOTA); return Number.isFinite(n) && n > 0 ? n : learned; }
-  const q = await import('./quota.ts').then((Q) => Q.quotaNow('cpu')).catch(() => null);
+  const env = Number(process.env.STUDIO_JOBS_CPU_QUOTA);
+  if (jobsApart() && Number.isFinite(env) && env > 0) return env;
+  const p = jobsPlace();
+  // Google's value for the jobs' own region (quota.ts reads the server's project; another project's is env or learned).
+  const q = jobsApart() && p.project !== (process.env.STUDIO_GCP_PROJECT || '') ? null
+    : await import('./quota.ts').then((Q) => Q.quotaNow('cpu', p.region)).catch(() => null);
   if (q?.value) return q.value;
-  const env = Number(process.env.STUDIO_CPU_QUOTA);
-  return Number.isFinite(env) && env > 0 ? env : learned;
+  const set = Number(process.env.STUDIO_CPU_QUOTA);
+  return !jobsApart() && Number.isFinite(set) && set > 0 ? set : learned;
 }
 
 /** vCPU every open job execution in the region holds or waits for, or null when Studio can't read it. */
 export async function usedNow(): Promise<number | null> {
   if (roomHooks.used) return roomHooks.used();
-  const project = jobsProject();
+  const { project, region } = jobsPlace();
   if (!project) return null;
-  const region = process.env.STUDIO_GCP_REGION || 'us-east4';
   return (await import('./gcp.ts')).regionJobCpu(project, region).then((x) => x.vcpu).catch(() => null);
 }
 
 /** vCPU of job tasks running now in the region (what Cloud Run actually granted), or null. */
 export async function runningNow(): Promise<number | null> {
   if (roomHooks.running) return roomHooks.running();
-  const project = jobsProject();
+  const { project, region } = jobsPlace();
   if (!project) return null;
-  const region = process.env.STUDIO_GCP_REGION || 'us-east4';
   return (await import('./gcp.ts')).regionJobCpu(project, region).then((x) => x.running).catch(() => null);
 }
 
