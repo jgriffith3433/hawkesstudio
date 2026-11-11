@@ -2296,8 +2296,9 @@ async function pumpPass() {
     void work(c.id, back ? undefined : note, undefined, back, Boolean(back)).finally(() => {
       land();
       remember(c.id);
-      // A pass ending frees what it held: changes waiting for disk room may start now (this wakes the queue too).
-      if (!diskWait.freed(`${c.id}'s pass ended`)) void pump();
+      // A pass ending frees what it held: changes waiting for disk room may start now (this wakes the queue too). A
+      // pass that only went back to wait for disk room held nothing, so it wakes no one (diskwait.ts passEnded).
+      if (!diskWait.passEnded(c.id, `${c.id}'s pass ended`)) void pump();
     });
   }
 }
@@ -2432,7 +2433,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
         // No disk room (it is memory on Cloud Run) is a wait, not a failure (J, 2026-11-10: three changes failed at
         // "preparing" this way and sat failed): back in the queue, picked again once work beside it ends.
-        const full = await import('./disksweep.ts').then((d) => d.ensureDiskRoom(100 * 1024 * 1024, { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).then(() => null, (e) => {
+        const full = await import('./disksweep.ts').then((d) => d.ensureDiskRoom(d.WORKTREE_NEED, { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).then(() => null, (e) => {
           const m = String(e?.message ?? e);
           return /(in-memory|working) disk is full/.test(m) ? m : null;
         });

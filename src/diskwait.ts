@@ -12,6 +12,11 @@ export type DiskWaits = {
   holds(id: string): boolean;
   /** Room may have freed: every waiting change is free to try again, and the queue is woken once. */
   freed(why?: string): boolean;
+  /**
+   * A change's pass ended. If it ended by going back to wait for disk room (it never got any), nothing freed: the
+   * others stay held and nothing wakes. Otherwise its worktree and process went, so room may have freed (freed).
+   */
+  passEnded(id: string, why?: string): boolean;
   /** Drop every hold (the queue's own check). */
   clear(): void;
   size(): number;
@@ -20,16 +25,18 @@ export type DiskWaits = {
 export function diskWaits(wake: (why: string) => void): DiskWaits {
   let epoch = 0;
   const held = new Map<string, number>();
+  const freed = (why = 'disk room may have freed') => {
+    if (!held.size) return false;
+    epoch++;
+    held.clear();
+    wake(why);
+    return true;
+  };
   return {
     hold: (id) => void held.set(id, epoch),
     holds: (id) => held.has(id) && held.get(id) === epoch,
-    freed: (why = 'disk room may have freed') => {
-      if (!held.size) return false;
-      epoch++;
-      held.clear();
-      wake(why);
-      return true;
-    },
+    freed,
+    passEnded: (id, why) => (held.has(id) && held.get(id) === epoch ? false : freed(why ?? `${id}'s pass ended`)),
     clear: () => held.clear(),
     size: () => held.size,
   };

@@ -116,6 +116,12 @@ export function diskFull(need = 0): boolean {
   return memInfo().available - need < diskFloor();
 }
 
+/** Room for one worktree (what a change waiting for disk room needs to start): not over budget and not full. */
+export const WORKTREE_NEED = 100 * MB;
+export function roomForAWorktree(): boolean {
+  return !diskHigh(WORKTREE_NEED) || !diskFull(WORKTREE_NEED);
+}
+
 export function diskSummary(): string {
   const d = diskInfo();
   const gb = (n: number) => (n / 1024 ** 3).toFixed(2);
@@ -302,7 +308,9 @@ export async function sweepDisk(opts: {
 
   const freed = Math.max(0, before - diskInfo().used);
   if (freed > MB) report.detail.push(`statfs freed ~${Math.round(freed / MB)} MB`);
-  if (freed > MB || report.bytes > MB) diskFreed(`a ${hard ? 'hard' : 'soft'} sweep freed ~${Math.round(Math.max(freed, report.bytes) / MB)} MB`);
+  // Waiting changes are told only when the sweep left room for one (a worktree's 100 MB): a sweep that cleared a few
+  // MB of logs while the disk stays full would wake them to sweep and fail again, round and round (2026-11-11).
+  if ((freed > MB || report.bytes > MB) && roomForAWorktree()) diskFreed(`a ${hard ? 'hard' : 'soft'} sweep freed ~${Math.round(Math.max(freed, report.bytes) / MB)} MB`);
   const line = report.detail.length ? report.detail.join('; ') : 'nothing to clear';
   opts.say?.(`[disksweep] ${hard ? 'hard' : 'soft'}: ${line}; ${diskSummary()}`);
   return report;
