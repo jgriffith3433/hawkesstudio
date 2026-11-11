@@ -74,7 +74,11 @@ jobs:
         with:
           workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-ops-admin/providers/github-ops-admin
           service_account: ops-admin@hawkes-staging.iam.gserviceaccount.com
+      # The quota actions use `gcloud beta quotas`; installed here, since gcloud asks before installing it and a workflow
+      # can't answer (2026-11-11: Jaycee's disk quota card failed on that prompt).
       - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: beta
       - name: Run
         env:
           ACTION: ${{ inputs.action }}
