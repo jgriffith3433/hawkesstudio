@@ -55,6 +55,8 @@ const dirty = new Map<number, string>();
 const refuse = new Map<number, string>();
 const updateBranchCalls: number[] = [];
 const ubFail = new Map<number, string>();
+/** Branches GitHub can't compare (its compare API fails: a big Unity repo past its limits). */
+const noCompare = new Set<string>();
 const listen = async (server: http.Server) => {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -96,6 +98,7 @@ const github = http.createServer(async (req, res) => {
   const cmp = /^\/repos\/x\/game\/compare\/(.+)\.\.\.(.+)$/.exec(url.pathname);
   if (cmp) {
     const [a, b] = [decodeURIComponent(cmp[1]), decodeURIComponent(cmp[2])];
+    if (noCompare.has(a) || noCompare.has(b)) return json(500, { message: 'Server Error: this diff is taking too long to generate' });
     const rev = (x: string) => (/^[0-9a-f]{40}$/.test(x) ? x : `refs/heads/${x}`);
     const base = spawnSync('git', ['merge-base', rev(a), rev(b)], { cwd: origin, encoding: 'utf8' }).stdout.trim();
     const files = spawnSync('git', ['diff', '--name-only', base, rev(b)], { cwd: origin, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
@@ -387,5 +390,41 @@ test('a failed update-branch with no shared file never spends a pass or files a 
   assert.equal(x.status, 'ready');
   assert.match(x.auto_merge ?? '', /^failed/);
   assert.ok(!rm.listQuestions('asked J').some((q) => q.subject === c.task), 'no Inbox card');
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
+});
+
+// Sick of It PR #328 (2026-11-11): Studio's merge couldn't read the sides, GitHub said it conflicted, update-branch said
+// "merge conflict between base and head", and GitHub couldn't compare the sides either: logged "(not a conflict)" and
+// left ready, unmerged, for good. GitHub's own merge saying it conflicts is a conflict: its agent merges on a full checkout.
+test("GitHub says it conflicts and nobody can compare the sides: a conflict pass (not a dead end), and it merges", async () => {
+  const c = readyChange('Uncompared\n');
+  betaMoves('menu.txt', 'Beta, uncompared\n');
+  git(repoDir, 'worktree', 'remove', '--force', c.wt);
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
+  noCompare.add(c.branch);
+  await autoMergeBeta(c.id);
+  const x = getChange(c.id)!;
+  assert.equal(x.conflicts, 1, x.log.join('\n'));
+  assert.equal(x.status, 'revising', 'its agent is on it');
+  assert.ok(!x.log.some((l) => /not a conflict/.test(l)), x.log.join('\n'));
+  assert.ok(x.notes.some((nt: any) => /conflict pass 1 \(menu\.txt\)/.test(nt.text)), 'the files the change touches, for its agent');
+  await until(() => getChange(c.id)!.status === 'merged', 60_000, 'the conflict pass and the merge');
+  assert.ok(merges.includes(c.branch));
+});
+
+test("uncompared and update-branch fails too: still a conflict pass; with the passes used up, a clear reason and J decides", async () => {
+  const c = readyChange('Uncompared again\n');
+  freshTryUsed(c.task);
+  betaMoves('menu.txt', 'Beta, uncompared again\n');
+  git(repoDir, 'worktree', 'remove', '--force', c.wt);
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
+  noCompare.add(c.branch);
+  ubFail.set(n, 'upstream unavailable');
+  db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(CONFLICT_PASSES, c.id);
+  await autoMergeBeta(c.id);
+  const x = getChange(c.id)!;
+  assert.equal(x.status, 'ready', x.log.join('\n'));
+  assert.match(x.auto_merge ?? '', /still conflicts with beta after 2 conflict passes by its agent: .*Studio couldn't compare the two sides/);
+  await until(() => rm.listQuestions('asked J').some((q) => q.subject === c.task), 10_000, 'the question for J');
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
 });

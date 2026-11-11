@@ -94,9 +94,20 @@ export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_
 /**
  * Git commands that may talk to GitHub. A light clone (`--filter=blob:none`, a Unity repo) fetches file contents while it
  * checks out, so `worktree add` and `checkout` need the repo's token too: without it an org cell's agent changes on
- * Yooba Land and Sick of It (Unity) failed with "could not read Username" (2026-11-01).
+ * Yooba Land and Sick of It (Unity) failed with "could not read Username" (2026-11-01). A merge, rebase or reset in a
+ * light clone fetches the other side's file contents the same way (2026-11-11: Studio's own `merge origin/beta` for
+ * Sick of It PR #328 failed with "could not fetch <blob> from promisor remote", and the change sat ready, unmerged).
+ * The command is the first word past git's own options (`-c key=value`, `-C dir`): Studio's merge starts with `-c`.
  */
-export const gitNeedsAuth = (args: string[]) => ['fetch', 'push', 'pull', 'lfs', 'ls-remote', 'worktree', 'checkout', 'switch', 'sparse-checkout'].includes(args[0]);
+const TALKS_TO_GITHUB = new Set(['fetch', 'push', 'pull', 'lfs', 'ls-remote', 'worktree', 'checkout', 'switch', 'sparse-checkout', 'merge', 'rebase', 'cherry-pick', 'revert', 'reset', 'restore']);
+export const gitCommandOf = (args: string[]) => {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-c' || args[i] === '-C') { i++; continue; }
+    if (!args[i].startsWith('-')) return args[i];
+  }
+  return '';
+};
+export const gitNeedsAuth = (args: string[]) => TALKS_TO_GITHUB.has(gitCommandOf(args));
 
 /** The token header for a checkout's GitHub repo (its origin), fetched first; {} for J's repos and anything else. */
 const originUrls = new Map<string, string>();
