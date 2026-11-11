@@ -76,6 +76,34 @@ export function playOutcome(s: { status: string; detail?: string | null; outcome
 /** The outcomes that mean a play checked nothing (a check that broke): played again, never a miss, never a try. */
 export const PLAYED_NOTHING: readonly PlayOutcome[] = ['stuck', 'failed', 'skipped', 'cancelled'];
 
+// ------------------------------------------------------------------------------------- a pass that made no commit
+
+/**
+ * Why an agent pass with no commit made none (J, 2026-11-11: c_80e16b1110e4 and c_b8771b800762 read "source missing" though
+ * their Cloud Run job's own full workspace had the source and the agent said the task was already done; Studio had restarted
+ * and remade its own server-side worktree light):
+ * - already-done: the agent says the work is there. Never blamed on the source.
+ * - source-missing: the worktree the pass ran in has no source (only judged for a pass that ran in Studio's own worktree).
+ * - source-unreadable: the agent said it couldn't read the repo.
+ * - no-commit: the agent just did nothing: its own failure.
+ */
+export const NO_COMMIT_OUTCOMES = ['already-done', 'source-missing', 'source-unreadable', 'no-commit'] as const;
+export type NoCommitOutcome = (typeof NO_COMMIT_OUTCOMES)[number];
+
+export function noCommitOutcome(f: {
+  /** The pass ran in a Cloud Run job's own workspace: Studio's worktree is not what it worked in, so its probe says nothing. */
+  ranInJob: boolean;
+  /** Studio's own worktree's probe (only read when the pass ran there); null when there is nothing to probe. */
+  worktreeProbeOk: boolean | null;
+  saidUnreadable: boolean;
+  saidAlreadyDone: boolean;
+}): NoCommitOutcome {
+  if (!f.ranInJob && f.worktreeProbeOk === false) return 'source-missing';
+  if (f.saidAlreadyDone) return 'already-done';
+  if (f.saidUnreadable) return 'source-unreadable';
+  return 'no-commit';
+}
+
 // ----------------------------------------------------------------------------------------------------- agent passes
 
 /**

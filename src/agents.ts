@@ -117,7 +117,7 @@ import { noteRail, betaPart } from './change-rail.ts';
 import { noteTiming, timingOf } from './change-timing.ts';
 import { beginWait, endWait, endWaitsWhere, forgetWait, forgetWaitsWhere, lateWait, within, onDeadline, waitOverdue } from './waits.ts';
 import { deadlineOf } from './waitpoints.ts';
-import { passState } from './outcomes.ts';
+import { noCommitOutcome, passState } from './outcomes.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -678,6 +678,8 @@ export type Phase = {
   requested?: string;
   /** The first failure line Studio's own job printed in the last pass (machineryFailure): with no commit, an infra failure, not a try. */
   machinery?: string;
+  /** The last pass ran in a Cloud Run job's own workspace (ranInCloudJob): Studio's worktree isn't what it worked in. */
+  job?: boolean;
   /** Why the last agent pass ended before finishing (AgentResult.stopped). */
   stopped?: 'time' | 'turns' | 'cut';
   /** How many times its session was resumed to commit work it left uncommitted (at most NUDGES); `nudge`: the next pass is one. */
@@ -884,16 +886,24 @@ function nudge(id: string, ph: Phase, save: (patch: Partial<Phase>) => void) {
  * Whether a change that made no commit did so because it never had the source: the worktree fails the probe now, or the
  * agent said it couldn't read the repo. Returns the detail to record (it carries the exact finding), else null.
  */
-export function sourceLost(c: Pick<Change, 'worktree' | 'product' | 'infra'>, said: string): string | null {
+export function sourceLost(c: Pick<Change, 'worktree' | 'product' | 'infra'>, said: string, ranInJob = false): string | null {
   if (c.infra) return null;
-  const light = fs.existsSync(c.worktree) && git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
-  if (light || isUnity(c.product)) {
-    const probe = fs.existsSync(c.worktree) ? probeSource(c.worktree, { unity: light && isUnity(c.product) }) : { ok: false, tracked: 0, reason: `source missing: the worktree ${c.worktree} is gone` };
-    if (!probe.ok) return `${sourceError('the agent made no commit', probe)}`;
+  // A pass that ran in a Cloud Run job worked in the job's own workspace (its preflight already checked the source, and a
+  // job that couldn't get one failed as machinery). Studio's worktree may have been remade light after a restart, so its
+  // probe says nothing about that pass: judged from what the agent said (outcomes.ts noCommitOutcome).
+  let probe: { ok: boolean; tracked: number; reason?: string } | null = null;
+  if (!ranInJob) {
+    const light = fs.existsSync(c.worktree) && git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
+    if (light || isUnity(c.product)) probe = fs.existsSync(c.worktree) ? probeSource(c.worktree, { unity: light && isUnity(c.product) }) : { ok: false, tracked: 0, reason: `source missing: the worktree ${c.worktree} is gone` };
   }
   const hit = SOURCE_UNREADABLE_SAID.exec(said);
-  return hit ? `source unreadable: the agent made no commit and said it could not read the repo ("${hit[0].slice(0, 80)}"; not counted as a try)` : null;
+  const outcome = noCommitOutcome({ ranInJob, worktreeProbeOk: probe ? probe.ok : null, saidUnreadable: Boolean(hit), saidAlreadyDone: alreadyDone(said) });
+  if (outcome === 'source-missing') return `${sourceError('the agent made no commit', probe as Parameters<typeof sourceError>[1])}`;
+  if (outcome === 'source-unreadable') return `source unreadable: the agent made no commit and said it could not read the repo ("${hit![0].slice(0, 80)}"; not counted as a try)`;
+  return null;
 }
+/** Whether a pass ran in a Cloud Run job: its recorded mode, or the `[job]` lines the job printed (cloudjob-run.ts). */
+export const ranInCloudJob = (stderr: string | undefined | null, mode?: string) => mode === 'cloudrun' || /^\s*\[job\] /m.test(String(stderr ?? ''));
 /** A failed change's reason: today's words, plus what's left when its work stayed uncommitted after the resumes. */
 function noCommitWhy(worktree: string, ph: Phase) {
   if (!ph.nudges || !uncommitted(worktree)) return 'the agent made no commit';
@@ -2833,7 +2843,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         return parkForHarness(id, ph, save, stop, r.harness);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, qualityFix: false, genDone: undefined, harness: undefined, proc: undefined, noRoom: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, job: ranInCloudJob(r.stderr, ph.proc?.rec.mode) || undefined, nudge: false, unityFix: false, compileFix: false, qualityFix: false, genDone: undefined, harness: undefined, proc: undefined, noRoom: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -2924,7 +2934,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         if (stopped) return parkForHarness(id, ph, save, stopped);
         // No commit and the source was unreadable or missing (the worktree has none, or the agent said it couldn't read it):
         // Studio's failure, not the agent's try (infra-failure.ts reads the phrase and phase.failed).
-        const lost = sourceLost(c, `${ph.result ?? ''}\n${summary}`);
+        const lost = sourceLost(c, `${ph.result ?? ''}\n${summary}`, Boolean(ph.job));
         if (lost) {
           reopenTaken(id, findings.map((f) => f.id), lost);
           update(id, { status: 'failed', detail: lost.slice(0, 300), summary, commits, phase: { step: ph.step, failed: true } });
