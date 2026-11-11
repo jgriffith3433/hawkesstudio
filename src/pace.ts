@@ -8,7 +8,7 @@
 //   scenario fix, never as a try (pm.ts scenarioFix);
 // - idle slots: free agent slots with nothing the PM may start for IDLE_MS, and products with no planned work: a scout
 //   per idle product, then ONE Inbox question for J with their proposals (idleWatch). Nothing goes on the roadmap
-//   without his yes;
+//   without his yes, except in his own Studio in walk-away mode, where the PM answers it itself (causes.ts gateQuestion);
 // - "Where the time goes" (whereTimeGoes, in studio_pm status): today's median agent time, merge-to-verified, build and
 //   playtest time, time parked on Gen/GPU and idle slot-hours (the last two sampled by the PM's tick: samplePace).
 
@@ -209,7 +209,7 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
     const prop = proposalOf(sc?.report);
     return `- **${name(p)}**${st.scouts[p] ? ` (scout ${st.scouts[p].id})` : ''}: ${prop ?? (sc ? `no proposal (${String(sc.detail ?? sc.status).slice(0, 120)})` : 'not scouted yet')}`;
   });
-  const text = `Agent slots have been idle for ${Math.round((now - st.since) / 60_000)} min with nothing the PM may start, and ${idle.length} product(s) have no planned work. A scout read each one and proposes a next roadmap item:\n\n${lines.join('\n')}\n\nAdd these to the roadmap (the PM files them as items with their tasks), only some (say which), or not now? Nothing is added without your yes.`;
+  const text = `Agent slots have been idle for ${Math.round((now - st.since) / 60_000)} min with nothing the PM may start, and ${idle.length} product(s) have no planned work. A scout read each one and proposes a next roadmap item:\n\n${lines.join('\n')}\n\nAdd these to the roadmap (the PM files them as items with their tasks), only some (say which), or not now? Nothing is added without your yes (in walk-away mode in your own Studio, the PM adds them itself).`;
   const q = deps.askJ(text.slice(0, 3900), {
     subject: IDLE_SUBJECT, options: ['Yes: add them', 'Only some (say which)', 'Not now'], recommend: 'Yes: add them', topic: 'idle', from: 'idle agent slots',
     context: Object.values(st.scouts).map((x) => x.id).join(' '),

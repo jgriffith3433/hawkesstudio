@@ -304,3 +304,29 @@ test('blocked agent: a question that is not a Gen problem goes to J untouched', 
   assert.equal(r.row.status, 'asked J');
   assert.doesNotMatch(r.card?.context ?? '', /Studio checked first/);
 });
+
+test("idle slots in J's own Studio in walk-away mode: the PM adds the scouts' proposals itself; walk-away off, or a day's limit used, asks J (2026-11-11)", async () => {
+  reset();
+  const ask = () => pm.askJ('Agent slots have been idle for 45 min with nothing the PM may start, and 1 product(s) have no planned work. A scout read each one and proposes a next roadmap item:\n\n- **Cause game**: Title: More levels', { subject: 'idle-slots', options: ['Yes: add them', 'Only some (say which)', 'Not now'], recommend: 'Yes: add them', topic: 'idle', from: 'idle agent slots' });
+  const q = ask();
+  assert.equal(q.status, 'held', 'not filed for J');
+  await tick();
+  assert.deepEqual(answered.at(-1), { q: q.id, a: 'Yes: add them', by: C.SELF_BY });
+  // The PM's own answer is taken (pm.ts answerQuestion no longer refuses it here).
+  db.prepare(`UPDATE questions SET status = 'open' WHERE id = ?`).run(q.id);
+  const a = await pm.answerQuestion(q.id, 'Yes: add them', C.SELF_BY);
+  assert.equal(a!.status, 'answered');
+  // A day's limit: the next ones go to J, saying why.
+  for (let i = 1; i < C.IDLE_AUTO_ANSWERS; i++) { db.exec(`UPDATE questions SET status = 'resolved'`); ask(); await tick(); }
+  db.exec(`UPDATE questions SET status = 'resolved'`);
+  const over = ask();
+  assert.equal(over.status, 'asked J');
+  // Walk-away off: J's call, and the PM may not answer it.
+  reset();
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'pm.json'), JSON.stringify({ walkAway: false }));
+  try {
+    const off = ask();
+    assert.equal(off.status, 'asked J');
+    await assert.rejects(pm.answerQuestion(off.id, 'Yes: add them', C.SELF_BY), /J's call/);
+  } finally { fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'pm.json'), JSON.stringify({ walkAway: true })); }
+});

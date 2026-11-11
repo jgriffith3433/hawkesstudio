@@ -20,7 +20,7 @@
 // keep back, and the room is that place's quota (STUDIO_JOBS_CPU_QUOTA, else learned), counted over that place's jobs.
 // While the jobs' place refuses them and they run beside the server (startInJobsPlace), the gate counts the server's
 // region and keeps the reserve there again (startPlace / startsApart).
-import { startsApart as jobsApart, startPlace as jobsPlace } from './jobsproject.ts';
+import { startsApart as jobsApart, startPlace as jobsPlace, serverPlace, spillTo, type Place } from './jobsproject.ts';
 
 export const RESERVE_VCPU = () => Number(process.env.STUDIO_CPU_RESERVE ?? (jobsApart() ? 0 : 8));
 export const AGENT_JOB_VCPU = () => Number(process.env.STUDIO_AGENT_JOB_CPU ?? 2);
@@ -28,6 +28,15 @@ const WAIT_MIN_MS = () => Number(process.env.STUDIO_CPU_WAIT_MS ?? 60_000);
 const WAIT_MAX_MS = 10 * 60_000;
 /** A start waits at most this long, then goes anyway (Cloud Run queues it; JOB_START_MS still guards it). */
 export const MAX_HOLD_MS = () => Number(process.env.STUDIO_CPU_MAX_HOLD_MS ?? 2 * 3600_000);
+
+/**
+ * Spill (2026-11-11 stall review: "no single cause may stop all work"): with the jobs in a region of their own, that
+ * region full for this long sends one start to run beside the server instead, when the server's region has room for it
+ * above SPILL_RESERVE vCPU kept for Studio's own server (a roll runs two revisions). The jobs' region being full then
+ * slows work instead of stopping it, and the server is never starved: a full server region holds the start as before.
+ */
+export const SPILL_AFTER_MS = () => Number(process.env.STUDIO_CPU_SPILL_AFTER_MS ?? 10 * 60_000);
+export const SPILL_RESERVE = () => Number(process.env.STUDIO_CPU_SPILL_RESERVE ?? 8);
 
 export type Room = { limit: number; used: number; reserve: number; need: number };
 /** Whether a start needing `need` vCPU leaves the reserve free (pure: tested). */
@@ -39,7 +48,7 @@ export function noteNoRoom(used: number | null) {
   if (used != null && Number.isFinite(used) && used > 0) learned = learned == null ? used : Math.min(learned, used);
 }
 
-export const roomHooks: { limit?: () => Promise<number | null>; used?: () => Promise<number | null>; running?: () => Promise<number | null> } = {};
+export const roomHooks: { limit?: () => Promise<number | null>; used?: () => Promise<number | null>; running?: () => Promise<number | null>; at?: (p: Place) => Promise<{ limit: number; used: number } | null> } = {};
 
 async function limitNow(): Promise<number | null> {
   if (roomHooks.limit) return roomHooks.limit();
@@ -61,6 +70,18 @@ export async function usedNow(): Promise<number | null> {
   if (!project) return null;
   return (await import('./gcp.ts')).regionJobCpu(project, region).then((x) => x.vcpu).catch(() => null);
 }
+
+/** Room in another place (the server's, for a spill): its quota and the vCPU its jobs hold, or null when unseen. */
+async function roomAt(p: Place): Promise<{ limit: number; used: number } | null> {
+  if (roomHooks.at) return roomHooks.at(p);
+  if (!p.project) return null;
+  const [q, used] = await Promise.all([
+    import('./quota.ts').then((Q) => Q.quotaNow('cpu', p.region)).catch(() => null),
+    import('./gcp.ts').then((G) => G.regionJobCpu(p.project, p.region)).then((x) => x.vcpu).catch(() => null),
+  ]);
+  return q?.value && used != null ? { limit: q.value, used } : null;
+}
+const spilledRecent: { at: number; need: number }[] = [];
 
 /** vCPU of job tasks running now in the region (what Cloud Run actually granted), or null. */
 export async function runningNow(): Promise<number | null> {
@@ -87,16 +108,29 @@ const SHOW_MS = 2 * 60_000;
 const recentCpu = (now = Date.now()) => { while (recent.length && recent[0].at < now - SHOW_MS) recent.shift(); return recent.reduce((a, x) => a + x.need, 0); };
 
 let line: Promise<unknown> = Promise.resolve();
-/** A start's turn: resolves when starting `need` vCPU more leaves the reserve free (or the gate can't see). */
-export function cpuTurn(need = AGENT_JOB_VCPU()): Promise<void> {
+/** Starts in line for CPU room now, by who asked (the job's unit), with when they asked. */
+const inLine = new Map<string, number>();
+/**
+ * Whether `who` (a job's unit) is in line for CPU room: its pass is waiting its turn, not hung (agents.ts checkStuck,
+ * 2026-11-11: a start held for room past the agent step's stall time was taken over as "hung" and, twice, failed).
+ */
+export const cpuWaiting = (who: string) => inLine.has(who);
+/**
+ * A start's turn: resolves when starting `need` vCPU more leaves the reserve free (or the gate can't see). The longest
+ * hold counts from when the start asked, not from its turn at the front of the line: starts wait one behind another,
+ * and counted from the front a line of six could wait twelve hours (the sixth only started counting when the fifth went).
+ */
+export function cpuTurn(need = AGENT_JOB_VCPU(), who?: string): Promise<void> {
   if (process.env.STUDIO_CPU_ROOM === 'off') return Promise.resolve();
-  const mine = line.then(() => admit(need));
+  const asked = Date.now();
+  const tag = who ?? `start-${asked}-${Math.random()}`;
+  inLine.set(tag, asked);
+  const mine = line.then(() => admit(need, asked, who)).finally(() => inLine.delete(tag));
   line = mine.catch(() => {});
   return mine;
 }
 
-async function admit(need: number) {
-  const since = Date.now();
+async function admit(need: number, since = Date.now(), who?: string) {
   let wait = WAIT_MIN_MS();
   try {
     for (;;) {
@@ -105,6 +139,19 @@ async function admit(need: number) {
       const used = seen + recentCpu();
       const room = { limit, used, reserve: RESERVE_VCPU(), need };
       if (fits(room) || Date.now() - since >= MAX_HOLD_MS()) { recent.push({ at: Date.now(), need }); return; }
+      if (who && jobsApart() && Date.now() - since >= SPILL_AFTER_MS()) {
+        const server = serverPlace();
+        const there = await roomAt(server).catch(() => null);
+        const now = Date.now();
+        while (spilledRecent.length && spilledRecent[0].at < now - SHOW_MS) spilledRecent.shift();
+        const extra = spilledRecent.reduce((a, x) => a + x.need, 0);
+        if (there && fits({ limit: there.limit, used: there.used + extra, reserve: SPILL_RESERVE(), need })) {
+          spilledRecent.push({ at: now, need });
+          spillTo(who, server);
+          console.warn(`[cpuroom] the jobs' region has had no room for ${Math.round((now - since) / 60_000)} min: ${who} runs in ${server.region} (${there.used + extra} of ${there.limit} vCPU used there, ${SPILL_RESERVE()} kept for Studio)`);
+          return;
+        }
+      }
       if (!held) console.warn(`[cpuroom] holding an agent job: jobs hold ${used} of ${limit} vCPU, ${room.reserve} kept for Studio's server`);
       held = { since, used, limit, reserve: room.reserve };
       await new Promise<void>((resolve) => {
@@ -120,4 +167,4 @@ async function admit(need: number) {
 }
 
 /** Tests. */
-export function resetCpuRoom() { learned = null; held = null; wake = null; line = Promise.resolve(); recent.length = 0; delete roomHooks.limit; delete roomHooks.used; delete roomHooks.running; }
+export function resetCpuRoom() { inLine.clear(); spilledRecent.length = 0; delete roomHooks.at; learned = null; held = null; wake = null; line = Promise.resolve(); recent.length = 0; delete roomHooks.limit; delete roomHooks.used; delete roomHooks.running; }

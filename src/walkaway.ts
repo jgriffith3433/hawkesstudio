@@ -66,6 +66,13 @@ export function walkAwaySettings(): WalkAwaySettings {
   }
 }
 export const walkAwayOn = () => walkAwaySettings().walkAway;
+/**
+ * New roadmap work for idle products is Studio's to add in J's own Studio in walk-away mode (pace.ts idleWatch; J,
+ * 2026-11-11: "There shouldn't be causes that are completely stalling the work", after the roadmap ran out at 8:20 AM
+ * PT and the slots sat idle on a question for him; earlier: "I want you to know what to work on and just do so"). A
+ * customer's Studio keeps it the owner's call.
+ */
+export const idleWorkIsStudios = () => walkAwayOn() && !customerStudio();
 /** Walk-away mode is on and its cards approve themselves (approvals.ts selfApprove). */
 export const walkAwayCardsOn = () => {
   const w = walkAwaySettings();

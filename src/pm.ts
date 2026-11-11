@@ -55,7 +55,7 @@ import { buildErrors, pickCulprit } from './buildblame.ts';
 import { heldRun, creditsWaitReason } from './creditwait.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
-import { walkAwayDefaults, WALK_AWAY_BY, walkAwayOn, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
+import { walkAwayDefaults, WALK_AWAY_BY, walkAwayOn, idleWorkIsStudios, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
 import { customerStudio } from './tenancy.ts';
 import { getFinding, updateFinding, takenBy } from './backlog.ts';
 import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
@@ -64,7 +64,7 @@ import { harnessBlocked, harnessStopOf } from './brains.ts';
 import { holdStatus, onHoldLifted } from './harness-hold.ts';
 import { noProviderFree } from './providers.ts';
 import { addWorktree } from './worktree.ts';
-import { gateQuestion, settleQuestion, logCause } from './causes.ts';
+import { gateQuestion, settleQuestion, logCause, SELF_BY } from './causes.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -1631,7 +1631,8 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
     if (t) await gpuAnswer(t, answer, by, q);
   }
   // New roadmap work for idle products (pace.ts idleWatch): nothing is added without J's yes.
-  if (q.topic === 'idle' && !byJ) throw new StudioError(`New roadmap work for idle products is J's call (answered by ${by}). Leave it in his Inbox.`);
+  // In J's own Studio in walk-away mode the PM's own answer adds them (causes.ts gateQuestion; walkaway.ts idleWorkIsStudios).
+  if (q.topic === 'idle' && !byJ && !(idleWorkIsStudios() && by.startsWith(SELF_BY))) throw new StudioError(`New roadmap work for idle products is J's call (answered by ${by}). Leave it in his Inbox.`);
   setQuestion(id, { status: 'answered', answer, answered_by: by });
   // The answer on the subject's thread, when it has one: the PM files questions on slugs too ("deploy-safety-net"), and a
   // thread comment never fails an answer that is already recorded (the routing below still runs).

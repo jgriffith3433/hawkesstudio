@@ -96,3 +96,26 @@ test('the heavy slot is passed on when its holder keeps it too long', async () =
   delete process.env.STUDIO_HEAVY_SLOTS;
   delete process.env.STUDIO_HEAVY_MAX_MS;
 });
+
+test('an agent pass whose Cloud Run job is in line for CPU room is waiting, not hung (2026-11-11)', async () => {
+  const C = await import('../src/cpuroom.ts');
+  const saved = { ...process.env };
+  delete process.env.STUDIO_CPU_ROOM;
+  process.env.STUDIO_CPU_WAIT_MS = '60000';
+  C.roomHooks.limit = async () => 100;
+  C.roomHooks.used = async () => 100;
+  try {
+    const unit = 'hawkes-agent-c_cpu-x1';
+    seed('c_cpu', { step: 'agent', since: 1, proc: { rec: { unit, mode: 'cloudrun', started: 1 }, offset: 0 } }, { status: 'working', updated: Date.now() - STALL_MS.agent - 60_000 });
+    const land = passInternals.claim('c_cpu', { flight: true });
+    const turn = C.cpuTurn(2, unit);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(C.cpuWaiting(unit), true);
+    assert.ok(!checkStuck().some((d) => d.id === 'c_cpu'), 'in line for room: left alone');
+    C.roomHooks.used = async () => 0; C.cpuFreed();
+    await turn;
+    assert.equal(C.cpuWaiting(unit), false);
+    assert.equal(checkStuck().find((d) => d.id === 'c_cpu')?.was, 'stalled', 'out of the line and still silent: hung after all');
+    land();
+  } finally { C.resetCpuRoom(); process.env = saved; }
+});

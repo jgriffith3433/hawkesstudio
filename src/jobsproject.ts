@@ -110,8 +110,12 @@ let warned = '';
  * can't be made or run there (no access, a network that region hasn't), runs it beside the server as before and says
  * so once.
  */
-export async function startInJobsPlace<T>(job: string, start: (p: Place) => Promise<T>): Promise<T> {
+export async function startInJobsPlace<T>(job: string, start: (p: Place) => Promise<T>, unit?: string): Promise<T> {
   const server = serverPlace();
+  // Spilled by the CPU gate (cpuroom.ts): the jobs' region has had no room for a while and the server's has room above
+  // its reserve, so this one start runs there.
+  const spill = unit ? takeSpill(unit) : null;
+  if (spill) return start(spill);
   if (!jobsApart()) return start(server);
   const to = jobsPlace();
   const there = async () => { const r = await start(to); fellBack = false; return r; };
@@ -131,5 +135,13 @@ export async function startInJobsPlace<T>(job: string, start: (p: Place) => Prom
   }
 }
 
+/**
+ * One start sent elsewhere than the jobs' place (cpuroom.ts admit: no room there for SPILL_AFTER_MS, room beside the
+ * server above its reserve). Kept by unit until that start takes it; the next start goes back to the jobs' place.
+ */
+const spills = new Map<string, Place>();
+export function spillTo(unit: string, p: Place) { spills.set(unit, p); }
+export function takeSpill(unit: string): Place | null { const p = spills.get(unit) ?? null; spills.delete(unit); return p; }
+
 /** Tests. */
-export function resetJobsProject() { warned = ''; fellBack = false; delete jobsHooks.gapi; }
+export function resetJobsProject() { warned = ''; fellBack = false; spills.clear(); delete jobsHooks.gapi; }

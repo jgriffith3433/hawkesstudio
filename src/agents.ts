@@ -34,6 +34,7 @@
 // Runs on the server (STUDIO_SERVER=1, repos cloned by repos.ts, GITHUB_TOKEN from /run/hawkes/github.env).
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
+import { cpuWaiting } from './cpuroom.ts';
 import { buildCheckBrief } from './buildfix.ts';
 import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
 import { unityBuildVerdict } from './unitybuild-policy.ts';
@@ -532,15 +533,17 @@ export function writeHandoff(id: string, harness: Harness, why: string) {
 /**
  * How soon a change parked by a harness hold may start again, whatever the hold says (a probe that answers lifts the
  * hold at once, and c_f7171301e745 resumed every 15 s, $8.40): at least RESUME_GAP after its last park, and at most
- * RESUME_CAP parks an hour; past the cap it waits for J (pump asks once).
+ * RESUME_CAP parks an hour. Past the cap it waits until the hour lets one more in: a wait with an end. Before
+ * 2026-11-11 the cap put the change in "needs answer" and asked J, and neither his "resume it" nor walk-away's "leave
+ * it" ever started it again: a provider limit that lifts by itself left the change stopped for good.
  */
 export const RESUME_GAP = Number(process.env.STUDIO_HARNESS_RESUME_GAP_MS) || 10 * 60_000;
 export const RESUME_CAP = 3;
 const RESUME_WINDOW = 3600_000;
 export function resumeGate(h: { at: number; parks?: number[]; capped?: boolean } | undefined, now = Date.now()): { go: true } | { go: false; waitMs: number; capped: boolean } {
   if (!h) return { go: true };
-  const parks = (h.parks ?? [h.at]).filter((t) => now - t < RESUME_WINDOW);
-  if (h.capped || parks.length >= RESUME_CAP) return { go: false, waitMs: 0, capped: true };
+  const parks = (h.parks ?? [h.at]).filter((t) => now - t < RESUME_WINDOW).sort((a, b) => a - b);
+  if (parks.length >= RESUME_CAP) return { go: false, waitMs: Math.max(1000, parks[parks.length - RESUME_CAP] + RESUME_WINDOW - now), capped: true };
   const waitMs = h.at + RESUME_GAP - now;
   return waitMs > 0 ? { go: false, waitMs, capped: false } : { go: true };
 }
@@ -720,7 +723,7 @@ export type Phase = {
 export const WAITING_GEN = 'waiting on Gen';
 export type GenJobWait = { id: string; note: string; status?: string; assets?: string[]; error?: string };
 export type GenWait = { jobs: GenJobWait[]; since: number; checked?: number; told?: boolean };
-const GEN_TERMINAL = new Set(['done', 'failed', 'cancelled', 'missing']);
+const GEN_TERMINAL = new Set(['done', 'failed', 'cancelled', 'missing', 'timed out']);
 export const genJobDone = (j: Pick<GenJobWait, 'status'>) => GEN_TERMINAL.has(String(j.status));
 /** .hawkes/waiting-jobs.txt: one Gen job id per line, then (after a space, ":" or a dash) what to do with its output. */
 export function parseWaitingJobs(text: string): GenJobWait[] {
@@ -746,6 +749,13 @@ write .hawkes/summary.md (and try.md, learned.md as the brief says). A failed or
 budget or say what's missing. If you queue more Gen jobs, park again the same way (.hawkes/waiting-jobs.txt, then end).`;
 }
 /** How long parked jobs may wait before Talk hears of it, once (agents.genWaitHours, default 6). */
+/**
+ * The end of a wait on Gen: twice the time Talk is told (12 h by default). Past it the jobs still unfinished are
+ * "timed out" and the agent goes on without them (stand-ins, or says what's missing), as it does for a failed job. Before
+ * 2026-11-11 a wait on Gen had no end: a job Gen lost track of, or a GPU queue that never drained, held the change (and,
+ * through it, its task and a Unity milestone's build) for ever.
+ */
+export const genWaitEndMs = () => Number(process.env.STUDIO_GEN_WAIT_END_MS) > 0 ? Number(process.env.STUDIO_GEN_WAIT_END_MS) : Math.max(2 * genWaitMs(), 2 * 3600_000);
 const genWaitMs = (s = agentSettings()) => Number(process.env.STUDIO_GEN_WAIT_MS) > 0 ? Number(process.env.STUDIO_GEN_WAIT_MS) : (s.genWaitHours > 0 ? s.genWaitHours : 6) * 3600_000;
 /**
  * How often parked jobs are asked for (one GET per unfinished job). STUDIO_GEN_POLL_MS: tests. Gen's events (genevents.ts)
@@ -1983,7 +1993,15 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
     // new job, not counted as a try.
     addLog(id, `agent: its job went with no result (${lastStudioLine(first.stderr) ?? 'it never answered'}); starting the pass again`);
     save({ proc: undefined });
-    return { ...(await runAgent(getChange(id)!, brief, s, env, resume, fresh())), harness };
+    const second = await runAgent(getChange(id)!, brief, s, env, resume, fresh());
+    if (!second.lost) return { ...second, harness };
+    // Lost again: Studio's side (Cloud Run, the region), never the agent's. Before 2026-11-11 this result went on as a
+    // pass that "made no commit" and was counted as a try. A full region waits for room (noRoom); anything else is a
+    // machinery failure (machineryFailure reads the line), retried by itself and not a try.
+    save({ proc: undefined });
+    const fullAgain = noRoomOf(second.stderr);
+    if (fullAgain) return { ...second, harness, noRoom: fullAgain };
+    return { ...second, harness, stderr: `${second.stderr ?? ''}\n[studio] the agent's Cloud Run job is gone twice with no result (${lastStudioLine(second.stderr) ?? 'it never answered'})` };
     });
   } finally {
     release();
@@ -2291,16 +2309,13 @@ function resumeAllowed(c: Change, free: () => Harness | null = freeHarness) {
   }
   const g = resumeGate(h);
   if (g.go) return true;
-  if (!g.capped) {
-    // One timer for the earliest wake, not one per parked change per pass (2026-11-10: ~200 parked changes each set a
-    // timer on every pass; they all came due together and ran thousands of pumps back to back, blocking the event
-    // loop for 224 s, so Cloud Run refused claude.ai's token refreshes and Studio's connector was signed out).
-    pumpAt(Date.now() + g.waitMs + 1000);
-  } else if (h && !h.capped) {
-    update(c.id, { phase: { ...phaseOf(c.id)!, harness: { ...h, capped: true } }, status: 'needs answer', detail: `the AI harness stopped it ${RESUME_CAP} times in an hour: it waits for you` });
-    addLog(c.id, `harness stops ${RESUME_CAP} times in an hour: no more resumes by itself, asked J`);
-    void import('./pm.ts').then(({ askJ }) => askJ(`"${c.title ?? c.id}" was stopped by the AI harness ${RESUME_CAP} times in an hour (${h.line.slice(0, 200)}). Is Claude's usage or billing really out? Resume it, or leave it?`,
-      { subject: c.id, product: c.product, options: ['resume it', 'leave it'], recommend: 'leave it', from: 'harness-resume cap' })).catch(() => {});
+  // One timer for the earliest wake, not one per parked change per pass (2026-11-10: ~200 parked changes each set a
+  // timer on every pass; they all came due together and ran thousands of pumps back to back, blocking the event loop
+  // for 224 s, so Cloud Run refused claude.ai's token refreshes and Studio's connector was signed out).
+  pumpAt(Date.now() + g.waitMs + 1000);
+  if (g.capped && h && !h.capped) {
+    update(c.id, { phase: { ...phaseOf(c.id)!, harness: { ...h, capped: true } }, detail: `the AI harness stopped it ${RESUME_CAP} times in an hour: it tries again in ${Math.ceil(g.waitMs / 60_000)} min` });
+    addLog(c.id, `harness stops ${RESUME_CAP} times in an hour: waits ${Math.ceil(g.waitMs / 60_000)} min, then goes on by itself`);
   }
   return false;
 }
@@ -2427,6 +2442,9 @@ function freeHarness(): Harness | null {
  * bursts; each pass reads every queued change, so passes must never pile up (2026-11-10: a 224 s event-loop block).
  */
 let pumping: Promise<void> | null = null;
+const PUMP_RETRY_MS = () => Number(process.env.STUDIO_PUMP_RETRY_MS) > 0 ? Number(process.env.STUDIO_PUMP_RETRY_MS) : 60_000;
+/** Tests: a pass in place of the real one. */
+export const pumpHooks: { pass?: () => Promise<void> } = {};
 let pumpAgain = false;
 export let pumpPasses = 0;
 function pump(): Promise<void> {
@@ -2436,7 +2454,12 @@ function pump(): Promise<void> {
       do {
         pumpAgain = false;
         pumpPasses++;
-        await pumpPass().catch((e) => console.warn(`[studio] queue pass failed: ${e?.message ?? e}`));
+        await (pumpHooks.pass ?? pumpPass)().catch((e) => {
+          // A pass that throws partway has asked for none of its later wakes (resume gaps, retries, Gen deadlines):
+          // it is tried again in a minute, so a queue never waits on an unrelated caller to pump it (2026-11-11 review).
+          console.warn(`[studio] queue pass failed: ${e?.message ?? e}; trying again in a minute`);
+          pumpAt(Date.now() + PUMP_RETRY_MS());
+        });
         // Let requests (health, OAuth, MCP) in between passes.
         if (pumpAgain) await new Promise((r) => setImmediate(r));
       } while (pumpAgain);
@@ -5225,6 +5248,8 @@ export function checkStuck(now = Date.now()): StuckAction[] {
     if (here ? idle < stallMs(ph.step) : idle < ORPHAN_MS()) continue;
     // Waiting its turn to start, or for memory beside running work: that ends when the work beside it ends (or is taken over here).
     if (here && (remaking.has(r.id) || waitingStart.has(r.id))) continue;
+    // Its Cloud Run job is in line for CPU room (cpuroom.ts): the line ends it, at most MAX_HOLD_MS after it asked.
+    if (here && ph.step === 'agent' && ph.proc?.rec?.unit && cpuWaiting(ph.proc.rec.unit)) continue;
     const elsewhere = workingElsewhere(r.id, ph, now);
     if (elsewhere) continue;
     const was: StuckAction['was'] = here ? 'stalled' : 'orphan';
@@ -5309,8 +5334,17 @@ export function restartCount(prev: Phase['restarts'], ph: Pick<Phase, 'step' | '
   return { n: prev!.n + 1, why: `no progress: ${prev!.n + 1} of ${RESTART_LOOP}` };
 }
 
+/** An agent's own question on a change still waiting for its answer (not a decision Studio asked about it). */
+function agentAsks(change: string): boolean {
+  try { return Boolean(db.prepare(`SELECT 1 FROM questions WHERE kind = 'agent' AND subject = ? AND status IN ('open', 'asked J')`).get(change)); } catch { return false; }
+}
 export function resumeChanges() {
   const out: string[] = [];
+  // Stopped at the harness cap by the old rule ("needs answer", J asked): the cap is a wait with an end now (resumeGate).
+  for (const c of listChanges({ status: 'needs answer', limit: 200 })) {
+    const h = phaseOf(c.id)?.harness;
+    if (h?.capped && !agentAsks(c.id)) { update(c.id, { status: 'queued', detail: 'parked by the AI harness: goes on by itself once its hour allows' }); addLog(c.id, 'the harness cap waits by itself now: back in the queue'); }
+  }
   for (const c of listChanges({ status: 'working,verifying,revising', limit: 200 })) {
     const ph = phaseOf(c.id);
     if (!ph?.step || ph.failed) {
@@ -5392,7 +5426,8 @@ export async function pollGenWaits(look: GenLook = {}) {
       if (!ph || !w) continue;
       const ended = look.jobs ? w.jobs.filter((j) => !genJobDone(j) && look.jobs!.has(j.id)) : [];
       const tellDue = !w.told && Date.now() - w.since > genWaitMs();
-      const due = Boolean(look.force) || genPollDue(w) || tellDue;
+      const over = Date.now() - w.since > genWaitEndMs();
+      const due = Boolean(look.force) || genPollDue(w) || tellDue || over;
       if (!ended.length && !due) continue;
       for (const j of w.jobs) {
         if (genJobDone(j)) continue;
@@ -5412,6 +5447,11 @@ export async function pollGenWaits(look: GenLook = {}) {
       if (due) w.checked = Date.now();
       // Closed (or otherwise moved on) while we asked Gen: leave it.
       if (getChange(c.id)?.status !== WAITING_GEN) continue;
+      if (over) {
+        const late = w.jobs.filter((j) => !genJobDone(j));
+        for (const j of late) Object.assign(j, { status: 'timed out', error: `still not finished after ${Math.round(genWaitEndMs() / 3600_000)} h: go on without it` });
+        if (late.length) addLog(c.id, `waited ${Math.round(genWaitEndMs() / 3600_000)} h on Gen: ${late.map((j) => j.id).join(', ')} timed out; the agent goes on without them`);
+      }
       if (w.jobs.every(genJobDone)) {
         const prompt = genDonePrompt(w);
         update(c.id, {

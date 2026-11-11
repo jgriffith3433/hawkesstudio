@@ -95,3 +95,45 @@ test('regionJobCpu counts every open execution in the region, queued ones too', 
     assert.deepEqual(r, { vcpu: 10, running: 2, open: 2 });
   } finally { setGcpFetch(null); }
 });
+
+test('the longest hold counts from when a start asked, so a line of starts never waits longer than one hold', async () => {
+  C.roomHooks.limit = async () => 100;
+  C.roomHooks.used = async () => 100;
+  process.env.STUDIO_CPU_MAX_HOLD_MS = '120';
+  process.env.STUDIO_CPU_WAIT_MS = '20';
+  const t0 = Date.now();
+  const ends: number[] = [];
+  await Promise.all([1, 2, 3, 4].map((i) => C.cpuTurn(2, `u${i}`).then(() => { ends.push(Date.now() - t0); })));
+  // Counted from the front of the line, the fourth would go after about 4 holds (480 ms).
+  assert.ok(Math.max(...ends) < 330, JSON.stringify(ends));
+  assert.equal(C.cpuWaiting('u4'), false);
+});
+
+test("the jobs' region full for a while: one start spills beside the server when that region has room above its reserve", async () => {
+  const J = await import('../src/jobsproject.ts');
+  J.resetJobsProject();
+  process.env.STUDIO_GCP_PROJECT = 'p'; process.env.STUDIO_GCP_REGION = 'us-east4'; delete process.env.STUDIO_JOBS_REGION; delete process.env.STUDIO_CELLS_JOBS_REGION;
+  delete process.env.STUDIO_CPU_RESERVE;
+  process.env.STUDIO_CPU_SPILL_AFTER_MS = '40'; process.env.STUDIO_CPU_WAIT_MS = '20';
+  C.roomHooks.limit = async () => 20;
+  C.roomHooks.used = async () => 20; // us-west1 full
+  let server = { limit: 20, used: 12 }; // 12 + 2 > 20 - 8: no room above the reserve
+  C.roomHooks.at = async () => server;
+  let went = false;
+  const turn = C.cpuTurn(2, 'hawkes-agent-c1-x').then(() => { went = true; });
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(went, false, "the server's region has no room above its reserve: the start keeps waiting");
+  server = { limit: 20, used: 4 };
+  C.cpuFreed();
+  await turn;
+  assert.deepEqual(J.takeSpill('hawkes-agent-c1-x'), { project: 'p', region: 'us-east4' });
+  assert.equal(J.takeSpill('hawkes-agent-c1-x'), null, 'one start only');
+  // The spilled start runs beside the server, the next goes to the jobs' region again.
+  J.spillTo('u2', { project: 'p', region: 'us-east4' });
+  const seen: string[] = [];
+  await J.startInJobsPlace('studio-agent', async (p) => { seen.push(p.region); }, 'u2');
+  J.jobsHooks.gapi = async () => ({});
+  await J.startInJobsPlace('studio-agent', async (p) => { seen.push(p.region); }, 'u3');
+  assert.deepEqual(seen, ['us-east4', 'us-west1']);
+  J.resetJobsProject();
+});

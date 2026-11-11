@@ -286,7 +286,7 @@ export function cloudRunner(): JobRunner {
     start: async (unit) => (await import('./jobsproject.ts')).startInJobsPlace(job, async (p) => (await g()).runJob({ project: p.project, region: p.region, job }, {
       env: { STUDIO_JOB_UNIT: unit, ...(P ? { STUDIO_STATE_PREFIX: P } : {}), ...brokerEnv(unit) },
       timeoutSeconds: Number(process.env.STUDIO_AGENT_JOB_TIMEOUT) || 4 * 3600,
-    })),
+    }), unit),
     state: async (execution) => (await g()).getExecution(execution),
     cancel: async (execution) => (await g()).cancelExecution(execution),
     lastWrite: async (prefix) => {
@@ -399,7 +399,7 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
       }));
       // Spaced, and after a busy Gen's calm window (genpace.ts): agent jobs share the region's Cloud Run CPU quota with Gen.
       // Room in the region's CPU quota for this job that still leaves Studio's own server its share (cpuroom.ts).
-      await (await import('./cpuroom.ts')).cpuTurn();
+      await (await import('./cpuroom.ts')).cpuTurn(undefined, unit);
       await (await import('./genpace.ts')).jobStartTurn();
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
