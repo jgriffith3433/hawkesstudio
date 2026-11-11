@@ -120,4 +120,14 @@ test('Studio\'s own go live never plays beta; a person\'s: ONE play per commit, 
   // Beta moved: the newest commit gets its one play.
   assert.equal((await P.playBeforeGoLive('moon', 'def5678', 'test', start, 'person')).started, 'r_bgl1');
   assert.equal(starts.length, 2);
+  // Its run ended having played an older commit (a deployed beta that hadn't caught up): that isn't this commit's
+  // play, so going live isn't held by it for good. One that did play it is.
+  db.prepare(`UPDATE runs SET status = 'done' WHERE id = 'r_bgl1'`).run();
+  const step = (run: string, sha: string) => db.prepare(`INSERT INTO steps (id, run, product, kind, name, status, data, started) VALUES (?, ?, 'moon', 'playtest', 'smoke@local', 'done', ?, ?)`).run(`s_${run}_${sha}`, run, JSON.stringify({ played: { branch: 'beta', sha } }), Date.now());
+  step('r_bgl1', 'abc1234ffff');
+  assert.equal((await P.playBeforeGoLive('moon', 'def5678', 'test', start, 'person')).started, 'r_bgl2', 'played another commit: def5678 gets its play');
+  db.prepare(`UPDATE runs SET status = 'done' WHERE id = 'r_bgl2'`).run();
+  step('r_bgl2', 'def5678ffff');
+  assert.deepEqual(await P.playBeforeGoLive('moon', 'def5678', 'test', start, 'person'), { played: 'r_bgl2' });
+  assert.equal(starts.length, 3);
 });
