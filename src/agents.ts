@@ -110,6 +110,7 @@ import { memLow, memRoom, memFreed, memSummary } from './memgate.ts';
 import { queueHold, parkedOut } from './queue-heal.ts';
 import { refreshFromTask } from './queue-follow.ts';
 import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './inflight.ts';
+import { noteRail } from './change-rail.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -328,6 +329,8 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   if (cur && CHANGE_COLS.every((k) => (next[k] ?? null) === (cur[k] ?? null))) return;
   db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, auto_merge=?, updated=? WHERE id=?`)
     .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.auto_merge ?? null, next.updated, id);
+  // The change's progress rail (change-rail.ts): when each step was reached, and a `change-step` event on the dashboard's stream.
+  if (cur) noteRail(next);
   // A bug is consumed when an agent takes it (startFix marks it fixed). If that attempt fails, for whatever reason, the
   // bug goes back to open so the PM picks it up again (at most maxTries attempts, then J is asked): consumed means it
   // will get done, not that it's dropped when an attempt crashes.

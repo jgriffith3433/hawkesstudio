@@ -31,6 +31,7 @@ import { selfDeploys, selfBusy } from './selfdeploy.ts';
 import { originOf, tagChange, startFollowups } from './followup.ts';
 import { noteServed } from './served.ts';
 import { activity, stageOf } from './activity.ts';
+import { railOf, railById, startRailWatch } from './change-rail.ts';
 import { listReports as listBugReports, reportShot, startReportFollowups } from './bugreport.ts';
 import { shareAgyLogin } from './antigravity-login.ts';
 import { cloudMode, gate, schedulerCall } from './cloudauth.ts';
@@ -887,7 +888,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Agent changes (findings -> pull requests).
-    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product'), ...(q('limit') ? { limit: Math.min(500, Math.max(1, Number(q('limit')) || 100)) } : {}), offset: Number(q('offset')) || 0 }).map((c) => ({ ...c, stage: stageOf(c, c.verify), brains: brainHistory(c.id, 12) })), today: costToday(), settings: agentSettings() });
+    { const m = /^\/api\/changes\/(c_[0-9a-f]+)\/rail$/.exec(route); if (m && method === 'GET') { const rail = railById(m[1]); return rail ? send(res, 200, { id: m[1], rail }) : send(res, 404, { error: 'no such change' }); } }
+    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product'), ...(q('limit') ? { limit: Math.min(500, Math.max(1, Number(q('limit')) || 100)) } : {}), offset: Number(q('offset')) || 0 }).map((c) => ({ ...c, stage: stageOf(c, c.verify), brains: brainHistory(c.id, 12), rail: railOf(c) })), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       // An agent on Studio or Gen themselves (infra agents) is the platform admin's (lockdown.ts).
@@ -1302,6 +1304,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 // What the push stream's watcher looks at while a page is connected (stream.ts): the activity panel and the Inbox.
+startRailWatch();
 void import('./stream.ts').then(({ setProbes }) => setProbes({
   activity: () => cached('activity', 1500, activity),
   inbox: async () => {

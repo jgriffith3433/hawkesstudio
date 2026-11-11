@@ -863,13 +863,25 @@ show(tab, tab === 'live' ? /^#live\/(j_[0-9a-f]+)/.exec(location.hash)?.[1] : un
 studioStream.on(['changes', 'runs', 'builds'], () => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); });
 
 // ----------------------------------------------------------- changes
+// A change moved (agents.ts update(), a beta run's step): the stream says which ids, and only their rails are fetched and
+// redrawn in place (no timer). No ids (a reconnect): every rail on the page.
+studioStream.on('change-step', async (e) => {
+  if (tab !== 'changes') return;
+  const els = [...document.querySelectorAll('#chList ol.rail[data-rail]')].filter((el) => !e?.ids || e.ids.includes(el.dataset.rail));
+  await Promise.all(els.map(async (el) => {
+    try {
+      const r = await api(`/api/changes/${encodeURIComponent(el.dataset.rail)}/rail`);
+      studioPatch(el, ChangeRail.items(r.rail));
+    } catch { /* the next event or a reload shows it */ }
+  }));
+});
 const CH_WORDS = { queued: 'Waiting its turn', working: 'The agent is working on it', verifying: 'Checking its work', revising: 'Making the changes asked for', ready: 'Ready', merged: 'Merged', failed: "Didn't work", closed: 'Closed', cancelled: 'Cancelled (not a failure): its branch is kept' };
 const CH_ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising: '🛠️', ready: '👀', merged: '✅', failed: '❌', closed: '🗑️', cancelled: '🚫' };
 async function loadChanges() {
   const qs = new URLSearchParams($('#chStatus').value ? { status: $('#chStatus').value } : {});
   const r = await api(`/api/changes?${qs}`);
   // It refreshes every few seconds: it redraws only when something changed, and what J opened (a summary, a log) stays open.
-  const sig = JSON.stringify(r.changes.map((c) => [c.id, c.status, c.detail, c.updated])) + r.today.count;
+  const sig = JSON.stringify(r.changes.map((c) => [c.id, c.status, c.detail, c.updated, (c.rail ?? []).map((x) => x.state + x.detail)])) + r.today.count;
   if (sig === loadChanges.sig && $('#chList').children.length) return;
   loadChanges.sig = sig;
   const open = new Set([...$('#chList').querySelectorAll('details[open]')].map((d) => d.dataset.key));
@@ -887,7 +899,7 @@ async function loadChanges() {
     return `<div class="finding" data-cid="${c.id}" data-key="ch:${esc(c.id)}"><div>
       <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span>${brainPill}</h4>
       <div class="status-line">${esc(CH_WORDS[c.status] ?? c.status)}${c.product ? ` · ${esc(c.product)}` : ''}${c.detail ? `: ${esc(c.detail)}` : ''}</div>
-      ${ChangeStages.barHtml(c.status, c.stage ?? {})}
+      ${ChangeRail.html(c.id, c.rail)}
       ${v && c.infra ? `<div class="summary"><b>Checks:</b> <span class="pill ${esc(v.verdict ?? '')}">${esc(v.outcome ?? '')}</span> ${esc(v.summary ?? '')}</div>` : played ? `<div class="summary"><b>Playtest:</b> ${esc(v.outcome ?? '')} · review <span class="pill ${esc(v.verdict ?? '')}">${esc(v.verdict ?? 'n/a')}</span> ${esc(v.summary ?? '')}</div>` : ''}
       <details class="more-details" data-key="${c.id}:details"><summary class="meta">Details</summary>
         <div class="meta">${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}${c.harness_label ? ` · ${esc([c.role, c.harness_label, c.model].filter(Boolean).join(' · '))}` : ''}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
