@@ -823,7 +823,14 @@ const server = http.createServer(async (req, res) => {
         const taskBar = Object.fromEntries([...new Set(items.map((i: any) => i.product as string))].map((id) => [id, { ...bar.taskBarCounts(id), parkedTasks: bar.parkedTasks(items.filter((i: any) => i.product === id).flatMap((i: any) => i.tasks ?? [])) }]));
         return send(res, 200, { milestones: rm.listMilestones({ product: q('product'), status: q('milestones') }), items, taskBar, products: rm.roadmapProducts(), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES, milestones: rm.MILESTONE_STATUSES } });
       }
-      if (route === '/api/roadmap/milestones' && method === 'POST') { const ms = rm.addMilestone({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, ms); }
+      if (route === '/api/roadmap/milestones' && method === 'POST') {
+        // A milestone is a batch of work that plays once (milestone-batch.ts): a product with an open milestone that has
+        // room gets its items there, not a milestone of one item more.
+        const { milestoneWithRoom, MILESTONE_MAX_ITEMS } = await import('./milestone-batch.ts');
+        const room = b.product ? milestoneWithRoom(rm.productId(b.product)) : null;
+        if (room) return send(res, 409, { error: `${b.product} already has an open milestone with room: add these items to ${room.id} ("${room.title}", ${room.total} of ${MILESTONE_MAX_ITEMS} items) with update_item { milestone: "${room.id}" }. A milestone is a batch of work that is played once, not one item`, milestone: room.id });
+        const ms = rm.addMilestone({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, ms);
+      }
       m = /^\/api\/roadmap\/milestones\/(n_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getMilestone(m[1]) ? { ...rm.getMilestone(m[1]), ...rm.milestoneProgress(m[1]) } : { error: 'no such milestone' });
       if (m && method === 'PATCH') { const ms = rm.updateMilestone(m[1], b); pm.kick(); return send(res, 200, ms); }

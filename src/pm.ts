@@ -28,6 +28,7 @@ import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY 
 import { isVideoTask } from './videos.ts';
 import { unityBuildOf, buildProof, builtBy, includesMerge, missingScenarioSkips } from './betabuild.ts';
 import { heldBuildRun, milestoneBuildDue, unityBuildGate } from './unitybuild-policy.ts';
+import * as MB from './milestone-batch.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
@@ -249,13 +250,43 @@ export async function syncTasks() {
   for (const it of db.prepare(`SELECT id FROM items WHERE status = 'on beta' AND (note IS NULL OR note NOT LIKE '%[told ready]%')`).all() as any[]) announceReady(it.id);
   // Milestones whose tasks are all merged and built: one beta playtest judges their criteria, then J's moment to
   // playtest by hand (his phone, and Talk).
-  for (const m of milestonesToReach()) {
-    try {
-      await milestoneCheck(m.id);
-    } catch (e: any) {
-      console.warn(`[pm] milestone ${m.id}: ${e.message ?? e}`);
+  await reachMilestones();
+}
+
+/**
+ * Complete milestones: those already checking are followed one by one; those not yet checked are batched by product
+ * (milestone-batch.ts), so a product plays once for all of them, and only once enough of its work is in.
+ */
+export async function reachMilestones() {
+  const ready = milestonesToReach();
+  const fresh: { id: string; product: string | null; items: number; since: number }[] = [];
+  for (const m of ready) {
+    if ((parse(m.checks ?? null) ?? []).length) {
+      try { await milestoneCheck(m.id); } catch (e: any) { console.warn(`[pm] milestone ${m.id}: ${e.message ?? e}`); }
+      continue;
     }
+    if (!recheckDue(m.id, checkProducts(m.id).products)) continue;
+    fresh.push({ id: m.id, product: m.product, items: (m as any).total ?? 0, since: MB.waitingSince(m.id) });
   }
+  if (!fresh.length) return;
+  const v = MB.batchVerdict(fresh, (product) => MB.milestonesComing(product, new Set(ready.map((m) => m.id))));
+  for (const w of v.wait) {
+    const m = getMilestone(w.id);
+    const line = `milestone "${m?.title}": every task is in; it ${w.why}`;
+    const last = listDecisions({ since: 0, action: 'milestone-batch', limit: 10_000 }).find((d) => d.subject === w.id);
+    if (!last || !String(last.detail).startsWith(line.slice(0, line.indexOf(' item')))) logDecision('milestone-batch', w.id, m?.product ?? null, line);
+  }
+  for (const group of v.go) {
+    try { await milestoneCheck(group[0], group); } catch (e: any) { console.warn(`[pm] milestones ${group.join(', ')}: ${e.message ?? e}`); }
+  }
+}
+
+/** What a milestone's check plays: its merged tasks with criteria, its Unity projects (built once for it), every product it changed. */
+function checkProducts(id: string) {
+  const tasks = milestoneTasks(id).filter((t) => t.status === 'merged' && hasBeta(t.product) && t.criteria.length);
+  const unity = [...new Set(milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product) && unityGated(t.product)).map((t) => t.product))];
+  const changed = milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product)).map((t) => t.product);
+  return { tasks, unity, products: [...new Set([...tasks.map((t) => t.product), ...unity, ...changed])] };
 }
 
 /** Studio and Gen have no beta lane: their changes merge into main, which deploys them. */
@@ -792,21 +823,25 @@ async function buildSendBack(t: Task, { errors = [], matched = [] }: { errors?: 
  * a verdict and a video per criterion before his phone hears it's reached. Started once (milestones.checks); reached
  * when those runs are over (a superseded run follows the newer one). Nothing to play (Studio/Gen, no criteria): reached.
  */
-export async function milestoneCheck(id: string) {
+export async function milestoneCheck(id: string, group: string[] = [id]) {
   const m = getMilestone(id);
   if (!m || m.status !== 'open') return;
   let runs: string[] = parse(m.checks ?? null) ?? [];
   const tasks = milestoneTasks(id).filter((t) => t.status === 'merged' && hasBeta(t.product) && t.criteria.length);
-  // A Unity project Studio builds: its merges weren't built one by one (unitybuild-policy.ts, J 2026-11-11), so this
-  // check is what builds beta's head, ONE build, once nothing else is queued for it, even with no criteria to play.
-  const unity = [...new Set(milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product) && unityGated(t.product)).map((t) => t.product))];
   if (!runs.length) {
     // Checked again after a miss: once beta built again (the misses' fixes, or the next merge).
-    if (!recheckDue(id, [...new Set([...tasks.map((t) => t.product), ...unity])])) return;
-    // Every product the milestone changed gets its one play, on its milestone build (play-policy.ts): nothing else plays it.
-    const changed = milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product)).map((t) => t.product);
-    const products = [...new Set([...tasks.map((t) => t.product), ...unity, ...changed])];
-    if (!products.length || !pmSettings().enabled) return announceMilestone(id);
+    // A group (milestone-batch.ts): complete milestones of one product checked together, one play per product for all.
+    const members = group.filter((g) => { const x = getMilestone(g); return x?.status === 'open' && !(parse(x.checks ?? null) ?? []).length && recheckDue(g, checkProducts(g).products); });
+    if (!members.includes(id)) return;
+    const parts = members.map((g) => ({ id: g, m: getMilestone(g)!, ...checkProducts(g) }));
+    // A Unity project Studio builds: its merges weren't built one by one (unitybuild-policy.ts, J 2026-11-11), so this
+    // check is what builds beta's head, ONE build, once nothing else is queued for it, even with no criteria to play.
+    const unity = [...new Set(parts.flatMap((x) => x.unity))];
+    const allTasks = parts.flatMap((x) => x.tasks);
+    // Every product the milestones changed gets its one play, on its milestone build (play-policy.ts): nothing else plays it.
+    const products = [...new Set(parts.flatMap((x) => x.products))];
+    const titles = parts.map((x) => `"${x.m.title}"`).join(', ');
+    if (!products.length || !pmSettings().enabled) { for (const x of parts) announceMilestone(x.id); return; }
     // Work still queued for a Unity project: its one build waits. The PM's pass after that work ends (a merge, a change
     // that ends: agents.ts kicks the loop) asks again; said once per reason in the decision log.
     for (const product of unity) {
@@ -818,12 +853,17 @@ export async function milestoneCheck(id: string) {
     }
     const { startBeta } = await import('./pipeline.ts');
     for (const product of products) {
-      const plays = await playsFor(tasks.filter((x) => x.product === product));
-      const r = startBeta(product, { focus: focusWithGoals(`Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Play its build once for the milestone.'}`, tasks.filter((x) => x.product === product)), plays, playtest: true, play: 'milestone', quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
+      const mine = allTasks.filter((x) => x.product === product);
+      const plays = await playsFor(mine);
+      const what = parts.length > 1 ? `Milestones ${titles}` : `Milestone "${m.title}"`;
+      const r = startBeta(product, { focus: focusWithGoals(`${what}: every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Play its build once for the milestone.'}`, mine), plays, playtest: true, play: 'milestone', quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
       runs.push(r.id);
     }
-    setMilestoneChecks(id, runs);
-    logDecision('milestone-check', id, m.product, `milestone "${m.title}": every task merged${unity.length ? ` (${unity.map(name).join(', ')}: complete in code, nothing else queued, so beta's head is built once now)` : ' and built'}; started ${runs.join(', ')} to playtest its tasks on beta and judge their criteria`);
+    for (const x of parts) {
+      setMilestoneChecks(x.id, runs);
+      const along = parts.length > 1 ? `, checked together with ${parts.filter((y) => y.id !== x.id).map((y) => `"${y.m.title}"`).join(', ')} (one play per product)` : '';
+      logDecision('milestone-check', x.id, x.m.product, `milestone "${x.m.title}": every task merged${unity.length ? ` (${unity.map(name).join(', ')}: complete in code, nothing else queued, so beta's head is built once now)` : ' and built'}${along}; started ${runs.join(', ')} to playtest its tasks on beta and judge their criteria`);
+    }
     return;
   }
   // A run a newer beta run took over: the newer one plays it (betaqueue.ts absorbed).
