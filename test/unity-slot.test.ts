@@ -164,7 +164,10 @@ test('the slot is per product: another product builds at once', async () => {
 });
 
 test('a wait that times out cancels its Gen job, and the next request gets the slot', async () => {
-  const a: any = await run('p', build('slow'), { timeoutMs: 30 });
+  const pa = run('p', build('slow'), { timeoutMs: 30 });
+  await until(() => g.submits.length === 1);
+  g.jobs.get('j_1').status = 'running'; // the limit counts from Gen's start (genWait fromStart), not the submit
+  const a: any = await pa;
   assert.equal(a.timedOut, true);
   assert.deepEqual(g.cancels, ['j_1'], 'the timed-out job is cancelled, never left behind');
   assert.equal(g.jobs.get('j_1').status, 'cancelled');
@@ -173,6 +176,21 @@ test('a wait that times out cancels its Gen job, and the next request gets the s
   g.settle('j_2');
   assert.equal((await b).status, 'done');
   assert.equal(g.maxOutstanding, 1);
+});
+
+test('a job still queued in Gen is never timed out; the limit starts when Gen starts it', async () => {
+  const p = run('p', build('queued'), { timeoutMs: 30 });
+  await until(() => g.submits.length === 1);
+  await sleep(120); // four times the limit, queued
+  assert.deepEqual(g.cancels, [], 'still waiting in the queue: not cancelled');
+  g.jobs.get('j_1').status = 'running';
+  await sleep(10);
+  g.settle('j_1');
+  const r: any = await p;
+  assert.equal(r.status, 'done');
+  assert.ok(r.queuedMs >= 100, `queue time told apart: ${r.queuedMs}`);
+  assert.ok(r.ranMs >= 0 && r.ranMs < 30);
+  assert.deepEqual(g.cancels, []);
 });
 
 test('a halt cancels the Gen job; a halt while waiting for the slot leaves at once on the nudge, with nothing submitted', async () => {
@@ -316,4 +334,27 @@ test('property: 200 random requests and settles across 3 products never leave tw
   assert.equal(g.badSubmits, 0, 'no submit while its product had a job outstanding');
   assert.ok(g.submits.length > 10, `it built things (${g.submits.length} submits)`);
   assert.equal(violations, 0, 'outstanding unity.build jobs per product <= 1 at every step');
+});
+
+test('two requests with no commit in their params but the same identity (a beta run\'s build) share one Gen build', async () => {
+  const { unitySlot, resetUnitySlots } = await import('../src/unityslot.ts');
+  resetUnitySlots();
+  let submits = 0;
+  const deps: any = {
+    submit: async () => { submits++; return { id: `j_same${submits}` }; },
+    wait: async (id: string) => { await new Promise((r) => setTimeout(r, 30)); return { id, status: 'done', result: { ok: true } }; },
+    job: async (id: string) => ({ id, status: 'done' }),
+    outstanding: async () => [],
+    cancel: async () => ({}),
+  };
+  const params = { project: 'Game', site: 'Site', method: 'Deploy' };
+  const [a, b, c] = await Promise.all([
+    unitySlot({ product: 'beta-twice', params, identity: 'beta|beta-twice|abc|site|Game' }, deps),
+    unitySlot({ product: 'beta-twice', params, identity: 'beta|beta-twice|abc|site|Game' }, deps),
+    unitySlot({ product: 'beta-twice', params, identity: 'beta|beta-twice|def|site|Game' }, deps),
+  ]);
+  assert.equal(a.id, 'j_same1');
+  assert.equal(b.id, 'j_same1', 'the second joined the first');
+  assert.equal(c.status, 'done');
+  assert.equal(submits, 2, 'a different commit builds after it, once');
 });

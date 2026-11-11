@@ -536,7 +536,7 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
 async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, env, placeholder, job: prior, beta = false }: { fp: string; head: string; base: string; siteDir?: string; env?: Record<string, string>; placeholder?: boolean; job?: string; beta?: boolean }) {
   const lane = betaLane();
   const job = await unityBuild(p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}), ...(env ? { env } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }),
-    { job: prior, onSubmit: (id) => updateStep(s, { job: id }), log: (m) => updateStep(s, { detail: m }), halt: haltOf(run) });
+    { job: prior, onSubmit: (id) => updateStep(s, { job: id }), log: (m) => updateStep(s, { detail: m }), halt: haltOf(run), ...(head ? { identity: `beta|${p.id}|${head}|${siteDir ?? ''}|${p.build!.project}` } : {}) });
   // Cancelled while queued by a newer beta run (betaqueue.ts): not a failed build. The last good beta build stays the
   // beta build (nothing saved), and the run ends superseded (betaBody).
   if (beta && job.status === 'cancelled') {
