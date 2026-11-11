@@ -279,8 +279,9 @@ test('an agent job Cloud Run had no room for goes back through the queue with it
   assert.equal(A.noRoomOf('[studio] the Cloud Run job sent nothing for 61 min: stopped and started again'), null, 'a silent job is another matter');
   // The pass returns instead of starting another job on the spot.
   const src = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
-  const raw = src.slice(src.indexOf('async function agentPassRaw('), src.indexOf('async function agentPassRaw(') + 4000);
-  assert.ok(raw.indexOf('noRoomOf(first.stderr)') < raw.indexOf('starting the pass again`);\n    save({ proc: undefined });\n    return'), 'checked before the second job');
+  const raw = src.slice(src.indexOf('async function agentPassRaw('), src.indexOf('async function agentPassRaw(') + 5000);
+  assert.ok(raw.indexOf('noRoomOf(first.stderr)') < raw.indexOf('starting the pass again`);\n    save({ proc: undefined });\n    const second = await runAgent('), 'checked before the second job');
+  assert.ok(raw.includes('noRoomOf(second.stderr)'), 'and a second job lost for want of room waits for room too, never counted as a try');
   assert.equal((src.match(/if \(r\.noRoom\) return waitForJobRoom\(id, ph, r\.noRoom\);/g) ?? []).length, 2, 'both kinds of pass (products, Studio/Gen) send it back');
 
   add('c_room00000001', 'nsr', 'working');

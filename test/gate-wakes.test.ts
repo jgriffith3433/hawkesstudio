@@ -52,3 +52,16 @@ test('a Claude key linked in a customer\'s Studio wakes the queue (its agents wa
     assert.match(fs.readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8'), new RegExp(`queueWake\\('${why}`), file);
   }
 });
+
+test('a queue pass that throws asks for its own next pass (it asked for none of its later wakes)', async () => {
+  let calls = 0;
+  A.pumpHooks.pass = async () => { calls++; if (calls === 1) throw new Error('a bad row'); };
+  process.env.STUDIO_PUMP_RETRY_MS = '30';
+  try {
+    await A.pumpNow();
+    const at = A.pumpWakeAt();
+    assert.ok(at != null && at <= Date.now() + 1000, 'a wake is set');
+    await new Promise((r) => setTimeout(r, 120));
+    assert.ok(calls >= 2, 'the pass ran again by itself');
+  } finally { delete A.pumpHooks.pass; delete process.env.STUDIO_PUMP_RETRY_MS; }
+});

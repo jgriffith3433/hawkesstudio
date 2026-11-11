@@ -25,7 +25,7 @@
 
 import { db, newId } from './db.ts';
 import { isRateLimited, heldRetry, onHeldRetry, heldRetriesOf } from './transient.ts';
-import { walkAwayOn } from './walkaway.ts';
+import { walkAwayOn, idleWorkIsStudios } from './walkaway.ts';
 import { addItem, addTask, logDecision } from './roadmap.ts';
 
 export type CauseClass = 'transient' | 'j-only' | 'other';
@@ -88,7 +88,10 @@ export function jOnly(q: { text: string; topic?: string | null; options?: string
   const all = `${q.text}\n${(q.options ?? []).join(' ')}\n${q.recommendation ?? ''}`;
   if (q.topic === 'gpu') return 'money (a GPU budget)';
   // Ideas he left undecided (the stall watch asks about ideas holding others up) and new work are direction: his.
-  if (q.topic === 'needs J' || q.topic === 'idle' || q.topic === 'stall') return 'what to do next is his';
+  if (q.topic === 'needs J' || q.topic === 'stall') return 'what to do next is his';
+  // The scouts' next roadmap items for idle products: his in a customer's Studio or with walk-away off; in J's own Studio
+  // in walk-away mode the PM adds them (walkaway.ts idleWorkIsStudios), so idle slots never wait on the Inbox.
+  if (q.topic === 'idle' && !idleWorkIsStudios()) return 'what to do next is his';
   if (/\bGPU\b/.test(q.text)) return 'money (GPU generation)';
   if (/\$\s?\d/.test(`${(q.options ?? []).join(' ')} ${q.recommendation ?? ''}`)) return 'money';
   if (/\b(secret|api key|password|private key|credentials? (for|to))\b/i.test(all)) return 'a secret';
@@ -196,6 +199,8 @@ export const retryLimit = (cause: string) => RETRY_LIMITS[cause] ?? RETRY_LIMIT;
 export const RETRY_WAITS_MS = [2, 10, 30].map((m) => m * 60_000);
 /** Times a week the PM answers questions on one subject with their recommendation before they are J's. */
 export const AUTO_ANSWERS = 2;
+/** Times a day the PM adds the scouts' proposals for idle products by itself before it asks J (agents.maxCostPerDay caps the spend). */
+export const IDLE_AUTO_ANSWERS = 6;
 export const SELF_BY = 'Studio PM (self-healing)';
 
 const retryOption = (options: string[] = []) => options.find((o) => /^(try|retry|resume|again|rebuild|build again)/i.test(o.trim())) ?? null;
@@ -223,10 +228,13 @@ export function gateQuestion(q: { text: string; context?: string | null; subject
     }
   }
   if (q.recommendation && walkAwayOn()) {
-    const done = db.prepare(`SELECT COUNT(*) AS n FROM cause_log WHERE kind = 'answered' AND subject = ? AND at >= ?`).get(subject, Date.now() - WEEK) as any;
+    // Idle slots come back every time the roadmap runs dry, each time with new proposals: counted over a day, not a week.
+    const idle = q.topic === 'idle';
+    const done = db.prepare(`SELECT COUNT(*) AS n FROM cause_log WHERE kind = 'answered' AND subject = ? AND at >= ?`).get(subject, Date.now() - (idle ? 86_400_000 : WEEK)) as any;
+    const most = idle ? IDLE_AUTO_ANSWERS : AUTO_ANSWERS;
     const opt = (q.options ?? []).find((o) => o.toLowerCase() === q.recommendation!.toLowerCase() || q.recommendation!.toLowerCase().startsWith(o.toLowerCase())) ?? q.recommendation;
-    if (Number(done?.n ?? 0) < AUTO_ANSWERS) return { file: false, cause, action: 'answer', answer: opt };
-    return { file: true, cause, note: `Studio already answered "${opt}" on this ${done.n} times this week and it came back.` };
+    if (Number(done?.n ?? 0) < most) return { file: false, cause, action: 'answer', answer: opt };
+    return { file: true, cause, note: `Studio already answered "${opt}" on this ${done.n} times this ${idle ? 'day' : 'week'} and it came back.` };
   }
   return { file: true, cause, note: null };
 }

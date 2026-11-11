@@ -248,6 +248,10 @@ test('a change parked by the harness waits out the gap and stops at the cap', as
   const parks = Array.from({ length: RESUME_CAP }, (_, i) => now - RESUME_GAP * (i + 2));
   const capped = resumeGate({ at: parks[0], parks }, now);
   assert.ok(!capped.go && capped.capped);
+  // The cap is a wait with an end, never a stop that needs J: it opens when the oldest park leaves the hour.
+  assert.ok(!capped.go && capped.waitMs > 0 && capped.waitMs <= 3600_000);
+  assert.equal(!capped.go && capped.waitMs, Math.min(...parks) + 3600_000 - now);
+  assert.deepEqual(resumeGate({ at: parks[0], parks, capped: true }, Math.min(...parks) + 3600_000 + 1), { go: true }, 'a change marked capped goes again once its hour allows');
   // parks older than an hour don't count
   assert.deepEqual(resumeGate({ at: now - RESUME_GAP - 1, parks: [now - 2 * 3600_000, now - 3 * 3600_000, now - RESUME_GAP - 1] }, now), { go: true });
 });
