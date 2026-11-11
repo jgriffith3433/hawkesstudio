@@ -1958,6 +1958,22 @@ export function behindDetail(detail: string, ahead: string[], limit: number) {
   return detail.replace(m[0], ahead.length >= limit ? ` behind ${ahead[0]}` : '');
 }
 
+/** What a queued change that waits only for its turn says. */
+export const SLOT_WAIT = 'queued: waits for a free agent slot';
+/**
+ * Details a pass may rewrite: a wait that ended (disk room, memory: the pass only sees changes no longer held for disk
+ * room, and the memory wait is set again on the picks it still applies to), the slot wait itself and a bare "queued".
+ * 2026-11-11 hawkes-studio changes read "waits for disk room ... 0.06 GB of memory free" for hours after a restart had
+ * ended that wait, while they only waited for one of the 6 agent slots.
+ */
+const ENDED_WAIT = /^queued(: waits for (disk room|memory to free up|a free agent slot)\b.*)?$/s;
+
+/** A queued change's detail brought up to date: a wait that ended says what it waits for now; else behindDetail. */
+export function queuedDetail(detail: string, ahead: string[], limit: number) {
+  if (!ENDED_WAIT.test(detail)) return behindDetail(detail, ahead, limit);
+  return ahead.length >= limit ? `queued behind ${ahead[0]}` : SLOT_WAIT;
+}
+
 /**
  * Which queued changes start now: oldest first, at most `free` of them, and per product at most `limit(product)` at
  * once (default 1: a product with a change running, or one picked earlier in the pass, waits; it starts when that one
@@ -2264,7 +2280,7 @@ async function pumpPass() {
   for (const c of queued) {
     if (picks.includes(c.id)) continue;
     const before = ahead.get(c.product) ?? [];
-    const detail = behindDetail(c.detail ?? '', before, perProductLimit(c.product, s));
+    const detail = queuedDetail(c.detail ?? '', before, perProductLimit(c.product, s));
     if (detail !== (c.detail ?? '')) update(c.id, { detail });
     ahead.set(c.product, [...before, c.id]);
   }
