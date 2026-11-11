@@ -37,7 +37,7 @@ import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, 
 import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from './betaqueue.ts';
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
-import { resolveScenario, missingScenario, noteScenarios, knownScenarios } from './scenarios.ts';
+import { resolveScenario, missingScenario, noteScenarios, knownScenarios, isRenamedScenario, contractNotReadyNote } from './scenarios.ts';
 import { slowNote, playTime } from './pace.ts';
 import { planRun, planChange, notePlaying, progressCheck, expectedSeconds } from './runplan.ts';
 import { planCarried, settledAsk, askName, lastCleanPass, noRuntimeChange, type Ask } from './playplan.ts';
@@ -732,9 +732,9 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     // A scenario this copy is known not to have is skipped, not played (scenarios.ts). The list is the one seen at this
     // page of this build, so a list from another page (the lore site's root) never skips the game's scenarios.
     const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build, url) : null;
-    if (has && !has.includes(t.scenario!)) {
+    if (isRenamedScenario(has, t.scenario!)) {
       if (port) stopServed(port);
-      return skipMissing(run, p, s, asked, t.scenario!, has, played);
+      return skipMissing(run, p, s, asked, t.scenario!, has!, played);
     }
     // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
     const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(playOptions(t) ? { options: playOptions(t) } : {}) };
@@ -810,6 +810,13 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     // The game's own scenario list, for the next playtest of this build; a scenario it doesn't have is skipped, not failed.
     if (t.where === 'local') noteScenarios(p.id, build, job.result?.scenarios, url);
     const missing = t.where === 'local' && job.status !== 'done' ? missingScenario(job.error ?? job.detail) : null;
+    if (missing && !missing.has.length) {
+      // An empty list is a contract that wasn't ready, never a renamed scenario: fail loudly, a skip would pass unchecked.
+      const why = contractNotReadyNote(missing.scenario);
+      console.warn(`[studio] ${p.id} ${name} (${run}): ${why}`);
+      updateStep(s, { status: 'failed', job: job.id, detail: why, data: { error: why, url, played, contractNotReady: true, asked: asked.scenario ?? null }, finished: true });
+      return null;
+    }
     if (missing) {
       noteScenarios(p.id, build, missing.has, url);
       return skipMissing(run, p, s, asked, missing.scenario, missing.has, played, job.id);
@@ -1000,7 +1007,13 @@ export async function inSlots<T>(list: T[], width: number, each: (x: T, slot: nu
  */
 function skipMissing(run: string, p: Product, s: string, asked: Playtest, scenario: string, has: string[], played: ReturnType<typeof playedLocal>, job?: string) {
   const what = played?.build ? `Game/v${played.build}` : played ? `beta ${played.sha.slice(0, 7)}` : 'the build';
-  const note = `skipped: ${what} has no scenario "${scenario}"${asked.scenario && asked.scenario !== scenario ? ` (asked for "${asked.scenario}")` : ''}. It has: ${has.join(', ') || 'none'}. Add an alias in products.json (scenarioAliases) if it was renamed.`;
+  if (!has.length) {
+    // Never a skip: an empty list means the contract wasn't ready, and a skip would pass with nothing checked.
+    const why = contractNotReadyNote(scenario);
+    updateStep(s, { status: 'failed', detail: why, ...(job ? { job } : {}), data: { error: why, played, contractNotReady: true, asked: asked.scenario ?? null }, finished: true });
+    return null;
+  }
+  const note = `skipped: ${what} has no scenario "${scenario}"${asked.scenario && asked.scenario !== scenario ? ` (asked for "${asked.scenario}")` : ''}. It has: ${has.join(', ')}. Add an alias in products.json (scenarioAliases) if it was renamed.`;
   updateStep(s, { status: 'skipped', detail: note, ...(job ? { job } : {}), data: { played, missingScenario: scenario, asked: asked.scenario ?? null, has }, finished: true });
   void import('./roadmap.ts').then(({ logDecision }) => logDecision('scenario skipped', run, p.id, `${p.name}: ${note}`)).catch(() => {});
   return null;
