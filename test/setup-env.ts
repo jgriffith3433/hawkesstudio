@@ -12,6 +12,7 @@ process.env.STUDIO_MEM_GATE ||= 'off';
 process.env.STUDIO_PM_MEMO ||= 'off';
 // The in-memory disk guard (src/disksweep.ts) reads the test machine's disk against its memory: a dev box with a few GB
 // used refuses every build as "in-memory disk is full". test/disksweep.test.ts turns it on for itself.
+process.env.STUDIO_CPU_ROOM ??= 'off'; // cpuroom.ts's own tests turn it on
 process.env.STUDIO_DISK_SWEEP ||= 'off';
 // Agent job starts are spaced by 10 s in Studio (src/genpace.ts); tests that start jobs don't wait.
 process.env.STUDIO_JOB_START_GAP_MS ||= '0';

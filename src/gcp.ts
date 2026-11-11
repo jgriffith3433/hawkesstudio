@@ -219,6 +219,32 @@ export async function listOpenExecutions(t: CloudRunTarget): Promise<{ name: str
   return out;
 }
 
+/** vCPU a container asks for ("2", "1000m"), 1 when it doesn't say. */
+export const vcpuOf = (v: unknown) => { const m = /^(\d+(?:\.\d+)?)(m)?$/.exec(String(v ?? '').trim()); return m ? (m[2] ? Number(m[1]) / 1000 : Number(m[1])) : 1; };
+
+/**
+ * The vCPU every open job execution in the region holds or is waiting for (any job: Studio's agents, Unity builds, Gen's):
+ * its tasks that can run at once times each task's CPU; `running` counts only tasks running now. Cloud Run v2 lists every job's executions under the job "-".
+ */
+export async function regionJobCpu(project: string, region: string): Promise<{ vcpu: number; running: number; open: number }> {
+  let vcpu = 0, running = 0, open = 0, page = '';
+  for (let i = 0; i < 20; i++) {
+    const j = await gapi(`https://run.googleapis.com/v2/projects/${project}/locations/${region}/jobs/-/executions?pageSize=200${page ? `&pageToken=${enc(page)}` : ''}`);
+    for (const e of j?.executions ?? []) {
+      if (e.completionTime) continue;
+      open++;
+      const per = (e.template?.containers ?? []).reduce((a: number, c: any) => a + vcpuOf(c?.resources?.limits?.cpu), 0) || 1;
+      const tasks = Number(e.taskCount ?? 1) || 1;
+      const left = Math.max(0, tasks - Number(e.succeededCount ?? 0) - Number(e.failedCount ?? 0) - Number(e.cancelledCount ?? 0));
+      vcpu += per * Math.min(Number(e.parallelism ?? 0) || tasks, left || 1);
+      running += per * Number(e.runningCount ?? 0);
+    }
+    page = j?.nextPageToken ?? '';
+    if (!page) break;
+  }
+  return { vcpu, running, open };
+}
+
 export async function cancelExecution(name: string) {
   await gapi(`https://run.googleapis.com/v2/${name}:cancel`, { body: {} }).catch(() => {});
 }

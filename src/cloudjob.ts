@@ -397,6 +397,8 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         git: ws ? { ...(mergeBase ? { base: mergeBase } : {}), head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? (sparse ? { sparse } : {}) : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
       }));
       // Spaced, and after a busy Gen's calm window (genpace.ts): agent jobs share the region's Cloud Run CPU quota with Gen.
+      // Room in the region's CPU quota for this job that still leaves Studio's own server its share (cpuroom.ts).
+      await (await import('./cpuroom.ts')).cpuTurn();
       await (await import('./genpace.ts')).jobStartTurn();
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
@@ -509,6 +511,7 @@ function end(f: Follow, exit: { code: number | null; signal: string | null; erro
     fs.renameSync(local(f.unit, 'exit.tmp'), local(f.unit, 'exit'));
   } catch { /* the folder went */ }
   jobFiles.emit(f.unit);
+  void import('./cpuroom.ts').then((c) => c.cpuFreed()).catch(() => {});
   setTimeout(() => follows.delete(f.unit), 60_000).unref();
 }
 
@@ -523,6 +526,7 @@ function dropJob(f: Follow, why: string) {
   try { fs.writeFileSync(local(f.unit, 'gone'), why); } catch { /* the folder went */ }
   console.warn(`[cloudjob] ${f.unit}: ${why}`);
   jobFiles.emit(f.unit);
+  void import('./cpuroom.ts').then((c) => c.cpuFreed()).catch(() => {});
   setTimeout(() => follows.delete(f.unit), 60_000).unref();
 }
 
@@ -624,6 +628,7 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
           dropJob(f, `the Cloud Run job never started in ${Math.round((Date.now() - since) / 60_000)} min (Cloud Run had no room for it): starting it again`);
           // No room is the region's CPU quota (agent jobs, builds and Gen share it): the owner gets one Approve card to
           // raise it, filed with Google on the tap (quota.ts), instead of jobs waiting on it forever.
+          void import('./cpuroom.ts').then((c) => c.learnFromNoRoom()).catch(() => {});
           void import('./quota.ts').then((q) => q.askCpuForJobs(Math.round((Date.now() - since) / 60_000), st.message)).catch(() => {});
           return true;
         }

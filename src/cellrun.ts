@@ -275,11 +275,13 @@ export async function serviceImage(service: string, c = cellsConfig()): Promise<
  * CELL_LIMITS gets raised and every one gets CELL_STARTUP_PROBE: the roll after a deploy is what brings
  * older cells up to date).
  */
-export async function setImage(service: string, image: string, o: { dry?: boolean; disk?: boolean | 'none' } = {}, c = cellsConfig()) {
+export async function setImage(service: string, image: string, o: { dry?: boolean; disk?: boolean | 'none'; retry?: number } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${service}`;
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
-  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
+  // retry: the same image again as a new revision (an unchanged template makes none); the try's number in its env does it.
+  const env = (ct: any) => (o.retry ? { env: [...(ct.env ?? []).filter((v: any) => v?.name !== 'STUDIO_ROLL_TRY'), { name: 'STUDIO_ROLL_TRY', value: String(o.retry) }] } : {});
+  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, ...env(ct), resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
   // With the working disk (CELL_DISK): the roll after a deploy brings every cell onto it. Refused (a launch stage or a
   // quota Google won't take): the image alone, as before, so a deploy never fails for the disk.
   // Without the disk: the same mount in memory, sized (CELL_MEMORY_DISK), so the working files can't starve Studio;
@@ -371,6 +373,45 @@ const failureOf = (sv: any): string | null => {
 /** The revision was refused for its working disk (Google's ephemeral disk quota, or the disk itself), not for the image. */
 export const diskFailure = (why: string | null | undefined) => /ephemeral (disk|storage)|emptyDir|volume .*(disk|quota)|disk allocation/i.test(String(why ?? ''));
 
+/** Google said the revision got no CPU (the region's Cloud Run CPU quota), not that the image failed. */
+export const cpuFailure = (why: string | null | undefined) => /cpu[ _]?allocation|quota.{0,40}\bcpu\b|\bcpu\b.{0,40}quota|no available instance|insufficient (cpu|resources)/i.test(String(why ?? ''));
+
+/** Jobs that give way to a cell's own server when the region has no CPU left for it, in this order (Unity builds first). */
+export const YIELD_JOBS = (c = cellsConfig()) => [...String(process.env.STUDIO_CELLS_YIELD_JOBS ?? 'hawkes-unity-build,hawkes-unity-build-customer').split(',').map((x) => x.trim()).filter(Boolean), c.agentJob];
+
+/**
+ * Whether the region is out of CPU now: Cloud Run is holding job executions it hasn't started for want of room
+ * (queued ones count for more than the running ones). A revision that timed out starting while that is so got no CPU.
+ */
+export async function regionShortOfCpu(c = cellsConfig()): Promise<boolean> {
+  const r = await (await import('./gcp.ts')).regionJobCpu(c.project, c.region).catch(() => null);
+  return Boolean(r && r.vcpu > r.running);
+}
+
+/**
+ * Frees the region's CPU for a cell's own server: cancels the open executions of the yielding jobs (YIELD_JOBS, Unity
+ * builds first, then the agents'). Their work isn't lost: an agent pass whose job ends with no result starts again
+ * (cloudjob.ts lost), and once the cell runs again its own jobs leave its server room (cpuroom.ts).
+ */
+export async function yieldJobCpu(o: { dry?: boolean; log?: (s: string) => void } = {}, c = cellsConfig()): Promise<string[]> {
+  const log = o.log ?? ((s: string) => console.log(`[cells] ${s}`));
+  const G = await import('./gcp.ts');
+  const names = ((await gapi(`${base(c)}/jobs?pageSize=500`).catch(() => null))?.jobs ?? []).map((j: any) => String(j.name).split('/').pop()!);
+  const out: string[] = [];
+  for (const want of YIELD_JOBS(c)) {
+    for (const job of names.filter((n: string) => n === want)) {
+      const open = await G.listOpenExecutions({ project: c.project, region: c.region, job }).catch(() => []);
+      for (const e of open) {
+        if (dryRun(o)) planned.push({ method: 'POST', url: `https://run.googleapis.com/v2/${e.name}:cancel`, body: {} });
+        else await G.cancelExecution(e.name);
+        out.push(e.name);
+      }
+      if (open.length) log(`${job}: cancelled ${open.length} open execution${open.length === 1 ? '' : 's'} to give the cell's server CPU`);
+    }
+  }
+  return out;
+}
+
 /** newRevisionServes with Google's reason when it doesn't. */
 export async function newRevisionOutcome(service: string, image: string, c = cellsConfig(), waitMs = 11 * 60_000): Promise<{ ok: boolean; why: string | null }> {
   const end = Date.now() + waitMs;
@@ -390,7 +431,7 @@ export async function newRevisionOutcome(service: string, image: string, c = cel
   return { ok: false, why: why ?? 'the new revision wasn\'t serving in time' };
 }
 
-export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void; outcome?: typeof newRevisionOutcome } = {}, c = cellsConfig()) {
+export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void; outcome?: typeof newRevisionOutcome; shortOfCpu?: typeof regionShortOfCpu; yieldCpu?: typeof yieldJobCpu } = {}, c = cellsConfig()) {
   const log = o.log ?? ((s: string) => console.log(`[cells] ${s}`));
   const health = o.health ?? (async (url: string) => {
     for (let i = 0; i < 20; i++) {
@@ -424,6 +465,16 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
         await setImage(cell.service, image, { ...o, disk: 'none' }, c);
         out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
       }
+    }
+    // No CPU for the new revision (2026-11-11 00:07: 00098 never got an instance while ~26 Unity build and agent job
+    // executions held us-east4's CPU quota; the roll went back and the old revision lost its instance too, so the site
+    // went down). The roll itself frees the room: the jobs give way (Unity builds first, then agent passes) and the
+    // same image is tried once more. The new cell's own jobs then leave its server room (cpuroom.ts).
+    if (!dryRun(o) && !out.ok && !diskFailure(out.why) && (cpuFailure(out.why) || (await (o.shortOfCpu ?? regionShortOfCpu)(c).catch(() => false)))) {
+      log(`${cell.service}: the new revision got no CPU in ${c.region}${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}; jobs give way and the roll tries again`);
+      await (o.yieldCpu ?? yieldJobCpu)({ ...o, log }, c).catch((e: any) => log(`${cell.service}: couldn't stop the jobs (${e.message})`));
+      await setImage(cell.service, image, { ...o, ...(disk === true ? {} : { disk }), retry: Date.now() }, c);
+      out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
     }
     if (!dryRun(o) && !(out.ok && (await health(serviceUrl(cell.org, c))))) {
       log(`${cell.service} is not healthy on the new image${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
