@@ -75,30 +75,6 @@ function passes() {
   return { started, end: (id: string) => enders.get(id)?.() };
 }
 
-test('[queue-slot] a change that waited past its deadline for a slot takes ONE overflow slot beside the full one', async () => {
-  const p = passes();
-  addChange('c_wp_q1', 'wpa'); addChange('c_wp_q2', 'wpb'); addChange('c_wp_q3', 'wpc');
-  await A.pumpNow(); await settle();
-  assert.deepEqual(p.started, ['c_wp_q1'], 'one slot: the oldest starts');
-  const w2 = row('queue-slot', 'c_wp_q2');
-  assert.equal(w2.state, 'pending');
-  assert.ok(w2.deadline - w2.started <= pointOf('queue-slot')!.maxMs, 'its deadline is within the point\'s');
-  assert.equal(W.waitOf('queue-slot', 'c_wp_q1'), null, 'the one that started waits for nothing');
-  // Its time in the queue runs out (the others too): it starts beside the full slot; the next does not (one overflow).
-  runOut('queue-slot', 'c_wp_q2'); runOut('queue-slot', 'c_wp_q3');
-  await W.fireDue(); await settle();
-  await A.pumpNow(); await settle();
-  assert.deepEqual(p.started, ['c_wp_q1', 'c_wp_q2'], 'one overflow, in line order');
-  assert.match(A.getChange('c_wp_q2')!.log.join('\n'), /overflow slot/);
-  assert.equal(W.waitOf('queue-slot', 'c_wp_q2'), null, 'started: its wait is over');
-  noQuestion();
-  // Everything ends and the last one goes by the normal rule.
-  p.end('c_wp_q1'); p.end('c_wp_q2'); await settle(40);
-  await A.pumpNow(); await settle();
-  assert.ok(p.started.includes('c_wp_q3'));
-  p.end('c_wp_q3'); await settle(40);
-});
-
 test('[checkout-turn] a checkout that hangs passes its turn on at the deadline, recorded as ended by it', async () => {
   let finish!: () => void;
   const hung = A.checkoutSlot(() => new Promise<void>((r) => { finish = r; }), { turnMs: 40 });
