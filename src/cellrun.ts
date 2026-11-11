@@ -16,7 +16,7 @@ import { StudioError } from './config.ts';
 import { cellKeyEnv } from './cellkeys.ts';
 
 export type CellsConfig = {
-  project: string; projectNumber: string; region: string; serviceAccount: string; bucket: string; agentJob: string;
+  project: string; projectNumber: string; region: string; serviceAccount: string; bucket: string; agentJob: string; jobsProject: string;
   publicUrl: string; controlUrl: string; genUrl: string; genPublicUrl: string; googleClientId: string; lane: 'live' | 'beta'; studioService: string;
 };
 
@@ -29,6 +29,8 @@ export function cellsConfig(env: NodeJS.ProcessEnv = process.env): CellsConfig {
     serviceAccount: env.STUDIO_CELLS_SA || '',
     bucket: env.STUDIO_CELLS_BUCKET || '',
     agentJob: env.STUDIO_CELLS_AGENT_JOB || 'studio-cell-agent',
+    // The agents' job's own project (jobsproject.ts), so jobs can't take a cell's server CPU; the cells' project if unset.
+    jobsProject: env.STUDIO_CELLS_JOBS_PROJECT || env.STUDIO_JOBS_PROJECT || env.STUDIO_CELLS_PROJECT || env.STUDIO_GCP_PROJECT || '',
     publicUrl: (env.STUDIO_PUBLIC_URL || (lane === 'beta' ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai')).replace(/\/+$/, ''),
     controlUrl: (env.STUDIO_SERVICE_URL || env.STUDIO_PUBLIC_URL || '').replace(/\/+$/, ''),
     // Gen's own address for server calls (Cloud Run's run.app, not the Cloudflare edge) and its public one for browsers.
@@ -51,6 +53,12 @@ export const serviceName = (org: string, c = cellsConfig()) => `${c.lane === 'be
 /** Cloud Run's deterministic address for it (the Worker computes the same). */
 export const serviceUrl = (org: string, c = cellsConfig()) => `https://${serviceName(org, c)}-${c.projectNumber}.${c.region}.run.app`;
 const base = (c: CellsConfig) => `https://run.googleapis.com/v2/projects/${c.project}/locations/${c.region}`;
+/** Where the agents' job lives (its own project when there is one). */
+const jobsBase = (c: CellsConfig) => `https://run.googleapis.com/v2/projects/${c.jobsProject || c.project}/locations/${c.region}`;
+/** A cell's env names the jobs' project only when it differs (unchanged cells otherwise). */
+const jobsEnv = (c: CellsConfig): Record<string, string> => (c.jobsProject && c.jobsProject !== c.project ? { STUDIO_JOBS_PROJECT: c.jobsProject } : {});
+/** A container's env with STUDIO_JOBS_PROJECT made to match the config (a roll brings an older cell onto the move). */
+export const withJobsEnv = (vars: any[] | undefined, c: CellsConfig) => [...(vars ?? []).filter((v: any) => v?.name !== 'STUDIO_JOBS_PROJECT'), ...Object.entries(jobsEnv(c)).map(([name, value]) => ({ name, value }))];
 
 export type Planned = { method: string; url: string; body?: unknown };
 /** Every request a dry run would have made (tests and the dry-run summary read it). */
@@ -78,6 +86,7 @@ export function cellEnv(org: string, owner: { sub: string; email: string }, c = 
     STUDIO_GCP_PROJECT: c.project,
     STUDIO_GCP_REGION: c.region,
     STUDIO_AGENT_JOB: c.agentJob,
+    ...jobsEnv(c),
     STUDIO_PUBLIC_URL: `${c.publicUrl}/o/${org}`,
     STUDIO_SERVICE_URL: serviceUrl(org, c),
     STUDIO_CONTROL_URL: c.controlUrl,
@@ -280,7 +289,10 @@ export async function setImage(service: string, image: string, o: { dry?: boolea
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
   // retry: the same image again as a new revision (an unchanged template makes none); the try's number in its env does it.
-  const env = (ct: any) => (o.retry ? { env: [...(ct.env ?? []).filter((v: any) => v?.name !== 'STUDIO_ROLL_TRY'), { name: 'STUDIO_ROLL_TRY', value: String(o.retry) }] } : {});
+  const env = (ct: any) => {
+    const vars = withJobsEnv(ct.env, c);
+    return { env: o.retry ? [...vars.filter((v: any) => v?.name !== 'STUDIO_ROLL_TRY'), { name: 'STUDIO_ROLL_TRY', value: String(o.retry) }] : vars };
+  };
   const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, ...env(ct), resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
   // With the working disk (CELL_DISK): the roll after a deploy brings every cell onto it. Refused (a launch stage or a
   // quota Google won't take): the image alone, as before, so a deploy never fails for the disk.
@@ -315,8 +327,13 @@ export async function setImage(service: string, image: string, o: { dry?: boolea
  * studio_project). Nothing when it's already there; a missing job is left alone (cells-setup.mjs makes it).
  */
 export async function followAgentJob(image: string, o: { dry?: boolean; log?: (s: string) => void } = {}, c = cellsConfig()) {
-  const url = `${base(c)}/jobs/${c.agentJob}`;
+  const url = `${jobsBase(c)}/jobs/${c.agentJob}`;
   if (dryRun(o)) return call('PATCH', url, { template: { template: { containers: [{ image }] } } }, o);
+  // The jobs' own project (jobsproject.ts): the job is made there from the one beside the cells, grants and all.
+  if (c.jobsProject && c.jobsProject !== c.project) {
+    await (await import('./jobsproject.ts')).copyJob({ from: c.project, to: c.jobsProject, region: c.region, job: c.agentJob, fromNumber: c.projectNumber })
+      .catch((e: any) => (o.log ?? console.log)(`${c.agentJob} not made in ${c.jobsProject} yet: ${e?.message ?? e}`));
+  }
   const j = await gapi(url, { missingOk: true });
   if (!j) return { job: c.agentJob, skipped: 'no such job' };
   const containers = (j.template?.template?.containers ?? [{}]) as any[];
@@ -516,7 +533,7 @@ async function made(method: string, url: string, body: unknown, o: { dry?: boole
 
 /** Adds (or removes) a member to the given roles of the shared agents' job's IAM policy (read, change, write). */
 async function jobMember(member: string, add: boolean, o: { dry?: boolean }, c: CellsConfig) {
-  const url = `${base(c)}/jobs/${c.agentJob}`;
+  const url = `${jobsBase(c)}/jobs/${c.agentJob}`;
   if (dryRun(o)) { planned.push({ method: 'POST', url: `${url}:setIamPolicy`, body: { [add ? 'add' : 'remove']: member, roles: JOB_ROLES } }); return; }
   const policy = (await gapi(`${url}:getIamPolicy`)) ?? {};
   const bindings: { role: string; members: string[] }[] = policy.bindings ?? [];
