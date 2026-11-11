@@ -57,6 +57,10 @@ on:
         description: run-cpu-quota vCPU (21 to 400) / run-disk-quota GiB (11 to 2000) wanted in that region
         type: string
         default: '100'
+      studio:
+        description: run-cpu-quota / run-disk-quota, the Studio that asked (its address); the run reports back to it
+        type: string
+        default: ''
 permissions:
   contents: read
   id-token: write
@@ -80,6 +84,7 @@ jobs:
         with:
           install_components: beta
       - name: Run
+        id: run
         env:
           ACTION: ${{ inputs.action }}
           APPLY: ${{ inputs.apply }}
@@ -90,7 +95,9 @@ jobs:
           VALUE: ${{ inputs.value }}
         run: |
           set -euo pipefail
-          sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; echo "$*"; }
+          sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; echo "$*" >> "$RUNNER_TEMP/said.txt"; echo "$*"; }
+          # Quota runs keep their errors too, for the report to Studio (last step).
+          case "$ACTION" in run-*-quota) exec 2> >(tee -a "$RUNNER_TEMP/stderr.txt" >&2);; esac
           # do: print the command, run it only when applying.
           do_() { sum "    \$ $*"; if [ "$APPLY" = "true" ]; then "$@"; fi; }
           have() { "$@" >/dev/null 2>&1; }
@@ -121,6 +128,57 @@ jobs:
             else do_ gcloud iam service-accounts create "$n" --project "$p" --display-name="$repo GitHub Actions (main)"; if [ "$APPLY" = true ]; then sleep 15; fi; fi
             do_ gcloud iam service-accounts add-iam-policy-binding "$sa" --project "$p" --role=roles/iam.workloadIdentityUser \
               --member="principalSet://iam.googleapis.com/projects/$(num "$p")/locations/global/workloadIdentityPools/github/attribute.repository/$repo" --format=none
+          }
+
+          # Cloud Run CPU or ephemeral disk in $REGION (run-cpu-quota / run-disk-quota). Reads the quota from Google's
+          # quota info (fields quotaDisplayName and metricUnit: displayName and unit don't exist, so every unit read as ''
+          # and run 20, J's approved disk ask, stopped on "unexpected unit ''"), the region's value or else the default,
+          # and the request already filed. With apply it files (or updates) preference run-<kind>-<region>. Every run
+          # writes what it found to $RUNNER_TEMP/quota.json, which the last step reports to Studio.
+          rep() { local f="$RUNNER_TEMP/quota.json"; [ -f "$f" ] || echo '{}' > "$f"; jq --arg k "$1" --argjson v "$2" '.[$k] = $v' "$f" > "$f.n" && mv "$f.n" "$f"; }
+          quota() {
+            local kind=$1 qid unit cur want per pref name
+            case "$kind" in
+              cpu) [[ "$VALUE" =~ ^[0-9]+$ ]] && [ "$VALUE" -ge 21 ] && [ "$VALUE" -le 400 ] || { sum "- value must be a whole number of vCPU, 21 to 400"; exit 1; }
+                   name='CPU allocation, per project per region'; idre='^CpuAllocPerProjectRegion$';;
+              disk) [[ "$VALUE" =~ ^[0-9]+$ ]] && [ "$VALUE" -ge 11 ] && [ "$VALUE" -le 2000 ] || { sum "- value must be a whole number of GiB, 11 to 2000"; exit 1; }
+                   name='ephemeral'; idre='ephemeral';;
+            esac
+            do_ gcloud services enable cloudquotas.googleapis.com --project "$PROJECT"
+            gcloud beta quotas info list --service=run.googleapis.com --project="$PROJECT" --format=json > qi.json || { sum "- couldn't read Cloud Run's quotas (ops-admin needs roles/cloudquotas.admin)"; exit 1; }
+            qid=$(jq -r --arg n "$name" --arg i "$idre" '[.[] | select(((.quotaDisplayName // .displayName // "") | test($n; "i")) or ((.quotaId // "") | test($i; "i")))][0].quotaId // empty' qi.json)
+            [ -n "$qid" ] || { jq -r '.[] | "\(.quotaId)\t\(.quotaDisplayName // "")\t\(.metricUnit // "")"' qi.json | head -40; sum "- no $kind quota found in Cloud Run's quotas"; exit 1; }
+            unit=$(jq -r --arg q "$qid" '.[] | select(.quotaId==$q) | .metricUnit // .unit // ""' qi.json)
+            cur=$(jq -r --arg q "$qid" --arg r "$REGION" '[.[] | select(.quotaId==$q) | .dimensionsInfos[]?] as $d | ([$d[] | select((.dimensions.region // "")==$r) | .details.value][0] // [$d[] | select((.dimensions.region // "")=="") | .details.value][0] // "?")' qi.json)
+            sum "- quota $qid (unit ${unit:-none given}): $REGION is $cur now"
+            # How many of the quota's units make one vCPU or GiB. Without a unit that says, the current value does (no
+            # region has over 1000 vCPU or a petabyte of disk; us-east4's 20 vCPU read 20000 on 2026-11-11).
+            if [ "$kind" = cpu ]; then
+              case "$unit" in *milli*|*"1000"*) per=1000;; *) if [[ "$cur" =~ ^[0-9]+$ ]] && [ "$cur" -gt 1000 ]; then per=1000; else per=1; fi;; esac
+            else
+              case "$unit" in GiB*|GB*|*gibibyte*|*gigabyte*) per=1;; MiB*|MB*|*mebibyte*|*megabyte*) per=1024;; By*|*byte*) per=$((1024 * 1024 * 1024));;
+                *) if [[ "$cur" =~ ^[0-9]+$ ]] && [ "$cur" -ge $((1024 * 1024 * 1024)) ]; then per=$((1024 * 1024 * 1024)); elif [[ "$cur" =~ ^[0-9]+$ ]] && [ "$cur" -ge 1048576 ]; then per=1024; else per=1; fi
+                   sum "- the quota's unit (${unit:-none}) isn't a size: taking $([ $per = 1 ] && echo GiB || { [ $per = 1024 ] && echo MiB || echo bytes; }) from the current value";; esac
+            fi
+            [[ "$cur" =~ ^[0-9]+$ ]] && rep current "$(( cur / per ))"
+            want=$((VALUE * per))
+            sum "- asking for $VALUE $([ "$kind" = cpu ] && echo vCPU || echo GiB) ($want in the quota's unit) in $REGION"
+            pref="run-$kind-$REGION"
+            local why="Hawkes Studio cells need their 10 GiB working disk in $REGION"; [ "$kind" = cpu ] && why="Hawkes Studio and Gen live services plus builds need more than the default in $REGION"
+            if have gcloud beta quotas preferences describe "$pref" --project="$PROJECT"; then
+              do_ gcloud beta quotas preferences update "$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="$why"
+            else
+              do_ gcloud beta quotas preferences create --preference-id="$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="$why"
+            fi
+            # The request as Google has it (plan runs too: that is how Studio hears Google's answer to a filed ask).
+            if gcloud beta quotas preferences describe "$pref" --project="$PROJECT" --format=json > pref.json 2>/dev/null; then
+              jq -r '{preferredValue: .quotaConfig.preferredValue, grantedValue: .quotaConfig.grantedValue, stateDetail: .quotaConfig.stateDetail, reconciling: .reconciling}' pref.json | tee -a "$GITHUB_STEP_SUMMARY"
+              local p g
+              p=$(jq -r '.quotaConfig.preferredValue // empty' pref.json); g=$(jq -r '.quotaConfig.grantedValue // empty' pref.json)
+              [[ "$p" =~ ^[0-9]+$ ]] && rep preferred "$(( p / per ))"
+              [[ "$g" =~ ^[0-9]+$ ]] && rep granted "$(( g / per ))"
+              rep reconciling "$(jq '.reconciling // false' pref.json)"
+            else sum "- no request $pref filed yet"; fi
           }
 
           case "$ACTION" in
@@ -178,46 +236,33 @@ jobs:
               else sum "- $sa doesn't exist: skipped"; fi
             done
             sum "Then rebuild the Firebase project in Studio (e.g. hawkes-games' firebase build)." ;;
-          run-cpu-quota)
-            [[ "$VALUE" =~ ^[0-9]+$ ]] && [ "$VALUE" -ge 21 ] && [ "$VALUE" -le 400 ] || { echo "value must be a whole number of vCPU, 21 to 400"; exit 1; }
-            do_ gcloud services enable cloudquotas.googleapis.com --project "$PROJECT"
-            # The quota's id: the run.googleapis.com quota whose name is the per-region CPU allocation.
-            gcloud beta quotas info list --service=run.googleapis.com --project="$PROJECT" --format=json > qi.json || { sum "- couldn't read Cloud Run's quotas (ops-admin needs roles/cloudquotas.admin)"; exit 1; }
-            qid=$(jq -r '[.[] | select((.displayName // "" | test("CPU allocation, per project per region"; "i")) or (.quotaId // "" | test("^CpuAllocPerProjectRegion$")))][0].quotaId // empty' qi.json)
-            [ -n "$qid" ] || { jq -r '.[] | "\(.quotaId)\t\(.displayName)\t\(.unit // "")"' qi.json | head -40; echo "no CPU allocation quota found"; exit 1; }
-            unit=$(jq -r --arg q "$qid" '.[] | select(.quotaId==$q) | .unit // ""' qi.json)
-            cur=$(jq -r --arg q "$qid" --arg r "$REGION" '.[] | select(.quotaId==$q) | [.dimensionsInfos[]? | select((.dimensions.region // "")==$r) | .details.value][0] // "?"' qi.json)
-            sum "- quota $qid ($unit): $REGION is $cur now"
-            # The unit is milli-vCPU for Cloud Run's CPU allocation; anything else stops here rather than guess. gcloud may
-            # leave the unit out (2026-11-11: blank, with us-east4 at 20000 for its 20 vCPU): then the current value says
-            # which, since no region's CPU quota is over 1000 vCPU.
-            if [ -z "$unit" ] && [[ "$cur" =~ ^[0-9]+$ ]]; then if [ "$cur" -gt 1000 ]; then unit="milli-vCPU (from the current value)"; else unit="vCPU (from the current value)"; fi; sum "- the quota names no unit: taking $unit"; fi
-            case "$unit" in *"1000"*|*milli*|*"{milli"*) want=$((VALUE * 1000));; "1"|"{vCPU}"|*cpu*|*CPU*) want=$VALUE;; *) echo "unexpected unit '$unit'"; exit 1;; esac
-            sum "- asking for $VALUE vCPU ($want in the quota's unit) in $REGION"
-            pref="run-cpu-$REGION"
-            if have gcloud beta quotas preferences describe "$pref" --project="$PROJECT"; then
-              do_ gcloud beta quotas preferences update "$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="Hawkes Studio and Gen live services plus builds need more than the default in $REGION"
-            else
-              do_ gcloud beta quotas preferences create --preference-id="$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="Hawkes Studio and Gen live services plus builds need more than the default in $REGION"
-            fi
-            if [ "$APPLY" = true ]; then gcloud beta quotas preferences describe "$pref" --project="$PROJECT" --format='yaml(quotaConfig,reconciling)' | tee -a "$GITHUB_STEP_SUMMARY"; fi ;;
-          run-disk-quota)
-            [[ "$VALUE" =~ ^[0-9]+$ ]] && [ "$VALUE" -ge 11 ] && [ "$VALUE" -le 2000 ] || { echo "value must be a whole number of GiB, 11 to 2000"; exit 1; }
-            do_ gcloud services enable cloudquotas.googleapis.com --project "$PROJECT"
-            gcloud beta quotas info list --service=run.googleapis.com --project="$PROJECT" --format=json > qi.json || { sum "- couldn't read Cloud Run's quotas (ops-admin needs roles/cloudquotas.admin)"; exit 1; }
-            qid=$(jq -r '[.[] | select(((.displayName // "") + " " + (.quotaId // "")) | test("ephemeral"; "i"))][0].quotaId // empty' qi.json)
-            [ -n "$qid" ] || { jq -r '.[] | "\(.quotaId)\t\(.displayName)\t\(.unit // "")"' qi.json | head -40; echo "no ephemeral disk quota found"; exit 1; }
-            unit=$(jq -r --arg q "$qid" '.[] | select(.quotaId==$q) | .unit // ""' qi.json)
-            cur=$(jq -r --arg q "$qid" --arg r "$REGION" '.[] | select(.quotaId==$q) | [.dimensionsInfos[]? | select((.dimensions.region // "")==$r) | .details.value][0] // "?"' qi.json)
-            sum "- quota $qid ($unit): $REGION is $cur now"
-            case "$unit" in GiB*|GB*|*gibibyte*) want=$VALUE;; MiB*|MB*|*mebibyte*) want=$((VALUE * 1024));; By*|*byte*) want=$((VALUE * 1024 * 1024 * 1024));; *) echo "unexpected unit '$unit'"; exit 1;; esac
-            sum "- asking for $VALUE GiB ($want in the quota's unit) in $REGION"
-            pref="run-disk-$REGION"
-            if have gcloud beta quotas preferences describe "$pref" --project="$PROJECT"; then
-              do_ gcloud beta quotas preferences update "$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="Hawkes Studio cells need their 10 GiB working disk in $REGION"
-            else
-              do_ gcloud beta quotas preferences create --preference-id="$pref" --project="$PROJECT" --service=run.googleapis.com --quota-id="$qid" --preferred-value="$want" --dimensions=region="$REGION" --justification="Hawkes Studio cells need their 10 GiB working disk in $REGION"
-            fi
-            if [ "$APPLY" = true ]; then gcloud beta quotas preferences describe "$pref" --project="$PROJECT" --format='yaml(quotaConfig,reconciling)' | tee -a "$GITHUB_STEP_SUMMARY"; fi ;;
+          run-cpu-quota) quota cpu ;;
+          run-disk-quota) quota disk ;;
           esac
           [ "$APPLY" = true ] && sum "Applied." || sum "Plan only: run again with apply ticked to make these changes."
+      # A quota run tells the Studio that asked what it filed or found, or the real error (POST /api/hooks/quota with
+      # GitHub's OIDC token; quota.ts onReport): the card shows it, and a failed filing opens the same card again
+      # instead of Studio asking anew. Runs however the step above ended.
+      - name: Report to Studio
+        if: always() && (inputs.action == 'run-cpu-quota' || inputs.action == 'run-disk-quota') && inputs.studio != ''
+        env:
+          STUDIO: ${{ inputs.studio }}
+          OUTCOME: ${{ steps.run.outcome }}
+          ACTION: ${{ inputs.action }}
+          APPLY: ${{ inputs.apply }}
+          REGION: ${{ inputs.region }}
+          VALUE: ${{ inputs.value }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          [[ "$STUDIO" =~ ^https://studio(-beta)?\.hawkesgen\.ai(/o/[a-z0-9-]+)?$ ]] || { echo "studio must be a Hawkes Studio address"; exit 1; }
+          kind=cpu; [ "$ACTION" = run-disk-quota ] && kind=disk
+          f="$RUNNER_TEMP/quota.json"; [ -f "$f" ] || echo '{}' > "$f"
+          err=""
+          if [ "$OUTCOME" != success ]; then err=$( { tail -n 4 "$RUNNER_TEMP/said.txt" 2>/dev/null; grep -v '^\s*$' "$RUNNER_TEMP/stderr.txt" 2>/dev/null | tail -n 4; } | tr '\n' ' ' | cut -c1-600); [ -n "$err" ] || err="the ops-admin step ended $OUTCOME"; fi
+          body=$(jq -c --arg k "$kind" --arg r "$REGION" --arg v "$VALUE" --arg a "$APPLY" --arg o "$OUTCOME" --arg e "$err" --arg run "$RUN_ID" \
+            '. + {kind: $k, region: $r, value: ($v | tonumber), apply: ($a == "true"), ok: ($o == "success"), error: (if $e == "" then null else $e end), run: $run}' "$f")
+          echo "$body"
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$STUDIO" | jq -r .value)
+          curl -sS --fail-with-body --retry 6 --retry-delay 10 --retry-all-errors -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            --data "$body" "$STUDIO/api/hooks/quota"
