@@ -83,3 +83,10 @@ jobs:
           curl -sS -H "Authorization: Bearer $tok" "https://cloudquotas.googleapis.com/v1/projects/$PROJECT/locations/global/services/run.googleapis.com/quotaInfos?pageSize=200" \
             | jq -r --arg r "$REGION" '.quotaInfos[]? | select(.metric|test("cpu")) | "- \(.quotaId): " + ([.dimensionsInfos[]? | select(.dimensions.region==$r) | "\(.details.value)"] | join(","))' 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
           sum "(empty quota lines: this account may not read quotas)"
+          sum "### instances by service in $REGION, last 10 minutes (max)"
+          start=$(date -u -d '-10 min' +%FT%TZ); end=$(date -u +%FT%TZ)
+          curl -sS -G -H "Authorization: Bearer $tok" "https://monitoring.googleapis.com/v3/projects/$PROJECT/timeSeries" \
+            --data-urlencode "filter=metric.type=\"run.googleapis.com/container/instance_count\" AND resource.type=\"cloud_run_revision\" AND resource.labels.location=\"$REGION\"" \
+            --data-urlencode "interval.startTime=$start" --data-urlencode "interval.endTime=$end" \
+            --data-urlencode 'aggregation.alignmentPeriod=600s' --data-urlencode 'aggregation.perSeriesAligner=ALIGN_MAX' \
+            | jq -r 'if .error then "(cannot read Cloud Monitoring: \(.error.message))" else (.timeSeries[]? | "- \(.resource.labels.revision_name) \(.metric.labels.state): \(.points[0].value.int64Value // .points[0].value.doubleValue)") end' 2>/dev/null | sort | tee -a "$GITHUB_STEP_SUMMARY" || true
