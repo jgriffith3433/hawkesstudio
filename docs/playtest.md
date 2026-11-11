@@ -359,6 +359,20 @@ for loudness:
 The quality gate's `sound-design` rule holds them (`docs/quality.md`). One finding per broken limit names the action or
 sample and its time. A short timeline summary goes into `playtest.review` (`audio` param) and the critic's sound axis.
 
+## Sound kit
+
+The drop-in mixer that makes a game pass the sound-design rule (`clients/web/hawkes-sound.js`, Unity `HawkesSound` in
+`com.hawkes.playtest` 0.4.0; skill `sound-design`, per-game `docs/sound-bible.md` from `docs/sound-bible.template.md`).
+Buses `music`, `sfx`, `ui`, `voice`, `ambience`; variant sets (`defineSet`/`play`: random, never the same twice in a row, rate
+within ±5% of the base, jitter capped at 0.05); `speak` ducks music at least 6 dB (default 9) and restores it; music stems
+loop from one start and `setStem` changes on the next bar line; the first tap resumes the AudioContext and every press on a
+control plays `ui-press`. **What the probe reads:** the kit tags each source (`__hawkesSampleId` `set/variant`, `__hawkesBus`,
+`__hawkesGain`, `__hawkesDur`) so `sound-start` has sample, bus, rate and gain; ducking dispatches a `hawkes-sound` window
+event `{type:'bus-gain', bus:'music', gain}` which the probe logs as a `bus-gain` event (Studio's `audio.voiceDuckDb` counts it
+while a voice line plays, using the line's `dur`); a new context is announced `{type:'context', ctx}`. Unity reports its own
+`sound-start` / `bus-gain` the same way (WebGL: `hawkes-sound` event through `HawkesSound.jslib`; desktop: run events).
+Test `test/sound-kit.test.ts`.
+
 ## UI
 
 A phone is judged by thumb: a 30 px button, a control under the notch, one that runs off a landscape screen, or a press that

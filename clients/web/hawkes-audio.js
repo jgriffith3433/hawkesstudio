@@ -59,6 +59,7 @@ export function busOf(node) {
 
 function gainOf(node) {
   try {
+    if (typeof node?.__hawkesGain === 'number') return r2(node.__hawkesGain); // hawkes-sound.js: the bus's gain when it started
     if (node?.gain && typeof node.gain.value === 'number') return r2(node.gain.value);
     if (typeof node?.volume === 'number') return r2(node.volume);
   } catch {}
@@ -103,7 +104,7 @@ export function createAudioCore({ emit = () => {}, now = () => 0, scene = () => 
     try { emit(ev); } catch {}
   }
 
-  function soundStart({ sample, bus = 'sfx', rate = 1, gain = 1, t: at } = {}) {
+  function soundStart({ sample, bus = 'sfx', rate = 1, gain = 1, dur, t: at } = {}) {
     const t = at ?? now();
     const sc = scene() ?? sceneName;
     if (sc !== undefined) sceneName = sc;
@@ -132,7 +133,7 @@ export function createAudioCore({ emit = () => {}, now = () => 0, scene = () => 
     if (b === 'music') musicGain = g;
     if (b === 'voice') {
       m.hadVoice = true;
-      voiceUntil.push(t + 2);
+      voiceUntil.push(t + (Number(dur) > 0 ? Number(dur) : 2));
       // Duck = how far music is below unity while voice plays (positive dB of reduction).
       if (musicGain > 0 && musicGain < 1) {
         const db = -20 * Math.log10(Math.max(1e-6, musicGain));
@@ -144,6 +145,24 @@ export function createAudioCore({ emit = () => {}, now = () => 0, scene = () => 
     }
     while (voiceUntil.length && voiceUntil[0] < t) voiceUntil.shift();
     const ev = { type: 'sound-start', t: r2(t), sample: id, bus: b, rate: r3(r), gain: r2(g), scene: sc ?? undefined, id: `aud-${++n}` };
+    if (Number(dur) > 0) ev.dur = r2(Number(dur));
+    push(ev);
+    return ev;
+  }
+
+  /** A bus's gain moved (the sound kit's ducking): music below 1 while a voice line plays is the duck. */
+  function busGain({ bus = 'music', gain = 1, t: at } = {}) {
+    const t = at ?? now();
+    const b = String(bus || 'music').toLowerCase().slice(0, 40);
+    const g = Number.isFinite(Number(gain)) ? Number(gain) : 1;
+    if (b === 'music') {
+      musicGain = g;
+      if (g > 0 && g < 1 && voiceUntil.some((end) => t <= end)) {
+        const db = -20 * Math.log10(Math.max(1e-6, g));
+        if (db > m.voiceDuckDb) m.voiceDuckDb = r2(db);
+      }
+    }
+    const ev = { type: 'bus-gain', t: r2(t), bus: b, gain: r3(g), id: `aud-${++n}` };
     push(ev);
     return ev;
   }
@@ -187,7 +206,7 @@ export function createAudioCore({ emit = () => {}, now = () => 0, scene = () => 
   }
 
   return {
-    soundStart, input, resume, settleSilents,
+    soundStart, busGain, input, resume, settleSilents,
     events: () => events.slice(),
     metrics: () => {
       const out = {
@@ -259,6 +278,7 @@ export function startAudioProbe(opts = {}) {
 
   function pushEvent(type, extra = {}) {
     if (type === 'sound-start') return core.soundStart(extra);
+    if (type === 'bus-gain') return core.busGain(extra);
     if (type === 'input') return core.input(extra);
     if (type === 'audiocontext-resume') return core.resume(extra);
     return null;
@@ -286,6 +306,7 @@ export function startAudioProbe(opts = {}) {
                   bus: busOf(node),
                   rate: rateOf(node),
                   gain: gainOf(node),
+                  dur: node.__hawkesDur,
                 });
               } catch {}
               return origStart.apply(this, a);
@@ -363,6 +384,20 @@ export function startAudioProbe(opts = {}) {
       cleanups.push(() => { try { win.removeEventListener(type, onPointer, true); } catch {} });
     }
   }
+
+  // The sound kit (hawkes-sound.js) says when it makes a context and when a bus's gain moves (ducking).
+  const onKit = (e) => {
+    const d = e?.detail;
+    if (!d) return;
+    if (d.type === 'context' && d.ctx) tapContext(d.ctx);
+    else if (d.type === 'bus-gain') pushEvent('bus-gain', { bus: d.bus, gain: d.gain });
+    else if (d.type === 'sound-start') pushEvent('sound-start', { sample: d.sample, bus: d.bus, rate: d.rate, gain: d.gain, dur: d.dur }); // Unity's HawkesSound reports its own starts
+  };
+  if (win?.addEventListener) {
+    win.addEventListener('hawkes-sound', onKit);
+    cleanups.push(() => { try { win.removeEventListener('hawkes-sound', onKit); } catch {} });
+  }
+  try { if (win?.__hawkesSoundContexts) for (const c of win.__hawkesSoundContexts) tapContext(c); } catch {}
 
   // Announce the probe.
   const info = () => ({

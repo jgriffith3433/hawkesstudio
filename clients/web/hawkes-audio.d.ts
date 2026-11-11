@@ -2,7 +2,7 @@
 export const AUDIO_VERSION: 1;
 export const AUDIO_DEFAULTS: Record<string, number>;
 
-export type AudioEventType = 'sound-start' | 'input' | 'audiocontext-resume' | 'audio-sensor';
+export type AudioEventType = 'sound-start' | 'input' | 'audiocontext-resume' | 'audio-sensor' | 'bus-gain';
 export interface AudioEvent {
   type: AudioEventType | string;
   t: number;
@@ -15,12 +15,14 @@ export interface AudioEvent {
   how?: string;
   scene?: string;
   silent?: boolean;
+  dur?: number;
 }
 
 export type AudioMetrics = Record<string, number>;
 
 export interface AudioCore {
-  soundStart(o?: { sample?: string; bus?: string; rate?: number; gain?: number; t?: number }): AudioEvent;
+  soundStart(o?: { sample?: string; bus?: string; rate?: number; gain?: number; dur?: number; t?: number }): AudioEvent;
+  busGain(o?: { bus?: string; gain?: number; t?: number }): AudioEvent;
   input(o?: { action?: string; t?: number }): AudioEvent;
   resume(o?: { how?: string; t?: number }): AudioEvent;
   settleSilents(endT?: number): void;
