@@ -566,6 +566,9 @@ async function pull(f: Follow, r: JobRunner) {
       const b = await r.get(key(f.unit, `out/${n}`));
       if (!b) break;
       fs.appendFileSync(local(f.unit, kind), b);
+      // The runner's own phase times (change-timing.ts): printed as `[job] timing <phase>=<ms>` on its stderr.
+      // (Imported here, not at the top: the job's own runner imports this file and must not open Studio's database.)
+      if (kind === 'err' && b.includes('[job] timing ')) { const text = b.toString('utf8'); await import('./change-timing.ts').then((m) => m.noteJobTiming(f.unit, text)).catch(() => {}); }
       f.seen[kind] = i;
       jobFiles.emit(f.unit);
     }

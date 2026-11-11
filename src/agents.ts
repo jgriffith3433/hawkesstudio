@@ -110,7 +110,8 @@ import { memLow, memRoom, memFreed, memSummary } from './memgate.ts';
 import { queueHold, parkedOut } from './queue-heal.ts';
 import { refreshFromTask } from './queue-follow.ts';
 import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './inflight.ts';
-import { noteRail } from './change-rail.ts';
+import { noteRail, betaPart } from './change-rail.ts';
+import { noteTiming, timingOf } from './change-timing.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -144,6 +145,8 @@ try { db.exec('ALTER TABLE changes ADD COLUMN auto_fixes INTEGER'); } catch { /*
 // and the route of the current attempt (JSON), kept so every pass of one attempt runs on the same model.
 try { db.exec('ALTER TABLE changes ADD COLUMN revisions INTEGER'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE changes ADD COLUMN route TEXT'); } catch { /* already there */ }
+// When each phase was first reached (change-timing.ts, JSON).
+try { db.exec('ALTER TABLE changes ADD COLUMN timing TEXT'); } catch { /* already there */ }
 
 /**
  * Worktree paths are stored whole. When Studio's working folder moves (Cloud Run: from the in-memory /tmp/projects onto
@@ -194,6 +197,8 @@ export type Change = {
   auto_fixes?: number | null;
   /** Passes a person or the PM sent back (revise); the route of the current attempt (routing.ts, JSON). */
   revisions?: number | null; route?: string | null;
+  /** When each phase was reached and the seconds between them (change-timing.ts). */
+  timing?: import('./change-timing.ts').Timing;
   /** The Talk conversation that started it (followup.ts). */
   origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
@@ -294,7 +299,8 @@ function prGeneratedBy(id: string) {
 const toChange = (r: any): Change => {
   const verify = parse(r.verify);
   const b = brainOfChange(r);
-  return { ...r, infra: isInfra(r.product), criteria: parse(r.criteria) ?? [], findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify, notes: parse(r.notes) ?? [], log: parse(r.log) ?? [], ...b, links: changeLinks(r, verify) };
+  const timing = timingOf(r, { beta: (p, at) => (isInfra(p) ? null : betaPart(p, at)), verified: (task) => (db.prepare('SELECT verified_at FROM tasks WHERE id = ?').get(task) as any)?.verified_at ?? null });
+  return { ...r, timing, infra: isInfra(r.product), criteria: parse(r.criteria) ?? [], findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify, notes: parse(r.notes) ?? [], log: parse(r.log) ?? [], ...b, links: changeLinks(r, verify) };
 };
 export const getChange = (id: string) => {
   const r = db.prepare('SELECT * FROM changes WHERE id = ?').get(id);
@@ -331,6 +337,15 @@ function update(id: string, patch: Partial<Record<string, any>>) {
     .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.auto_merge ?? null, next.updated, id);
   // The change's progress rail (change-rail.ts): when each step was reached, and a `change-step` event on the dashboard's stream.
   if (cur) noteRail(next);
+  // Phase times (change-timing.ts): the first time each is reached.
+  if (cur) {
+    if (patch.status !== undefined && patch.status !== cur.status) {
+      if (cur.status === 'queued' && ['working', 'revising'].includes(String(patch.status))) noteTiming(id, 'dispatched');
+      if (patch.status === 'ready') noteTiming(id, 'checks_done');
+      if (patch.status === 'merged') noteTiming(id, 'merged', Number(next.merged_at) || Date.now());
+    }
+    if (patch.pr && !cur.pr) noteTiming(id, 'pr_opened');
+  }
   // A bug is consumed when an agent takes it (startFix marks it fixed). If that attempt fails, for whatever reason, the
   // bug goes back to open so the PM picks it up again (at most maxTries attempts, then J is asked): consumed means it
   // will get done, not that it's dropped when an attempt crashes.
@@ -3190,6 +3205,7 @@ export async function syncMergedOutside(repoFolder?: string) {
       const at = String(pr.merged_at ?? '').slice(0, 16).replace('T', ' ');
       const by = pr.merged_by?.login ? `${pr.merged_by.login} on GitHub` : 'GitHub';
       db.prepare('UPDATE changes SET merged_at = ? WHERE id = ?').run(Date.parse(pr.merged_at ?? '') || Date.now(), c.id);
+      noteTiming(c.id, 'merged', Date.parse(pr.merged_at ?? '') || Date.now());
       update(c.id, { status: 'merged', detail: `merged into ${c.base} outside Studio (${by}, ${at}): ${String(pr.merge_commit_sha ?? '').slice(0, 7)}${c.infra ? '' : ' (not live yet)'}`, notes: [...c.notes, { at: Date.now(), by, text: `merged on GitHub (pull request #${c.pr})` }] });
       addLog(c.id, `pull request #${c.pr} was merged outside Studio (${by}, ${at}): marked merged`);
       remember(c.id);
@@ -3932,6 +3948,7 @@ async function approveInfra(c: Change, by: string, origin?: string | null) {
   }
   const sha = String(m.sha ?? '').slice(0, 7);
   db.prepare('UPDATE changes SET merged_at = ?, conflicts = NULL, approved = NULL WHERE id = ?').run(Date.now(), c.id);
+  noteTiming(c.id, 'merged');
   update(c.id, {
     status: 'merged',
     detail: `merged into main by ${by}: ${sha}. CI runs on main, then the server deploys ${t.name} itself (it waits for runs, agents and Talk answers, and rolls back if unhealthy): GET /api/self-deploys`,
@@ -4662,6 +4679,7 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     void pullDev(c.product, `after merging ${id}`).catch((e) => console.warn(`[studio] beta working copy after ${id}: ${e.message ?? e}`));
     // Before beta's run starts: the PM matches beta's build after this time to the task (pm.ts followBuilds).
     db.prepare('UPDATE changes SET merged_at = ?, conflicts = NULL WHERE id = ?').run(Date.now(), id);
+    noteTiming(id, 'merged');
     update(id, { status: 'merged', detail: `merged into ${BETA} by ${by}: ${String(m.sha ?? '').slice(0, 7)} (not live yet)`, notes: [...c.notes, { at: Date.now(), by, text: auto ? `merged into ${BETA} automatically (ready: the agent's checks passed)` : `approved and merged into ${BETA}` }], ...(auto ? { auto_merge: 'merged' } : {}) });
     remember(id);
     for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });

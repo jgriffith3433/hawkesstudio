@@ -357,8 +357,10 @@ export function accessBrief(a: AgentAccess, repos: { slug: string; dir: string }
     a.gen ? 'It takes files from this Studio\'s own Gen library and from its owners\' own hawkesgen.ai libraries.' : 'It takes files from this Studio\'s own Gen library.',
   ];
   if (repos.length) {
-    lines.push('\n## The Studio\'s other repositories (read-only)\n', 'Shallow clones of the other projects\' repositories, to read (not to change: a change there is that project\'s own task):');
-    for (const r of repos) lines.push(`- \`${r.slug}\`: \`${r.dir}\``);
+    lines.push('\n## The Studio\'s other repositories (read-only)\n', 'Shallow clones of the other projects\' repositories, to read (not to change: a change there is that project\'s own task).',
+      'They are cloned in the background after you start, a few at a time, so each appears as it lands: read one only once its folder has a `.ready` file',
+      '(`ls <folder>/.ready`); a folder with none is still being cloned, and a repo that never appears could not be copied (carry on without it):');
+    for (const r of repos) lines.push(`- \`${r.slug}\`: \`${r.dir}\` (ready when \`${r.dir}/.ready\` exists)`);
   }
   return `${lines.join('\n')}\n`;
 }

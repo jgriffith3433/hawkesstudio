@@ -248,24 +248,77 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
     for (const f of p.files.filter((x) => path.isAbsolute(x.p))) unpack({ files: [{ ...f, p: at(f.p) }] }, '/');
     unpack({ files: p.files.filter((f) => !path.isAbsolute(f.p)), deleted: p.deleted }, cwd);
   }
-  for (const r of spec.repos ?? []) cloneExtra(r, at, log);
+  // The agent may start now: the other repos' read-only copies come after it has started (cloneExtras, from runUnit).
+  log(timingLine('workspace_ready'));
   return spec.git ? git(cwd, ['rev-parse', 'HEAD']).out : null;
+}
+
+/** The line the runner prints when it reaches a phase; Studio records it on the change (change-timing.ts noteJobTiming). */
+export const timingLine = (phase: 'job_started' | 'workspace_ready' | 'first_output', at: number = Date.now()) => `[job] timing ${phase}=${at}`;
+
+/** What one finished git command says (the async twin of gitWithToken). */
+type GitResult = { status: number | null; ok: boolean; err: string };
+
+/** git with the clone token as a one-off header, without blocking the runner (it keeps uploading the agent's output meanwhile). */
+function gitWithTokenAsync(cwd: string, args: string[], token: string | null, env: Record<string, string> = {}, signal?: AbortSignal): Promise<GitResult> {
+  const auth = token ? ['-c', `http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`] : [];
+  return new Promise((resolve) => {
+    let err = '';
+    const child = spawn('git', ['-c', 'safe.directory=*', ...auth, ...args], { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, ...(signal ? { signal } : {}) });
+    child.stderr.on('data', (d: Buffer) => { if (err.length < 8192) err += d.toString('utf8'); });
+    child.on('error', (e) => resolve({ status: null, ok: false, err: e.message }));
+    child.on('close', (code) => resolve({ status: code, ok: code === 0, err: err.trim() }));
+  });
 }
 
 /**
  * One read-only copy (shallow, no LFS files) of another of the Studio's repos, for the agent to read. Never part of its
  * work: it sits outside the worktree, and its token was read-only and is not kept (a one-off header). A failure only
- * leaves it out.
+ * leaves it out (and removes what it half wrote).
  */
-export function cloneExtra(r: ExtraRepo, at: (p: string) => string, log: (s: string) => void) {
+export async function cloneExtra(r: ExtraRepo, at: (p: string) => string, log: (s: string) => void, signal?: AbortSignal): Promise<boolean> {
   const dir = at(r.dir);
   if (!/^[\w.-]+\/[\w.-]+$/.test(r.slug) || !/^https:\/\/github\.com\//.test(r.remote)) return false;
   fs.mkdirSync(path.dirname(dir), { recursive: true });
   fs.rmSync(dir, { recursive: true, force: true });
-  const c = gitWithToken(path.dirname(dir), ['clone', '--quiet', '--depth', '1', '--single-branch', r.remote, dir], r.token, { GIT_LFS_SKIP_SMUDGE: '1' });
-  if (c.status !== 0) { log(`[job] ${r.slug} not copied: ${c.err.split('\n').pop()}`); return false; }
-  log(`[job] read-only copy of ${r.slug} at ${r.dir}`);
+  const c = await gitWithTokenAsync(path.dirname(dir), ['clone', '--quiet', '--depth', '1', '--single-branch', r.remote, dir], r.token, { GIT_LFS_SKIP_SMUDGE: '1' }, signal);
+  if (c.status !== 0) { fs.rmSync(dir, { recursive: true, force: true }); log(`[job] ${r.slug} not copied: ${c.err.split('\n').pop()}`); return false; }
   return true;
+}
+
+/** How many read-only copies are cloned at once. */
+export const EXTRA_CLONES_AT_ONCE = 4;
+/** The file a copy's folder gets when its clone is complete: the agent reads a copy only once this is there. */
+export const EXTRA_READY = '.ready';
+
+/**
+ * The other repos' read-only copies, cloned in the background once the agent has started (J, 2026-11-11: one blocking clone
+ * after another, up to 30, held every pass 2 to 13 minutes before its first line), at most EXTRA_CLONES_AT_ONCE at a time.
+ * Each finished copy gets a `.ready` marker in its folder (<worktree>.repos/<name>/.ready), after `own` has handed it to the
+ * pass's user; a clone that fails leaves only that repo out (no folder, no marker). Resolves with the slugs that landed.
+ * `clone` is injectable for the tests. No timers: each worker takes the next repo when its clone ends.
+ */
+export async function cloneExtras(repos: ExtraRepo[], at: (p: string) => string, log: (s: string) => void, o: { clone?: typeof cloneExtra; limit?: number; own?: (dir: string) => Promise<void>; signal?: AbortSignal } = {}): Promise<string[]> {
+  const clone = o.clone ?? cloneExtra;
+  const queue = [...repos];
+  const landed: string[] = [];
+  const worker = async () => {
+    for (let r = queue.shift(); r && !o.signal?.aborted; r = queue.shift()) {
+      const dir = at(r.dir);
+      try {
+        if (!(await clone(r, at, log, o.signal))) continue;
+        await o.own?.(dir);
+        fs.writeFileSync(path.join(dir, EXTRA_READY), `${new Date().toISOString()}\n`);
+        landed.push(r.slug);
+        log(`[job] read-only copy of ${r.slug} at ${r.dir}`);
+      } catch (e: any) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* nothing to remove */ }
+        log(`[job] ${r.slug} not copied: ${String(e?.message ?? e).split('\n').pop()}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(o.limit ?? EXTRA_CLONES_AT_ONCE, queue.length) }, worker));
+  return landed;
 }
 
 /**
@@ -457,7 +510,8 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
  * The whole execution. `store` is the bucket; `at` places absolute paths (tests: under a scratch root, as if on another
  * machine); `nudge` makes the function that tells Studio new output is up (the job's entry: httpNudge; tests their own).
  */
-export async function runUnit(unit: string, store: Store, { every = 2000, at = (p: string) => p, nudge = null }: { every?: number; at?: (p: string) => string; nudge?: ((env: Record<string, string>) => Nudge | null) | null } = {}): Promise<number> {
+export async function runUnit(unit: string, store: Store, { every = 2000, at = (p: string) => p, nudge = null, cloneExtra: cloneOne = cloneExtra }: { every?: number; at?: (p: string) => string; nudge?: ((env: Record<string, string>) => Nudge | null) | null; cloneExtra?: typeof cloneExtra } = {}): Promise<number> {
+  const jobStartedAt = Date.now();
   const key = (n: string) => `jobs/${unit}/${n}`;
   const chunks = { log: [] as Buffer[], err: [] as Buffer[] };
   const n = { log: 0, err: 0 };
@@ -502,6 +556,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     await store.put(key('out/exit.json'), JSON.stringify({ code: null, signal: null, error: `no spec: ${e.message}` }));
     return 1;
   }
+  say(timingLine('job_started', jobStartedAt));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-run-'));
   let start: string | null = null;
   let code: number | null = null;
@@ -510,11 +565,14 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   const baseline: Baseline = new Map();
   const tokenBox: { get?: () => string | null } = {};
   let passHome: string | null = null;
+  let extras: Promise<string[]> | null = null;
+  let extrasAbort: AbortController | null = null;
   try {
     start = await prepare(unit, spec, store, say, at, baseline, tokenBox);
     const user = agentUser();
     if (user) {
       // The pass's user owns its workspace and session folder (and nothing of this runner's).
+      if (spec.repos?.length) fs.mkdirSync(path.dirname(at(spec.repos[0].dir)), { recursive: true });
       for (const d of [at(spec.cwd), path.dirname(path.dirname(at(spec.sessions))), user.home, ...(spec.repos?.length ? [path.dirname(at(spec.repos[0].dir))] : [])]) spawnSync('chown', ['-R', `${user.uid}:${user.gid}`, d]);
       // And the files its command names by absolute path (Talk's --mcp-config, 0600): unreadable to it otherwise, so Claude
       // Code stopped with EACCES before answering (2026-10-29).
@@ -530,8 +588,17 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
       if (!flushMs || soon) return;
       soon = setTimeout(() => { soon = null; void flush().catch(() => {}); }, flushMs);
     };
-    child.stdout.on('data', (d: Buffer) => { chunks.log.push(d); wrote(); });
-    child.stderr.on('data', (d: Buffer) => { chunks.err.push(d); wrote(); });
+    // The agent's first output line (change-timing.ts first_output).
+    let firstOut = false;
+    const heard = () => { if (!firstOut) { firstOut = true; say(timingLine('first_output')); } };
+    child.stdout.on('data', (d: Buffer) => { heard(); chunks.log.push(d); wrote(); });
+    child.stderr.on('data', (d: Buffer) => { heard(); chunks.err.push(d); wrote(); });
+    // The other repos' read-only copies come now, behind the agent, not in front of it. The agent's user gets each one.
+    extrasAbort = new AbortController();
+    if (spec.repos?.length) {
+      const own = user ? (dir: string) => new Promise<void>((resolve) => { spawn('chown', ['-R', `${user.uid}:${user.gid}`, dir], { stdio: 'ignore' }).on('close', () => resolve()).on('error', () => resolve()); }) : undefined;
+      extras = cloneExtras(spec.repos, at, say, { clone: cloneOne, own, signal: extrasAbort.signal }).catch((e) => { say(`[job] the other repos' copies: ${e?.message ?? e}`); return []; });
+    }
     const timer = setInterval(() => void (async () => {
       await flush();
       if ((await store.list(key('stop'))).length && child.exitCode === null) {
@@ -549,6 +616,9 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     error = String(e.message ?? e);
     say(`[job] ${error}`);
   }
+  // The pass is over: a copy still being cloned is not needed any more.
+  extrasAbort?.abort();
+  if (extras) await extras;
   // An AI CLI that refreshed its sign-in in the pass's home (OpenAI's refresh tokens work once): the new login files go
   // back for Studio to keep (cli-signin.ts keepRefreshedLogin), or the next pass would start with a spent one.
   try {
