@@ -257,6 +257,19 @@ async function autoGoLiveNow(productId: string, why: string): Promise<{ went?: s
 export const BEFORE_GO_LIVE = 'Before go-live: playing beta';
 const focusFor = (short: string) => `${BEFORE_GO_LIVE} ${short} once, covering every merge since its last playtest. Check what changed works and nothing regressed.`;
 
+/** The tasks beta's play of `short` judges: pm.ts coveredByBetaPlay against beta's full commit. A failure covers none (nothing is judged by guess). */
+async function coveredFor(productId: string, short: string, covered?: (product: string, sha: string) => Promise<{ criteria: string[]; tasks: string[] }>) {
+  try {
+    const pm = await import('./pm.ts');
+    const head = pm.betaHead(productId);
+    const sha = head && head.startsWith(short) ? head : short;
+    return await (covered ?? pm.coveredByBetaPlay)(productId, sha);
+  } catch (e: any) {
+    console.warn(`[golive] ${productId}: merged tasks not added to the play before going live: ${e?.message ?? e}`);
+    return { criteria: [], tasks: [] };
+  }
+}
+
 /**
  * Starts ONE beta playtest of beta's newest commit before it goes live (autoGoLive, betaPlayWhen "go-live"), unless one
  * is already playing for the project (merges that land meanwhile wait for it: the next pass plays the newest commit) or
@@ -264,7 +277,7 @@ const focusFor = (short: string) => `${BEFORE_GO_LIVE} ${short} once, covering e
  * which takes beta live if the play passed. Its review also judges the criteria of every merged task not verified yet
  * (pipeline.ts betaBody, acceptance.ts sweepFor): no play of its own for them. `start` is for the tests.
  */
-export async function playBeforeGoLive(productId: string, short: string, why: string, start?: (product: string, o: Record<string, unknown>) => { id: string }, cause?: 'person'): Promise<{ started?: string; playing?: string; played?: string; error?: string }> {
+export async function playBeforeGoLive(productId: string, short: string, why: string, start?: (product: string, o: Record<string, unknown>) => { id: string }, cause?: 'person', covered?: (product: string, sha: string) => Promise<{ criteria: string[]; tasks: string[] }>): Promise<{ started?: string; playing?: string; played?: string; error?: string }> {
   const runs = db.prepare(`SELECT id, status, options FROM runs WHERE kind = 'beta' AND options LIKE ? AND products LIKE ? ORDER BY started DESC LIMIT 20`).all(`%${BEFORE_GO_LIVE}%`, `%"${productId}"%`) as any[];
   const playing = runs.find((r) => r.status === 'running');
   if (playing) return { playing: playing.id };
@@ -274,7 +287,10 @@ export async function playBeforeGoLive(productId: string, short: string, why: st
   if (done) return { played: done.id };
   try {
     const go = start ?? (await import('./pipeline.ts')).startBeta;
-    const r = go(productId, { focus: focusFor(short), playtest: true, reverify: true, ...(cause ? { cause } : {}) });
+    // Judges, in this one play, the criteria of the merged tasks whose merge is part of the commit it plays (and whose
+    // criteria need no scenario it doesn't run): never a scenario or a playtest more. Only yes or no count from it.
+    const sweep = await coveredFor(productId, short, covered);
+    const r = go(productId, { focus: focusFor(short), playtest: true, reverify: true, ...(sweep ? { sweep } : {}), ...(cause ? { cause } : {}) });
     console.log(`[golive] ${productId}: playing beta ${short} once before going live (${why}): ${r.id}`);
     return { started: r.id };
   } catch (e: any) {
