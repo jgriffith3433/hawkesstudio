@@ -16,7 +16,11 @@
 // learned the hard way: the CPU in use when Cloud Run last left one of its jobs unstarted for want of room (noteNoRoom).
 // With none of those known, starts are not held (work never stops for a gate that can't see).
 
-export const RESERVE_VCPU = () => Number(process.env.STUDIO_CPU_RESERVE ?? 8);
+// With the jobs in a project of their own (jobsproject.ts) they share no quota with the server: nothing to keep back,
+// and the room is that project's quota (STUDIO_JOBS_CPU_QUOTA, else learned), counted over that project's jobs.
+import { jobsApart, jobsProject } from './jobsproject.ts';
+
+export const RESERVE_VCPU = () => Number(process.env.STUDIO_CPU_RESERVE ?? (jobsApart() ? 0 : 8));
 export const AGENT_JOB_VCPU = () => Number(process.env.STUDIO_AGENT_JOB_CPU ?? 2);
 const WAIT_MIN_MS = () => Number(process.env.STUDIO_CPU_WAIT_MS ?? 60_000);
 const WAIT_MAX_MS = 10 * 60_000;
@@ -37,6 +41,7 @@ export const roomHooks: { limit?: () => Promise<number | null>; used?: () => Pro
 
 async function limitNow(): Promise<number | null> {
   if (roomHooks.limit) return roomHooks.limit();
+  if (jobsApart()) { const n = Number(process.env.STUDIO_JOBS_CPU_QUOTA); return Number.isFinite(n) && n > 0 ? n : learned; }
   const q = await import('./quota.ts').then((Q) => Q.quotaNow('cpu')).catch(() => null);
   if (q?.value) return q.value;
   const env = Number(process.env.STUDIO_CPU_QUOTA);
@@ -46,7 +51,7 @@ async function limitNow(): Promise<number | null> {
 /** vCPU every open job execution in the region holds or waits for, or null when Studio can't read it. */
 export async function usedNow(): Promise<number | null> {
   if (roomHooks.used) return roomHooks.used();
-  const project = process.env.STUDIO_GCP_PROJECT;
+  const project = jobsProject();
   if (!project) return null;
   const region = process.env.STUDIO_GCP_REGION || 'us-east4';
   return (await import('./gcp.ts')).regionJobCpu(project, region).then((x) => x.vcpu).catch(() => null);
@@ -55,7 +60,7 @@ export async function usedNow(): Promise<number | null> {
 /** vCPU of job tasks running now in the region (what Cloud Run actually granted), or null. */
 export async function runningNow(): Promise<number | null> {
   if (roomHooks.running) return roomHooks.running();
-  const project = process.env.STUDIO_GCP_PROJECT;
+  const project = jobsProject();
   if (!project) return null;
   const region = process.env.STUDIO_GCP_REGION || 'us-east4';
   return (await import('./gcp.ts')).regionJobCpu(project, region).then((x) => x.running).catch(() => null);
