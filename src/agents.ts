@@ -1364,6 +1364,30 @@ async function playersBrief(product: string) {
   }
 }
 
+/**
+ * The task bar's player goal (taskbar.ts) at the top of an agent's brief, above what J asked for: the work is done when a
+ * player sees this on beta, not when the code compiles. An infra task gets its outcome. Empty for work with no task or bar.
+ */
+export function barBrief(c: Pick<Change, 'task'>): string {
+  const bar = c.task ? getTask(c.task)?.bar : null;
+  if (!bar || (!bar.goal && !bar.outcome)) return '';
+  if (bar.outcome && !bar.goal) return `## Outcome
+
+${bar.outcome}
+
+The work is done when this is true on beta (a result someone can see or measure), not when the code compiles.
+
+`;
+  return `## Player goal
+
+${bar.goal}
+${bar.reference ? `\nReference (a best-in-class game, and the moment to match): ${bar.reference}` : ''}${bar.axis ? `\nCritic axis (what the critics will judge this on): ${bar.axis}` : ''}${bar.phone ? `\nOn a phone (390x844, touch): ${bar.phone}` : ''}
+
+The work is done when a player sees this on beta, not when the code compiles.
+
+`;
+}
+
 async function writeBrief(c: Change, p: Product, findings0: any[], note?: string) {
   // Each finding with the library entities it names (finding-entities.ts), so the agent can fix art there, not in code.
   const findings: any[] = await import('./finding-entities.ts').then(({ withEntities }) => withEntities(findings0)).catch(() => findings0);
@@ -1425,7 +1449,7 @@ The website (home page, blog, privacy page, the game page) is a separate repo, $
 works in the game's source only; if the request is really about those pages, say so in the summary (a task with target
 "site" works there).
 ` : ''}
-${c.request ? `## What J asked for
+${barBrief(c)}${c.request ? `## What J asked for
 
 ${c.request}
 
@@ -1437,7 +1461,10 @@ ${gpuBrief(c)}` : ''}${c.task && isVideoTask(c.task) ? videoBrief(c) : ''}${c.cr
 The change is ready once your checks pass and its pull request is open; after it is merged into beta, beta's playtest
 judges these, and the work is done only when every one of them passes there:
 ${c.criteria.map((k, i) => `${i + 1}. ${k}`).join('\n')}
-
+${c.criteria.some((k) => /^\s*\[phone\]/i.test(k)) ? `
+Criteria starting with "[phone]" are judged on a 390x844 touch playtest (beta plays them apart from the rest), so the
+scenario must play them through touch input (taps and drags, no mouse or keyboard), and the layout must work at that size.
+` : ''}
 Where the game implements the playtest contract (\`window.hawkesPlaytest\`: see this project's AGENTS.md, and the spec
 at \`hawkesstudio/docs/playtest.md\` next to this repository), add or extend a scenario that plays to what the criteria
 describe (through real input, no teleporting; named setup shortcuts are fine) and logs events or checks that show each
@@ -4611,7 +4638,12 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
     // A fix for a project that reads fix-first or broken: ONE beta playtest + review follows the burst of merges (verdictwork.ts).
     void import('./verdictwork.ts').then((m) => m.noteMerge(c.product, id)).catch(() => {});
-    void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options, merge: id })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
+    void Promise.all([import('./pipeline.ts'), import('./taskbar.ts')]).then(([{ startBeta }, bar]) => {
+      // A roadmap task's player goal goes into the focus, and its "[phone]" criteria play at 390x844 touch (taskbar.ts).
+      const task = c.task ? getTask(c.task) : null;
+      const focus = bar.focusWithGoals(`Just merged into beta: ${c.title}. Check it works and nothing regressed.`, task ? [task] : []);
+      return startBeta(c.product, { focus, origin, merge: id, ...(c.criteria.some((k) => bar.PHONE.test(k)) ? { plays: bar.splitPlays(c.verify?.scenario, c.verify?.options, c.criteria), playtest: true } : { criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options }) });
+    }).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
     return getChange(id);
   });
 }

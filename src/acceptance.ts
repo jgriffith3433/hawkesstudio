@@ -22,7 +22,7 @@
 
 import { askClaude } from './llm.ts';
 import { db } from './db.ts';
-import { getTask, landed, type Check, type Task } from './roadmap.ts';
+import { getTask, landed, goalsForCriteria, type Check, type Task } from './roadmap.ts';
 import { failLine, type QualityFail } from './quality.ts';
 import { gitAsync } from './beta.ts';
 
@@ -74,6 +74,8 @@ export async function judgeCriteria(criteria: string[], review: any, playtest: a
 /** Studio's own judge: a separate Claude run on the evidence, without the builder's account. */
 export async function separateJudge(criteria: string[], review: any, playtest: any): Promise<Check[]> {
   const motion = ((review?.motion?.sheets ?? []) as any[]).map((m) => m?.asset).filter(Boolean).slice(0, 4);
+  const goals = goalsForCriteria(criteria);
+  const phone = playtest?.device === 'phone';
   const frames = [...((review?.frames ?? []) as any[]).map((f) => f?.asset).filter(Boolean).slice(0, 12), ...motion].map((a: string) => (/^(asset|blob):/.test(a) ? a : `asset:${a}`));
   const prompt = `A playtest bot played a game build and a reviewer watched it. Judge whether each ACCEPTANCE CRITERION is met,
 from the evidence below (and the attached frames, in order${motion.length ? `; the last ${motion.length} are motion contact sheets, 1.2 s of video at 15 fps each, read left to right, top to bottom` : ''}). You are a separate judge:
@@ -82,7 +84,8 @@ you never see the builder's own account, only what the build did. Be strict: "ye
 
 ACCEPTANCE CRITERIA:
 ${criteria.map((k, i) => `${i + 1}. ${k}`).join('\n')}
-
+${goals.length ? `\nWHAT THE PLAYER SHOULD GET (the task's goal; the work is done when a player sees this, not when the code compiles):\n${goals.map((g) => `- ${g}`).join('\n')}\n` : ''}
+${criteria.some((k) => /^\s*\[phone\]/i.test(k)) ? `Criteria starting with "[phone]" were meant to be played at 390x844 touch. This play was on ${phone ? 'a phone (390x844 touch)' : 'desktop'}${phone ? '' : ': judge a "[phone]" criterion "unclear", whatever the footage shows'}.\n` : ''}
 PLAYTEST: outcome ${playtest?.outcome ?? '?'}, scenario ${playtest?.scenario ?? '?'}, ${playtest?.seconds ?? '?'} s.
 Events (last 80): ${JSON.stringify((playtest?.events ?? []).slice(-80)).slice(0, 6000)}
 Log (last 40): ${JSON.stringify((playtest?.log ?? []).slice(-40)).slice(0, 4000)}
@@ -229,7 +232,9 @@ export function runVerdicts(steps: ReviewStep[], criteria: string[]): RunVerdict
 }
 
 /** How changeVerdictHolds reads git: the merge commit, a merge base, the files two commits differ in (null: can't tell). */
-export type CarryDeps = { merge: () => Promise<string | null>; fork: (a: string, b: string) => Promise<string | null>; files: (a: string, b: string) => Promise<string[] | null> };
+export type CarryDeps = { merge: () => Promise<string | null>; fork: (a: string, b: string) => Promise<string | null>; files: (a: string, b: string) => Promise<string[] | null>;
+  /** Whether the first commit is an ancestor of the second (null: can't tell). A play of a commit the merge contains is the verdict outright. */
+  isAncestor?: (a: string, b: string) => Promise<boolean | null> };
 /** Agents' notes are never part of the work (agents.ts NOTES). */
 const NOTES = /^\.hawkes\//;
 
@@ -253,6 +258,8 @@ export async function changeVerdictHolds(c: { verify: any }, criteria: string[],
   try {
     const merge = await deps.merge();
     if (!merge) return no('its merge commit on beta was not found');
+    // The commit it played is part of beta's merge: what was judged is what beta got (a merge commit; a squash isn't).
+    if (deps.isAncestor && (await deps.isAncestor(played, merge)) === true) return { holds: true, why: `its own playtest of ${played.slice(0, 7)} met all ${criteria.length} criteria, and that commit is part of beta's merge ${merge.slice(0, 7)}` };
     const fork = await deps.fork(played, `${merge}^1`);
     if (!fork) return no(`can't find where ${played.slice(0, 7)} left beta`);
     const mine = await deps.files(fork, played);
@@ -279,6 +286,12 @@ export function localGitDeps(dir: string, base: string, pr: number | null): Carr
   return {
     merge: async () => (pr ? (await run(['log', `origin/${base}`, '-F', `--grep=(#${pr})`, '--format=%H', '-n', '1'])) || null : null),
     fork: async (a, b) => (await run(['merge-base', a, b])) || null,
+    isAncestor: async (a, b) => {
+      fetched ??= gitAsync(dir, ['fetch', '--quiet', 'origin']).catch(() => null);
+      await fetched;
+      const r = await gitAsync(dir, ['merge-base', '--is-ancestor', a, b]);
+      return r.ok ? true : /fatal|unknown|not a valid|bad object/i.test(r.err) ? null : false;
+    },
     files: async (a, b) => {
       const out = await run(['diff', '--name-only', a, b]);
       return out === null ? null : out.split('\n').map((x) => x.trim()).filter(Boolean);

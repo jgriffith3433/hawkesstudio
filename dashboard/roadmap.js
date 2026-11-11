@@ -34,6 +34,8 @@ async function loadRoadmap() {
   const asked = pm.questions.filter((q) => q.status === 'asked J').length;
   const agents = pm.questions.length - asked;
   studioPatch($('#rmQuestions'), pm.questions.length ? `<div class="meta" style="margin:4px 0 8px">${asked ? `<b>${asked} question(s) for you</b> are in your <a href="#inbox" onclick="show('inbox');return false">Inbox</a>.` : ''}${agents ? ` ${agents} agent question(s) the PM is answering.` : ''}</div>` : '');
+  // The task bar (taskbar.ts): one line per project, and each task it parked with its reason (readable at 390px: plain wrapping lines).
+  studioPatch($('#rmTaskBar'), taskBarHtml(r.taskBar));
   rmMilestones = r.milestones;
   rmItems = r.items;
   const view = $('#rmView').value;
@@ -58,6 +60,18 @@ async function loadRoadmap() {
   for (const d of $('#rmList').querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
   studioPatch($('#rmLog'), logHtml(pm));
   for (const id of rmOpen) loadThread(id);
+}
+
+/** "Task bar: 3 rewritten, 1 parked this week" per project that has had any, with each parked task's reason and an Edit button. */
+function taskBarHtml(bar) {
+  const lines = Object.entries(bar ?? {}).map(([id, b]) => {
+    const w = b.last7days ?? {};
+    const parts = [w.rewritten ? `${w.rewritten} rewritten` : '', w.parked ? `${w.parked} parked` : '', w.passed ? `${w.passed} passed` : ''].filter(Boolean);
+    if (!parts.length && !(b.parkedTasks ?? []).length) return '';
+    return `<div class="meta" data-key="tb:${esc(id)}" style="margin:2px 0"><b>${esc(rmNames[id] ?? id)}</b> · Task bar: ${parts.length ? `${esc(parts.join(', '))} this week` : 'nothing new this week'}
+      ${(b.parkedTasks ?? []).map((t) => `<div style="margin:2px 0 2px 10px">⏸ ${esc(t.title)}: ${esc(t.reason)} <button class="small" data-edit-task="${esc(t.id)}">Edit</button></div>`).join('')}</div>`;
+  }).filter(Boolean);
+  return lines.length ? `<div style="margin:4px 0 8px">${lines.join('')}</div>` : '';
 }
 
 /** The PM decision log, with Undo on the ones that can be undone. */
@@ -358,6 +372,15 @@ $('#roadmap').addEventListener('click', async (e) => {
       if (!title) return;
       const test = prompt('What will you playtest yourself when it is reached?') ?? '';
       await api('/api/roadmap/milestones', { method: 'POST', body: { title, test, product: $('#rmProduct').value || null } });
+    }
+    if (t.dataset.editTask) {
+      // A parked task's request, edited: Plan it again afterwards and the task bar judges the new version.
+      const cur = await api(`/api/roadmap/tasks/${t.dataset.editTask}`);
+      const request = prompt(`${cur.title}\n\nEdit what the agent should do (a game task: add "Player goal:", "Reference:", "Critic axis:", "Phone:" lines and a "[phone] " criterion in Talk; an infra task: "Outcome:")`, cur.request);
+      if (request === null) return;
+      const criteria = prompt('Acceptance criteria, separated by ";" (what a playtest can show; one "[phone] ..." for a game)', (cur.criteria ?? []).join('; '));
+      if (criteria === null) return;
+      await api(`/api/roadmap/tasks/${t.dataset.editTask}`, { method: 'PATCH', body: { request, criteria: criteria.split(';').map((s) => s.trim()).filter(Boolean) } });
     }
     if (t.dataset.item) await api(`/api/roadmap/items/${t.dataset.item}`, { method: 'PATCH', body: { status: t.dataset.st } });
     if (t.dataset.task) await api(`/api/roadmap/tasks/${t.dataset.task}`, { method: 'PATCH', body: { status: t.dataset.st } });

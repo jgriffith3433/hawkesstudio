@@ -39,9 +39,11 @@ import {
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
   itemProgress, gpuCleared, setStartWaitHook, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf, waitingOn, STUCK_DEPENDENCY,
-  pmLogVersion, unityGated,
+  pmLogVersion, unityGated, setBar,
 } from './roadmap.ts';
-import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps } from './acceptance.ts';
+import { gateTask, PHONE, splitPlays, focusWithGoals } from './taskbar.ts';
+import { askKey } from './playplan.ts';
+import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps, awaitingVerdict, SWEEP_MAX } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { fileUrl, signFileLinks } from './gen.ts';
@@ -271,7 +273,7 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
     // Parked on its Gen jobs (agents.ts WAITING_GEN): still working, without a slot (the roadmap says how far its jobs are).
     const next = ACTIVE.includes(c.status) || c.status === 'waiting on Gen' ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? mergedStatus(t, c) : null;
     if (next && next !== t.status) {
-      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' || next === GPU_WAIT ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
+      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' || next === GPU_WAIT ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, ...(c.verify.played ? { sha: String(c.verify.played) } : {}), video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
       if (next === 'merged') kick();
       if (next === GPU_WAIT) waitForGpu(t, c);
     }
@@ -365,7 +367,8 @@ async function checkOnBeta(t: Task) {
       const { getChange } = await changes();
       const c = getChange(t.change!);
       const { startBeta } = await import('./pipeline.ts');
-      const r = startBeta(t.product, { focus: `Checking "${t.title}" on beta.`, criteria: t.criteria, scenario: c?.verify?.scenario, options: c?.verify?.options });
+      const split = t.criteria.some((k) => PHONE.test(k));
+      const r = startBeta(t.product, { focus: focusWithGoals(`Checking "${t.title}" on beta.`, [t]), ...(split ? { plays: splitPlays(c?.verify?.scenario, c?.verify?.options, t.criteria), playtest: true } : { criteria: t.criteria, scenario: c?.verify?.scenario, options: c?.verify?.options }) });
       logDecision('beta-check', t.id, t.product, `started beta run ${r.id} to check "${t.title}" against its criteria`);
     }
     if (playsAfterMerges && !t.criteria.length && Date.now() - (t.merged_at ?? 0) > 2 * 3600_000) {
@@ -453,6 +456,37 @@ export async function carryChangeVerdict(t: Task, deps?: Parameters<typeof chang
   setTask(t.id, { status: 'verified', verified_at: Date.now(), checks: { ...t.checks, carried: r.why } });
   logDecision('verified', t.id, t.product, `"${t.title}": ${r.why}`.slice(0, 1000));
   return true;
+}
+
+/**
+ * The merged tasks the play before going live judges (golive-policy.ts playBeforeGoLive): merged and not verified yet,
+ * whose merge commit is an ancestor of the beta commit it plays (a task merged after that commit isn't in the build
+ * played), and only those whose criteria need no scenario the play doesn't already run (playsFor: the product's default
+ * beta scenario on desktop; a task's own scenario or a phone play would be a playtest of its own). Whole tasks, up to
+ * SWEEP_MAX criteria. `deps` are the tests'.
+ */
+export async function coveredByBetaPlay(product: string, betaSha: string, deps: { merge?: (t: Task) => Promise<{ slug: string; sha: string } | null>; includes?: typeof includesMerge; tasks?: Task[] } = {}): Promise<{ criteria: string[]; tasks: string[] }> {
+  const out = { criteria: [] as string[], tasks: [] as string[] };
+  if (!betaSha || !hasBeta(product)) return out;
+  const { betaPlaytestOf } = await import('./pipeline.ts');
+  const dflt = betaPlaytestOf(getProduct(product))?.scenario;
+  for (const t of deps.tasks ?? awaitingVerdict(product)) {
+    const own = await playsFor([t]);
+    if (!own.length || own.some((p) => p.device === 'phone' || p.options || (p.scenario && p.scenario !== dflt))) continue;
+    try {
+      const m = await (deps.merge ?? mergeOf)(t);
+      if (!m) continue;
+      const gt = deps.includes ? null : await import('./ghtoken.ts');
+      const gh = gt ? gt.githubFetch(await gt.repoToken(m.slug)) : (undefined as never);
+      const inside = await (deps.includes ?? includesMerge)(m.slug, m.sha, betaSha, gh);
+      if (inside !== true) continue;
+    } catch { continue; }
+    const add = [...new Set(t.criteria)].filter((k) => !out.criteria.includes(k));
+    if (out.criteria.length && out.criteria.length + add.length > SWEEP_MAX()) continue;
+    out.criteria.push(...add);
+    out.tasks.push(t.id);
+  }
+  return out;
 }
 
 /** A daily run's play behind a review: done, and not stuck (the rest of a daily run says nothing about it). */
@@ -547,7 +581,7 @@ export function buildOf(product: string, r: { id: string; status: string; detail
  * build's error lines (decideFailedBuild: the one whose change touched the files they name, else the one merged last;
  * nothing while beta has moved since that build or a fix for it is underway). No beta run after a merge: one is started.
  */
-export async function followBuilds() {
+export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[1]) {
   const { getChange } = await changes();
   await settleCancelledBuilds(getChange);
   const byProduct = new Map<string, { t: Task; at: number }[]>();
@@ -575,7 +609,13 @@ export async function followBuilds() {
     const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
     for (const { t, at } of list) {
       const r = finished.find((x) => x.started >= at);
-      if (r && t.build?.run !== r.id) setTask(t.id, { build: buildOf(product, r, await proofFor(product, t, r.id)) });
+      if (r && t.build?.run !== r.id) {
+        setTask(t.id, { build: buildOf(product, r, await proofFor(product, t, r.id)) });
+        // Its change's own playtest met every criterion and beta's build of a commit with the merge succeeded: verified now,
+        // no beta run for it. A failed build leaves it merged (carryChangeVerdict needs build.ok).
+        const now = getTask(t.id);
+        if (now?.build?.ok === true) await carryChangeVerdict(now, deps).catch((e: any) => console.warn(`[pm] carry ${t.id}: ${e.message ?? e}`));
+      }
     }
     // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
     const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
@@ -693,7 +733,7 @@ async function decideFailedBuild(product: string, run: { id: string; started: nu
 }
 
 /** Beta's newest commit for a product (its source checkout's origin/beta), or null. */
-function betaHead(product: string) {
+export function betaHead(product: string) {
   try {
     const dir = repoDirs(getProduct(product)).source;
     return fs.existsSync(dir) ? shaOf(dir, `origin/${BETA}`) : null;
@@ -779,7 +819,7 @@ export async function milestoneCheck(id: string) {
     const { startBeta } = await import('./pipeline.ts');
     for (const product of products) {
       const plays = await playsFor(tasks.filter((x) => x.product === product));
-      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Play its build once for the milestone.'}`, plays, playtest: true, play: 'milestone', quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
+      const r = startBeta(product, { focus: focusWithGoals(`Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Play its build once for the milestone.'}`, tasks.filter((x) => x.product === product)), plays, playtest: true, play: 'milestone', quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
       runs.push(r.id);
     }
     setMilestoneChecks(id, runs);
@@ -837,13 +877,18 @@ export async function milestoneCheck(id: string) {
  */
 export async function playsFor(tasks: Task[]) {
   const { getChange } = await changes();
-  const plays = new Map<string, { scenario?: string; options?: Record<string, unknown>; criteria: string[] }>();
+  const plays = new Map<string, { scenario?: string; options?: Record<string, unknown>; device?: 'phone'; criteria: string[] }>();
   for (const t of tasks) {
     const v = t.change ? getChange(t.change)?.verify : null;
-    const key = v?.scenario ? `${v.scenario} ${JSON.stringify(v.options ?? null)}` : '';
-    const p = plays.get(key) ?? { ...(v?.scenario ? { scenario: v.scenario, ...(v.options ? { options: v.options } : {}) } : {}), criteria: [] as string[] };
-    for (const k of t.criteria) if (!p.criteria.includes(k)) p.criteria.push(k);
-    plays.set(key, p);
+    // A task's "[phone]" criteria (taskbar.ts) are played apart, at 390x844 touch (same scenario and options); the rest on desktop.
+    for (const phone of [false, true]) {
+      const crit = t.criteria.filter((k) => PHONE.test(k) === phone);
+      if (!crit.length) continue;
+      const key = askKey({ scenario: v?.scenario, options: v?.options, device: phone ? 'phone' : undefined });
+      const p = plays.get(key) ?? { ...(v?.scenario ? { scenario: v.scenario, ...(v.options ? { options: v.options } : {}) } : {}), ...(phone ? { device: 'phone' as const } : {}), criteria: [] as string[] };
+      for (const k of crit) if (!p.criteria.includes(k)) p.criteria.push(k);
+      plays.set(key, p);
+    }
   }
   return [...plays.values()].filter((p) => p.criteria.length);
 }
@@ -1233,6 +1278,13 @@ export async function startWork() {
     if (await slotHeld(t.product, await taskShape(t))) continue;
     // Studio failed to run its last agents for this task: it waits, longer each time (infraHoldOf), not a restart loop.
     if (infraHoldOf(t.id)) continue;
+    // The task bar (taskbar.ts): a task that doesn't meet it is rewritten into the shape or parked, never started as it is.
+    try {
+      if (await gateTask(t) !== 'ok') continue;
+    } catch (e: any) {
+      console.warn(`[pm] task bar on ${t.id}: ${e.message ?? e}`);
+      continue;
+    }
     try {
       out.push(await startTaskChange(t, rescueNote(t.id), `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked${rescueNote(t.id) ? '; with a scout\'s diagnosis' : ''}`));
     } catch (e: any) {
@@ -1863,7 +1915,7 @@ export async function releaseInvestigations() {
         try {
           const { startBeta } = await import('./pipeline.ts');
           // Each task's own scenario, not one default for all their criteria.
-          run = startBeta(product, { focus: `Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, plays: await playsFor(tasks.filter((x) => x.criteria.length)), playtest: true }).id;
+          run = startBeta(product, { focus: focusWithGoals(`Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, tasks), plays: await playsFor(tasks.filter((x) => x.criteria.length)), playtest: true }).id;
         } catch (e: any) {
           console.warn(`[pm] re-check after ${inv.change}: ${e.message ?? e}`);
         }
@@ -2037,6 +2089,13 @@ export async function undoDecision(id: string, by = 'J') {
     }
     for (const x of u.tasks ?? []) if (getTask(x.id)) setTask(x.id, { status: x.status, tries: x.tries, note: x.note, checks: x.checks });
     detail = `${(u.tasks ?? []).length} task(s) back as they were${u.change ? `; closed ${u.change}` : ''}`;
+  } else if (u.kind === 'task-bar') {
+    // A rewrite by the task bar: the request, criteria and bar as they were (judged as passing, so it isn't rewritten again).
+    if (getTask(u.task)) {
+      updateTask(u.task, { request: u.request, criteria: u.criteria });
+      setBar(u.task, u.bar ?? null);
+    }
+    detail = `${u.task} has its original request and criteria back`;
   } else if (u.kind === 'settings') {
     fs.writeFileSync(FILE, JSON.stringify({ ...pmSettings(), ...u.before }, null, 2));
     detail = `settings back: ${JSON.stringify(u.before)}`;
@@ -2204,6 +2263,8 @@ export function fileBlocker(a: { from: string; product: string; target: string; 
     const k = addTask({
       item: it.id, priority: 'high', title: `Fix what blocks ${name(a.product)} (found by ${a.from})`.slice(0, 160),
       request: `${name(a.product)} is blocked by something in ${name(a.target)}: its agent (change ${a.from}) found the fix belongs here and made no commit there. Its words:\n\n${a.text.slice(0, 3000)}\n\nFix it here in ${name(a.target)} (keep the change small) and run the checks. Once this merges, Studio builds ${name(a.product)}'s beta again.`,
+      outcome: `${name(a.product)}'s beta builds again and its waiting tasks start`,
+      criteria: [`${name(a.product)}'s next beta build ends done, not failed`, `${name(a.product)}'s tasks that waited on this one start (their status leaves "planned")`],
     });
     fix = k.id;
     all[fix] = { product: a.product, target: a.target, from: a.from, tasks: [], at: Date.now() };
@@ -2675,7 +2736,8 @@ export function planEmptyItems(now = Date.now()): string[] {
     let merged: any[] = [];
     try { merged = db.prepare(`SELECT id, title FROM changes WHERE status = 'merged' AND (request LIKE ? OR title LIKE ?) ORDER BY created DESC LIMIT 5`).all(`%${it.id}%`, `%${it.id}%`) as any[]; } catch { /* no request column */ }
     const evidence = merged.length ? `\n\nEvidence: ${merged.map((c) => `${c.id} "${String(c.title ?? '').slice(0, 80)}"`).join(', ')} already merged and name this item. Check whether they did it: if every criterion is already met on beta, make no change and say so; else do what is missing.` : '';
-    const t = addTask({ item: it.id, title: it.title, request: `${it.title}\n\n${text}${evidence}`, criteria: it.criteria, priority: null });
+    // The item's goal is the task's player goal (an infra item's, its outcome); the gate (taskbar.ts) writes the rest.
+    const t = addTask({ item: it.id, title: it.title, request: `${it.title}\n\n${text}${evidence}`, criteria: it.criteria, priority: null, ...(it.goal ? (isInfra(it.product) ? { outcome: it.goal } : { goal: it.goal }) : {}) });
     logDecision('plan', t.id, it.product, `"${it.title}" (${it.id}) was planned with no tasks, so nothing could start: Studio made ${t.id} from its goal and ${it.criteria.length} acceptance criteri${it.criteria.length === 1 ? 'on' : 'a'}${merged.length ? `; ${merged.length} merged change(s) already name it, its agent checks them first` : ''}`.slice(0, 1500), { kind: 'tasks', change: null, tasks: [{ id: t.id, status: 'dropped', tries: 0, note: 'dropped: undone', checks: null }] });
     out.push(it.id);
   }

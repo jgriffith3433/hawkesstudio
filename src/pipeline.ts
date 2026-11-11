@@ -759,18 +759,20 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     try {
       const F = await import('./playtest-finish.ts');
       job = await runGenJob('playtest.run', p.id, params, queuedNote(s), {
-        runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
+        runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), queueStallMs: F.PLAYTEST_QUEUE_STALL_MS(), queuePosition: queuePlace, job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
         onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
       });
+      // A tab freed up (this playtest is over): a run still queued for more browsers asks Gen for them again.
+      void raiseAgain(run);
       // Cut off (a provider with no free worker or a full disk, a Gen or beta restart): one more try on the next backend,
       // then it ends with its reason in one sentence, never a hang.
       const cut = F.classifyFailure(job);
       if (cut && !haltOf(run)()) {
         if (cut.provider) { const B = await import('./gpu-breaker.ts'); B.trip(cut.provider); }
-        updateStep(s, { detail: `${F.plainWhy(job, null)} Trying again on the next backend.` });
+        updateStep(s, { detail: `${F.plainWhy(job, null)} ${cut.kind === 'queue' ? 'Trying once more.' : 'Trying again on the next backend.'}` });
         if (cut.kind === 'beta-restart') { try { await (await import('./previews.ts')).betaSettled(p.id); } catch { /* the retry will say */ } }
         const second = await runGenJob('playtest.run', p.id, F.retryParams(params, cut), queuedNote(s), {
-          runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: false,
+          runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), queueStallMs: F.PLAYTEST_QUEUE_STALL_MS(), queuePosition: queuePlace, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: false,
           onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
         });
         if (second.status !== 'done') second.error = F.plainWhy(second, cut);
@@ -941,6 +943,19 @@ function fileStuck(run: string, p: Product, name: string, job: any) {
 export function playOptions(t: Pick<Playtest, 'options' | 'at'>): Record<string, unknown> | undefined {
   const at = typeof t.at === 'string' && t.at.trim() ? t.at.trim() : null;
   return at ? { ...(t.options ?? {}), at } : t.options;
+}
+
+/** A queued playtest's place in Gen's line (playtest-capacity.ts), for the queue's stall rule (playtest-finish.ts). */
+const queuePlace = (job: string) => import('./playtest-capacity.ts').then((C) => C.queuePosition(job)).catch(() => null);
+
+/** Playtests of a run still waiting or playing: what Gen's browser tabs must cover. */
+function playtestsLeft(run: string): number {
+  return Number((db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND kind = 'playtest' AND status NOT IN ('done', 'failed', 'skipped', 'cancelled')`).get(run) as any)?.n ?? 0);
+}
+/** A tab freed up: a run that still has playtests queued asks Gen for browsers to cover them (raiseForRun never lowers). */
+async function raiseAgain(run: string) {
+  const left = playtestsLeft(run);
+  if (left > 0) await (await import('./playtest-capacity.ts')).raiseForRun(left).catch(() => null);
 }
 
 /** A playtest job's updates onto its step; while Gen has it queued, the step says why (tabs in use, how many ahead). */
@@ -1352,7 +1367,9 @@ function runWaitsForCredits(id: string, product: string, e: unknown): boolean {
  * quiet: ms a Unity beta run waits for more pushes before building (default STUDIO_BETA_QUIET_MS, 2 min; J's own Beta
  * button: 0). A newer beta run of the product supersedes one still waiting (betaqueue.ts).
  */
-type BetaOptions = { focus?: string; reverify?: boolean; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
+type BetaOptions = { focus?: string; reverify?: boolean;
+  /** The play before going live (golive-policy.ts): the merged tasks it judges in passing, chosen for the commit it plays (pm.ts coveredByBetaPlay). Empty: none. */
+  sweep?: Sweep; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
   /** The agent change whose merge into beta started this run (agents.ts approve): a Unity build skips the quiet time
    *  while no other change of the product is on its way into beta (betaqueue.ts mergesInFlight). */
   merge?: string;
@@ -1370,7 +1387,7 @@ type BetaOptions = { focus?: string; reverify?: boolean; origin?: string | null;
    */
   play?: PlayCause };
 /** A reached milestone's check (pm.ts milestoneCheck): one scenario (none: the product's first local one) and the criteria judged on it. */
-export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; criteria: string[] };
+export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; device?: 'desktop' | 'phone'; criteria: string[] };
 
 /**
  * After beta moves (an approved change): the product's beta is brought up to date and played, as a small run in the
@@ -1381,7 +1398,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}), ...(o.play ? { play: o.play } : {}) }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), ...(o.sweep ? { sweep: o.sweep } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}), ...(o.play ? { play: o.play } : {}) }), Date.now());
   tagRun(id, o.origin);
   // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
   if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) {
@@ -1410,12 +1427,12 @@ async function unchangedPass(p: Product, name: string): Promise<string | null> {
   return noRuntimeChange(files) ? `${name} passed on beta ${pass.sha.slice(0, 7)} (run ${pass.run}); since then only docs and notes changed (${files.length} file(s)): not played again` : null;
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause, play }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause, play, sweep: goLiveSweep }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
-    const nameFor = (x: { scenario?: string }) => {
+    const nameFor = (x: { scenario?: string; device?: 'desktop' | 'phone' }) => {
       const pt = x.scenario ? { scenario: resolveScenario(p, x.scenario), where: 'local' as const } : betaPlaytestOf(p);
-      return pt ? nameOf(pt) : null;
+      return pt ? nameOf({ ...pt, ...(x.device === 'phone' ? { device: 'phone' as const } : {}) }) : null;
     };
     if (betaLane()) {
       const asked = plays?.length ? plays.map(nameFor) : playtest ?? betaPlaytestsOn() ? [nameFor({ scenario })] : [];
@@ -1579,7 +1596,9 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       try {
         // Only the scenarios of the tasks it judges (pm.ts playsFor), independent ones in parallel across the playtester's slots.
         await inSlots(plays, BETA_PLAYS_PARALLEL(), async (x, slot) => {
-          const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : betaPlaytestOf(p);
+          const base: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : betaPlaytestOf(p);
+          // A task's "[phone]" criteria play at 390x844 touch (pm.ts playsFor).
+          const pt: Playtest | undefined = base && x.device === 'phone' ? { ...base, device: 'phone' } : base;
           // What this run was asked for goes ahead of what it carried over in Gen's queue (playplan.ts).
           if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild, slot, ...((x as Ask).carried ? { priority: -1 } : {}) });
         }, () => newerBuild() || runCancelled(id));
@@ -1598,7 +1617,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       } else {
         // A play of beta that isn't a task's own check (the one before going live, the Beta button) judges every merged
         // task's criteria not verified yet in its review (acceptance.ts sweepFor): no play of its own for them.
-        const sweep = sweepFor(p.id, { runKind: 'beta', where: t.where === 'live' ? 'live' : 'local', device: t.device, asked: !bare });
+        const sweep = bare && goLiveSweep ? (goLiveSweep.criteria.length ? goLiveSweep : null) : sweepFor(p.id, { runKind: 'beta', where: t.where === 'live' ? 'live' : 'local', device: t.device, asked: !bare });
         await playtestProduct(id, p, t, { focus, mode: 'verify', criteria, abandon: newerBuild, ...(bare ? { priority: 5 } : {}), ...(sweep ? { sweep } : {}) });
         if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
       }

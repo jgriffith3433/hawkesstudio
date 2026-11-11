@@ -814,7 +814,13 @@ const server = http.createServer(async (req, res) => {
       const b = method === 'GET' ? {} : await readJson(req);
       // Who acts (inbox.ts actor): J on the dashboard, J through Talk only in a turn he started, else Talk or the PM.
       const by = await (await import('./inbox.ts')).actor(req, b.by);
-      if (route === '/api/roadmap' && method === 'GET') return send(res, 200, { milestones: rm.listMilestones({ product: q('product'), status: q('milestones') }), items: rm.listItems({ product: q('product'), status: q('status') }), products: rm.roadmapProducts(), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES, milestones: rm.MILESTONE_STATUSES } });
+      if (route === '/api/roadmap' && method === 'GET') {
+        const items = rm.listItems({ product: q('product'), status: q('status') });
+        // The task bar's decisions per product (taskbar.ts), and the tasks it parked with their reason.
+        const bar = await import('./taskbar.ts');
+        const taskBar = Object.fromEntries([...new Set(items.map((i: any) => i.product as string))].map((id) => [id, { ...bar.taskBarCounts(id), parkedTasks: bar.parkedTasks(items.filter((i: any) => i.product === id).flatMap((i: any) => i.tasks ?? [])) }]));
+        return send(res, 200, { milestones: rm.listMilestones({ product: q('product'), status: q('milestones') }), items, taskBar, products: rm.roadmapProducts(), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES, milestones: rm.MILESTONE_STATUSES } });
+      }
       if (route === '/api/roadmap/milestones' && method === 'POST') { const ms = rm.addMilestone({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, ms); }
       m = /^\/api\/roadmap\/milestones\/(n_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getMilestone(m[1]) ? { ...rm.getMilestone(m[1]), ...rm.milestoneProgress(m[1]) } : { error: 'no such milestone' });
@@ -1210,6 +1216,30 @@ const server = http.createServer(async (req, res) => {
       fs.writeFileSync(path.join(DATA, 'pull-now'), `${new Date().toISOString()} ${repo} ${String(claims.sha ?? '').slice(0, 7)}
 `);
       return send(res, 202, { ok: true, note: 'the server pulls it now (after its own CI check), unless a run is going' });
+    }
+    // An ops-admin quota run ended (.github/workflows/ops-admin.yml, its last step, with GitHub's OIDC token): what it
+    // filed or read, or the real error, goes on the quota card that asked (quota.ts onReport). Only ops-admin itself,
+    // from the ops repo's main in the production environment, may report.
+    if (route === '/api/hooks/quota' && method === 'POST') {
+      const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+      if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
+      const { verifyGitHubOidc } = await import('./github-oidc.ts');
+      const q = await import('./quota.ts');
+      const audiences = [...new Set([process.env.STUDIO_PUBLIC_URL?.replace(/\/+$/, ''), 'https://studio.hawkesgen.ai'].filter(Boolean) as string[])];
+      let claims: Record<string, any> | null = null;
+      let why = '';
+      for (const aud of audiences) {
+        try { claims = await verifyGitHubOidc(token, aud); break; } catch (e: any) { why = e.message; }
+      }
+      if (!claims) return send(res, 401, { error: `token rejected: ${why}` });
+      const why403 = q.reportRefused(claims);
+      if (why403) return send(res, 403, { error: why403 });
+      try {
+        const rec = await q.onReport((await readJson(req)) as any);
+        return send(res, 200, { ok: true, state: rec?.state ?? null, detail: rec?.detail ?? null });
+      } catch (e: any) {
+        return send(res, 400, { error: String(e?.message ?? e) });
+      }
     }
     if ((route === '/api/hooks/github' || route === '/api/hooks/github-beta') && method === 'POST') {
       const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];

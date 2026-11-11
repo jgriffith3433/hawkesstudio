@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-cell-'));
+process.env.STUDIO_TASK_BAR = 'off'; // these tests start tasks written in a line (the task bar has its own: taskbar.test.ts)
 process.env.STUDIO_MAIL = 'off';
 process.env.STUDIO_CLOUD = '1';
 process.env.STUDIO_ORG = 'acme-1a2b';

@@ -103,6 +103,13 @@ type RunGenJobOptions = {
   events?: JobFollower;
   /** Join the same job another caller here submitted while Gen still has it queued (playtests: pipeline.ts playScenario). */
   share?: boolean;
+  /**
+   * Playtests (playtest-finish.ts): a queued job is cut only when nothing ahead of it moved for queueStallMs. queuePosition
+   * is its place in Gen's line (0 = next), null when Gen can't say; a place that dropped since the last look restarts the
+   * clock. Without queueStallMs, queueMs is the only limit (from submit).
+   */
+  queueStallMs?: number;
+  queuePosition?: (job: string) => Promise<number | null>;
 };
 
 /** A job callers share (runGenJob share): its id once submitted, how many wait on it, and whether one asked to cancel it. */
@@ -151,7 +158,7 @@ async function submitGenJob(api: GenApi, tool: string, project: string, params: 
  * are one timer set to the next deadline; halt and abandon are Studio's own database, still looked at every pollMs
  * without asking Gen.
  */
-async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000, events }: RunGenJobOptions, entry: Shared | null, joined: boolean, submittedJob?: any): Promise<any> {
+async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000, events, queueStallMs, queuePosition }: RunGenJobOptions, entry: Shared | null, joined: boolean, submittedJob?: any): Promise<any> {
   const job: any = submittedJob ?? { id: reuse };
   let left = false;
   const leave = async (how: 'cancel' | 'done') => {
@@ -184,6 +191,10 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
     let look = true;
     let fromGet = false;
     let heard = Date.now();
+    // The queue's clock (queueStallMs): the job's place in Gen's line at the last look, and when to look next.
+    const placeOf = async (): Promise<number | null> => { try { return queuePosition ? await queuePosition(job.id) : null; } catch { return null; } };
+    let qPos: number | null = queueStallMs ? await placeOf() : null;
+    let qNext = submitted + (queueStallMs ?? 0);
     for (;;) {
       if (look) {
         f.drop();
@@ -239,10 +250,22 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
         }
       }
       const mins = (ms: number) => Math.round(ms / 60000);
+      // Queued with the stall rule: asked of Gen only at the deadline (qNext), never on a timer. A place that dropped
+      // since the last look is the queue moving; the same place (or none) for the whole window is a stalled queue.
+      let queueCut = '';
+      if (!started && queueStallMs && j.status !== 'running' && Date.now() >= qNext) {
+        const pos = await placeOf();
+        if (pos !== null && (qPos === null || pos < qPos)) { qPos = pos; qNext = Date.now() + queueStallMs; }
+        else if (pos === null) {
+          if (Date.now() - submitted > queueMs) queueCut = `waited in the queue for over ${mins(queueMs)} min`;
+          else qNext = Math.min(Date.now() + queueStallMs, submitted + queueMs + 1);
+        } else queueCut = `the playtest queue didn't move for ${mins(queueStallMs)} min (${pos} ahead)`;
+      }
       const idleCounts = Boolean(idleMs && j.status === 'running' && !QUIET_PHASE.test(String(j.detail ?? '')));
       const over = started
         ? Date.now() - started > runMs ? `ran for over ${mins(runMs)} min (since ${new Date(started).toISOString().slice(11, 16)} UTC, counted across restarts)`
           : idleCounts && Date.now() - moved > idleMs! ? `no progress for ${mins(Date.now() - moved)} min (still at "${String(j.detail ?? '').slice(0, 160)}")` : ''
+        : queueStallMs ? queueCut
         : Date.now() - submitted > queueMs ? `waited in the queue for over ${mins(queueMs)} min` : '';
       if (over) {
         // Before cancelling: Gen's own word on it now (an event may have been missed), with its log.
@@ -253,7 +276,7 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
         return { ...j, status: 'failed', error: `stuck: ${over}, so it was cancelled`, stuckAt: String(j.detail ?? ''), stuckLog: tail };
       }
       // Asleep until its next event, its next deadline, or (stream down) pollMs.
-      const deadlines = started ? [started + runMs + 1, ...(idleCounts ? [moved + idleMs! + 1] : [])] : [submitted + queueMs + 1];
+      const deadlines = started ? [started + runMs + 1, ...(idleCounts ? [moved + idleMs! + 1] : [])] : [queueStallMs ? qNext + 1 : submitted + queueMs + 1];
       const { due, ms } = nextLook(f.live(), { pollMs, heard, deadlines, localMs: halt || abandon ? pollMs : undefined });
       const ev = await f.next(ms);
       if (ev) {
