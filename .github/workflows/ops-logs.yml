@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: studio (the service), studio-agent (the agents' job), cell-agent, cell (a customer's Studio, with org), or build (the Cloud Build image builds)
+        description: studio (the service), studio-agent (the agents' job), cell-agent, cell (a customer's Studio, with org), build (the Cloud Build image builds), or services (every Cloud Run service in the lane's region, e.g. with contains 'Starting new instance' to see what takes the region's CPU)
         type: choice
-        options: [studio, studio-agent, cell-agent, cell, build]
+        options: [studio, studio-agent, cell-agent, cell, build, services]
         default: studio
       org:
         description: "cell: the org id (e.g. j-studio-4f12)"
@@ -67,6 +67,7 @@ jobs:
           # A cell runs in the cells' region (CELLS_REGION_*), which may not be the lane's: its service name is enough.
           # The image builds (tools/studio-cloudrun/build.mjs): both lanes build in one project, so the lane doesn't narrow them.
           if [ "$TARGET" = build ]; then f="resource.type=build"; fi
+          if [ "$TARGET" = services ]; then f="resource.type=cloud_run_revision"; fi
           if [ "$TARGET" != cell ] && [ "$TARGET" != build ]; then f="$f AND resource.labels.location=$region"; fi
           if [ -n "$REVISION" ]; then [[ "$REVISION" =~ ^[a-z0-9-]{1,63}$ ]] || { echo "revision: lower-case letters, digits, dashes"; exit 1; }; f="$f AND resource.labels.revision_name=$REVISION"; fi
           if [ -n "$CONTAINS" ]; then [[ "$CONTAINS" =~ ^[A-Za-z0-9\ :._-]{1,80}$ ]] || { echo "contains: letters, digits, spaces, : . _ - (up to 80)"; exit 1; }; f="$f AND textPayload:\"$CONTAINS\""; fi
