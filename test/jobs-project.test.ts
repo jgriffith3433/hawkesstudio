@@ -15,9 +15,9 @@ const withEnv = async (vars: Record<string, string | undefined>, fn: () => unkno
 test('the jobs\' place: another region of the same project by default, or what is named', () => {
   const live = { STUDIO_GCP_PROJECT: 'staging', STUDIO_GCP_REGION: 'us-east4' };
   assert.equal(jobsProject(live), 'staging');
-  assert.equal(jobsRegion(live), 'us-east1');
+  assert.equal(jobsRegion(live), 'us-west1');
   assert.equal(jobsApart(live), true, 'the default keeps them off the server\'s regional CPU quota');
-  assert.equal(jobsRegion({ ...live, STUDIO_GCP_REGION: 'us-east1' }), 'us-east4', 'a server already in the away region sends them to us-east4');
+  assert.equal(jobsRegion({ ...live, STUDIO_GCP_REGION: 'us-west1' }), 'us-east4', 'a server already in the away region sends them to us-east4');
   assert.equal(jobsRegion({ ...live, STUDIO_JOBS_REGION: 'us-south1' }), 'us-south1');
   assert.equal(jobsApart({ ...live, STUDIO_JOBS_REGION: 'same' }), false, '"same" keeps them beside the server');
   assert.equal(jobsApart({ ...live, STUDIO_JOBS_REGION: 'same', STUDIO_JOBS_PROJECT: 'jobs' }), true);
@@ -66,9 +66,9 @@ test('a start runs in the jobs\' region, making the job there first when it is m
     jobsHooks.gapi = hook;
     const ran: string[] = [];
     const start = async (p: { project: string; region: string }) => { if (!have.has(`${p.project}@${p.region}/studio-agent`)) throw new Error('Google Cloud answered 404 for x: Resource not found'); ran.push(`${p.project}@${p.region}`); return p.region; };
-    assert.equal(await startInJobsPlace('studio-agent', start), 'us-east1');
-    assert.deepEqual(made, ['staging@us-east1/studio-agent', 'iam staging@us-east1']);
-    assert.deepEqual(ran, ['staging@us-east1']);
+    assert.equal(await startInJobsPlace('studio-agent', start), 'us-west1');
+    assert.deepEqual(made, ['staging@us-west1/studio-agent', 'iam staging@us-west1']);
+    assert.deepEqual(ran, ['staging@us-west1']);
   });
 });
 
@@ -84,7 +84,7 @@ test('a start whose job cannot be made or run in the jobs\' place runs beside th
     // A region the job can't be made in (a network only the server's region has): Google answers 400; it runs at home.
     jobsHooks.gapi = async (url: string, o: any = {}) => { if (o.missingOk) return null; if (o.body) throw new Error('Google Cloud answered 400 for x: connector not in region'); return { template: { template: {} } }; };
     const ran: string[] = [];
-    const start = async (p: { project: string; region: string }) => { if (p.region === 'us-east1') throw new Error('Google Cloud answered 404 for x: not found'); ran.push(p.region); return p.region; };
+    const start = async (p: { project: string; region: string }) => { if (p.region === 'us-west1') throw new Error('Google Cloud answered 404 for x: not found'); ran.push(p.region); return p.region; };
     assert.equal(await startInJobsPlace('studio-agent', start), 'us-east4');
     assert.deepEqual(ran, ['us-east4']);
   });
@@ -106,7 +106,7 @@ test('"same": a start runs where it always did, nothing copied', async () => {
 test('copyJob leaves a job that is already there alone', async () => {
   let posts = 0;
   jobsHooks.gapi = async (_url: string, o: any = {}) => { if (o.body) posts++; return {}; };
-  assert.equal(await copyJob({ from: { project: 'staging', region: 'us-east4' }, to: { project: 'staging', region: 'us-east1' }, job: 'j' }), 'there');
+  assert.equal(await copyJob({ from: { project: 'staging', region: 'us-east4' }, to: { project: 'staging', region: 'us-west1' }, job: 'j' }), 'there');
   assert.equal(posts, 0);
   resetJobsProject();
 });
@@ -117,15 +117,15 @@ test('cells\' jobs go to another region by default; cells are told a named place
   const same = cellsConfig({ ...base, STUDIO_CELLS_JOBS_REGION: 'same' } as any);
   const apart = cellsConfig({ ...base, STUDIO_CELLS_JOBS_PROJECT: 'jobs', STUDIO_CELLS_JOBS_REGION: 'us-south1' } as any);
   const owner = { sub: 's', email: 'e@x' };
-  assert.deepEqual([byDefault.jobsProject, byDefault.jobsRegion], ['staging', 'us-east1']);
-  assert.equal(cellEnv('org-one', owner, byDefault).STUDIO_JOBS_REGION, 'us-east1');
+  assert.deepEqual([byDefault.jobsProject, byDefault.jobsRegion], ['staging', 'us-west1']);
+  assert.equal(cellEnv('org-one', owner, byDefault).STUDIO_JOBS_REGION, 'us-west1');
   assert.equal('STUDIO_JOBS_PROJECT' in cellEnv('org-one', owner, byDefault), false);
   assert.equal('STUDIO_JOBS_REGION' in cellEnv('org-one', owner, same), false);
   assert.equal(cellEnv('org-one', owner, apart).STUDIO_JOBS_PROJECT, 'jobs');
   assert.equal(cellEnv('org-one', owner, apart).STUDIO_GCP_PROJECT, 'staging', 'the cell itself stays where it is');
   assert.equal(cellEnv('org-one', owner, apart).STUDIO_GCP_REGION, 'us-east4');
   const old = [{ name: 'A', value: '1' }];
-  assert.deepEqual(withJobsEnv(old, byDefault), [{ name: 'A', value: '1' }, { name: 'STUDIO_JOBS_REGION', value: 'us-east1' }]);
+  assert.deepEqual(withJobsEnv(old, byDefault), [{ name: 'A', value: '1' }, { name: 'STUDIO_JOBS_REGION', value: 'us-west1' }]);
   assert.deepEqual(withJobsEnv([...old, { name: 'STUDIO_JOBS_PROJECT', value: 'jobs' }, { name: 'STUDIO_JOBS_REGION', value: 'x' }], same), old, 'moved back: the cell is told so');
 });
 

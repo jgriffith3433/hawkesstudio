@@ -19,9 +19,11 @@ export const serverRegion = (env: NodeJS.ProcessEnv = process.env) => env.STUDIO
  * limit), and J said "Just yes fix it". Cloud Run's CPU quota is per project and per region too, so jobs in another
  * region of the same project can't take the server's CPU either, and need no new project, billing or grants.
  * STUDIO_JOBS_REGION names it ("same": beside the server); by default a region where no server of Studio or Gen runs
- * (us-east1; us-east4 for a server that is itself in us-east1).
+ * (us-west1; us-east4 for a server that is itself in us-west1). It must be a region the project already uses: Google
+ * caps how many regions a project's Cloud Run may use, and on 2026-11-11 us-east1 would have been a fourth and was
+ * refused (MaxRegionsPerProject). us-west1 holds only Unity build jobs, which run once a milestone is complete.
  */
-export const AWAY_REGION = 'us-east1';
+export const AWAY_REGION = 'us-west1';
 export function jobsRegion(env: NodeJS.ProcessEnv = process.env) {
   const named = env.STUDIO_JOBS_REGION || env.STUDIO_CELLS_JOBS_REGION || '';
   const server = serverRegion(env);
