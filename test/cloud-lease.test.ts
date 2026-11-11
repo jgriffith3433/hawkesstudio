@@ -18,9 +18,14 @@ const { setGcpFetch } = await import('../src/gcp.ts');
 const L = await import('../src/cloudlease.ts');
 
 const objects = new Map<string, Buffer>();
+/** Heartbeat writes hang (until their request's deadline aborts them), as on a busy server on 2026-11-11. */
+let hangBeats = false;
 setGcpFetch((async (input: any, init: any = {}) => {
   const url = String(input);
   const method = init.method ?? 'GET';
+  if (hangBeats && /uploadType=media&name=db%2Falive-/.test(url)) {
+    return new Promise((_, no) => init.signal?.addEventListener('abort', () => no(new Error('aborted'))));
+  }
   const json = (status: number, j: unknown) => new Response(JSON.stringify(j), { status, headers: { 'Content-Type': 'application/json' } });
   let m = /upload\/storage\/v1\/b\/[^/]+\/o\?uploadType=media&name=([^&]+)/.exec(url);
   if (m) { objects.set(decodeURIComponent(m[1]), Buffer.from(init.body)); return json(200, {}); }
@@ -215,4 +220,19 @@ test("a quiet takeover by a newer revision also waits out the confirm window", a
   assert.equal(next.claimed, false);
   assert.equal(next.how, 'holder still beating');
   assert.equal(objects.get('db/lease.json')!.toString(), before);
+});
+
+test("a holder whose heartbeat hangs still sees a takeover and stops (no two writers)", async () => {
+  const holder: any = await L.claim({ rev: 'studio-o-j-studio-4f12-00101-ztm', pollMs: 10, staleMs: 0, confirmMs: 50 });
+  let lostTo: string | null = null;
+  hangBeats = true;
+  const stop = L.watchLease((by) => { lostTo = by.id; }, { everyMs: 10, deadlineMs: 50 });
+  // Its heartbeat hangs; the heartbeat goes quiet and a newer instance takes the database.
+  await new Promise((r) => setTimeout(r, 60));
+  objects.set('db/lease.json', Buffer.from(JSON.stringify({ id: 'l_newer', rev: 'studio-o-j-studio-4f12-00103-dtp', at: Date.now(), how: 'quiet' })));
+  const until = Date.now() + 2000;
+  while (!lostTo && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+  stop();
+  hangBeats = false;
+  assert.equal(lostTo, 'l_newer', `the old holder (${holder.id}) learned it lost the database despite its hung heartbeat`);
 });

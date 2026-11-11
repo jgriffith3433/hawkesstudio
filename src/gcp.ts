@@ -139,19 +139,19 @@ export async function gcsDelete(bucket: string, key: string) {
 }
 
 /** An object's bytes, or null when it isn't there. */
-export async function gcsRead(bucket: string, key: string): Promise<Buffer | null> {
-  const r = await fetchImpl(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${enc(key)}?alt=media`, { headers: { Authorization: `Bearer ${await accessToken()}` }, signal: AbortSignal.timeout(300_000) });
+export async function gcsRead(bucket: string, key: string, o: { timeoutMs?: number } = {}): Promise<Buffer | null> {
+  const r = await fetchImpl(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${enc(key)}?alt=media`, { headers: { Authorization: `Bearer ${await accessToken()}` }, signal: AbortSignal.timeout(o.timeoutMs ?? 300_000) });
   if (r.status === 404) return null;
   if (!r.ok) throw fail(`Couldn't read gs://${bucket}/${key} (${r.status} ${(await r.text()).slice(0, 200)})`);
   return Buffer.from(await r.arrayBuffer());
 }
 
 /** Uploads bytes or a file (one request). */
-export async function gcsWrite(bucket: string, key: string, data: Buffer | string, contentType = 'application/octet-stream') {
+export async function gcsWrite(bucket: string, key: string, data: Buffer | string, contentType = 'application/octet-stream', o: { timeoutMs?: number } = {}) {
   const body = typeof data === 'string' ? fs.readFileSync(data) : data;
   const r = await fetchImpl(`https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${enc(key)}`, {
     method: 'POST', headers: { Authorization: `Bearer ${await accessToken()}`, 'Content-Type': contentType },
-    body: new Uint8Array(body), signal: AbortSignal.timeout(30 * 60_000),
+    body: new Uint8Array(body), signal: AbortSignal.timeout(o.timeoutMs ?? 30 * 60_000),
   });
   if (!r.ok) throw fail(`Couldn't upload gs://${bucket}/${key} (${r.status} ${(await r.text()).slice(0, 200)})`);
   return body.length;

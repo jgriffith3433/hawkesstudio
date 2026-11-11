@@ -33,9 +33,11 @@ const key = (name: string) => `${statePrefix()}db/${name}`;
 /** `how` is why this holder took the database: first, released (the last holder stopped), quiet (its heartbeat stayed silent
  * through the confirm window), idle (it answered nothing), handover. Named in the loser's exit line. */
 export type Lease = { id: string; rev: string | null; at: number; how?: string };
+/** How long one look at the lease (or one heartbeat) may take in the holder's watch: well inside the quiet window. */
+export const LEASE_LOOK_MS = 10_000;
 
-const readJsonObj = async <T>(bucket: string, name: string): Promise<T | null> => {
-  const b = await gcsRead(bucket, key(name)).catch(() => null);
+const readJsonObj = async <T>(bucket: string, name: string, timeoutMs?: number): Promise<T | null> => {
+  const b = await gcsRead(bucket, key(name), { timeoutMs }).catch(() => null);
   if (!b) return null;
   try { return JSON.parse(b.toString('utf8')) as T; } catch { return null; }
 };
@@ -205,16 +207,20 @@ export async function startupBeat(o: { everyMs?: number; maxMs?: number } = {}) 
  * The holder's side: a heartbeat every `everyMs`, and `onLost` once another instance has claimed the lease (it then saves
  * its state and exits, so its database stops changing). Returns a stop function (tests).
  */
-export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number } = {}) {
+export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number; deadlineMs?: number } = {}) {
   const bucket = stateBucket();
   const id = myLeaseId();
   if (!bucket || !id) return () => {};
+  // Each look and heartbeat has a short deadline. On 2026-11-11 a holder's heartbeat hung (its server was busy, and a
+  // write may wait 30 minutes): every later tick saw "still beating" and returned, so it never looked at the lease
+  // again. A newer instance took the database as quiet, and the old one wrote its own copy beside it for 20 minutes.
+  const deadline = o.deadlineMs ?? LEASE_LOOK_MS;
   let lost = false, failures = 0, beating = false;
   const tick = async () => {
     if (lost || beating) return;
     beating = true;
     try {
-      const lease = await readJsonObj<Lease>(bucket, 'lease.json');
+      const lease = await readJsonObj<Lease>(bucket, 'lease.json', deadline);
       if (lease && lease.id !== id) {
         lost = true;
         onLost(lease);
@@ -222,12 +228,14 @@ export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number } 
       }
       // A failed heartbeat is logged and tried again at once: a holder whose writes fail looks dead to a stray.
       for (let i = 0; i < 3; i++) {
-        try { await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now()), 'application/json'); if (failures) console.warn(`[lease] heartbeat back after ${failures} failure(s)`); failures = 0; try { fs.writeFileSync(SERVER_FILE, String(Date.now())); } catch { /* the startup heartbeat ends by its own limit */ } return; }
+        try { await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now()), 'application/json', { timeoutMs: deadline }); if (failures) console.warn(`[lease] heartbeat back after ${failures} failure(s)`); failures = 0; try { fs.writeFileSync(SERVER_FILE, String(Date.now())); } catch { /* the startup heartbeat ends by its own limit */ } return; }
         catch (e: any) { failures++; console.warn(`[lease] heartbeat write failed (${failures} in a row): ${e?.message ?? e}`); }
       }
     } finally { beating = false; }
   };
-  const t = setInterval(() => void tick().catch(() => {}), o.everyMs ?? 5000);
+  // A look that outlives its deadline (a token fetch that hangs too) frees the next tick anyway.
+  const look = () => Promise.race([tick(), new Promise<void>((r) => setTimeout(r, deadline * 4).unref())]).finally(() => { beating = false; });
+  const t = setInterval(() => { if (!beating) void look().catch(() => {}); }, o.everyMs ?? 5000);
   t.unref();
   return () => clearInterval(t);
 }
