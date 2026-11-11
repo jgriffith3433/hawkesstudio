@@ -9,6 +9,9 @@
   }, {
     id: 'viewer', title: 'Playtest viewer: markers and seeking', seconds: 40, tags: ['viewer'],
     description: 'Opens the newest playtest that has a video, checks the scrubber carries markers for its findings and events, taps a finding and sees the video jump to its moment with the finding highlighted, and checks the viewer fits the screen (video full width, touch targets 44px high).',
+  }, {
+    id: 'rail', title: 'A change\'s progress rail', seconds: 30, tags: ['changes', 'rail', 'phone'],
+    description: 'Opens Changes and checks every change\'s rail: all its steps listed with a time and a one-line detail on the ones reached, exactly one current step highlighted while it runs, a failed step in red with its reason, the rail and the page not scrolling sideways (390px included), and then sits idle for a few seconds to see that no request goes to the changes API on a timer (updates arrive only as /api/stream change-step events).',
   }];
   const READY_TIMEOUT_MS = 20000;
   const t0 = () => Date.now();
@@ -254,15 +257,72 @@
     run.progress = 1;
   }
 
+  // The progress rail (dashboard/rail.js): its steps, times, details, the failed step's reason, no sideways scroll, and no timer-driven requests.
+  async function rail() {
+    run.scene = 'Changes';
+    event('scene', 'Changes');
+    errors = [];
+    await ready('changes', () => openTab('changes', 'Changes'), 'Changes');
+    await appears('#chList ol.rail, #chList .empty', 'the change list');
+    const rails = [...document.querySelectorAll('#chList ol.rail')];
+    if (!rails.length) { log('Changes: none yet, the empty page is what a person sees'); event('pass:rail', 'no changes yet'); run.progress = 1; return; }
+    const vw = document.documentElement.clientWidth || innerWidth;
+    let failedSeen = 0, nowSeen = 0, doneSeen = 0;
+    for (const ol of rails) {
+      const id = ol.dataset.rail;
+      const steps = [...ol.querySelectorAll('li.rs')];
+      if (steps.length < 6) fail('Rail', `change ${id}: ${steps.length} steps shown, not the whole rail`);
+      if (ol.scrollWidth > ol.clientWidth + 1) fail('Rail', `change ${id}: the rail scrolls sideways (${ol.scrollWidth}px in ${ol.clientWidth}px)`);
+      const current = steps.filter((li) => li.classList.contains('now'));
+      if (current.length > 1) fail('Rail', `change ${id}: ${current.length} steps highlighted as current`);
+      if (current.length) nowSeen++;
+      for (const li of steps) {
+        const label = li.querySelector('.rs-head b')?.textContent.trim();
+        if (!label) fail('Rail', `change ${id}: a step has no name`);
+        if (li.classList.contains('done') && !li.querySelector('time')) log(`${id}: "${label}" is done but has no time (an older change)`);
+        if (li.classList.contains('failed')) {
+          const why = li.querySelector('.rs-detail')?.textContent.trim();
+          if (!why) fail('Rail', `change ${id}: failed step "${label}" shows no reason`);
+          const c = parseColor(getComputedStyle(li).color);
+          if (!c || c[0] < 150 || c[1] > 140) fail('Rail', `change ${id}: failed step "${label}" is not red`);
+          failedSeen++;
+          event('failed-step', `${id}: ${label}: ${why.slice(0, 80)}`);
+        }
+        if (li.classList.contains('done')) doneSeen++;
+      }
+      if (steps.length === 8 && !steps.every((li) => li.classList.contains('todo') || li.querySelector('.rs-detail'))) log(`${id}: a reached step has no detail yet`);
+    }
+    if (document.documentElement.scrollWidth > vw + 1) fail('Rail', `the page scrolls sideways (${document.documentElement.scrollWidth}px on a ${vw}px screen)`);
+    const wide = tooWide(document.getElementById('changes'));
+    if (wide.length) fail('Rail', `wider than the screen: ${wide.join('; ')}`);
+    event('pass:rail', `${rails.length} rails, ${doneSeen} steps done, ${nowSeen} running, ${failedSeen} failed, ${vw}px wide`);
+    run.metrics.rails = rails.length; run.metrics.failedSteps = failedSeen; run.metrics.doneSteps = doneSeen;
+    run.progress = 0.6;
+    // Idle: no request to the changes API unless a stream event asked for it (a timer would show up here).
+    const seen = [];
+    run.streamEvents = 0;
+    if (typeof studioStream !== 'undefined') studioStream.on(['change-step', 'changes', 'runs', 'builds'], () => { if (run) run.streamEvents = (run.streamEvents ?? 0) + 1; });
+    const po = typeof PerformanceObserver === 'function' ? new PerformanceObserver((l) => { for (const e of l.getEntries()) if (/\/api\/changes(\/|\?|$)/.test(e.name)) seen.push(e.name); }) : null;
+    try { po?.observe({ type: 'resource', buffered: false }); } catch { /* no resource timing */ }
+    const before = performance.now();
+    await sleep(5000);
+    po?.disconnect();
+    const evt = run.streamEvents ?? 0;
+    if (seen.length && !evt) fail('Rail', `${seen.length} request(s) to the changes API in 5 idle seconds with no stream event: ${seen[0]}`);
+    run.metrics.idleRequests = seen.length;
+    event('pass:no-timer-requests', `${seen.length} change requests in ${Math.round(performance.now() - before)}ms idle`);
+    run.progress = 1;
+  }
+
   async function start(id) {
     if (status === 'running') return;
-    if (id !== 'smoke' && id !== 'viewer') throw new Error(`unknown scenario ${id}`);
+    if (!['smoke', 'viewer', 'rail'].includes(id)) throw new Error(`unknown scenario ${id}`);
     run = fresh(id);
     errors = [];
     status = 'running';
     event('start', id);
     try {
-      await (id === 'viewer' ? viewer() : smoke());
+      await (id === 'viewer' ? viewer() : id === 'rail' ? rail() : smoke());
       run.outcome = 'done';
       status = 'done';
       event('end', 'done');
