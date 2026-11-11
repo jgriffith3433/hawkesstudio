@@ -39,7 +39,7 @@ import {
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
   itemProgress, gpuCleared, setStartWaitHook, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf, waitingOn, STUCK_DEPENDENCY,
-  pmLogVersion,
+  pmLogVersion, unityGated,
 } from './roadmap.ts';
 import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
@@ -358,7 +358,7 @@ async function checkOnBeta(t: Task) {
     // No beta check yet: start one if nothing is running for this product and the merge is a while ago (only looked up
     // when beta is played after merges: two more queries per merged task every pass otherwise, 2026-11-10 freezes).
     // A Unity project whose build of beta waits for the milestone's end: no check of its own (it would play nothing new).
-    const due = playsAfterMerges && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled && !(unityStudioBuilt(t.product) && !unityBuildGate(t.product, 'auto').go);
+    const due = playsAfterMerges && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled && !(unityGated(t.product) && !unityBuildGate(t.product, 'auto').go);
     const running = due && db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
     const asked = due && !running && listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check' }).some((d) => d.subject === t.id);
     if (due && !running && !asked && !creditsWaitReason()) {
@@ -490,6 +490,7 @@ type TaskChecks = NonNullable<Task['checks']>;
 // ------------------------------------------------------------ beta builds
 
 /** A Unity project Studio builds from GitHub (its `builds`): its beta runs build beta's head first (betabuild.ts). */
+/** A Unity project Studio builds from GitHub (its `builds`): its beta build proves a task (buildProof). */
 const unityStudioBuilt = (product: string) => { try { return Boolean(unityBuildOf(getProduct(product))); } catch { return false; } };
 
 /**
@@ -568,7 +569,7 @@ export async function followBuilds() {
     // merge meanwhile (it would only be held again); the milestone's check builds it (milestoneCheck). Asked only when a
     // start is otherwise due: reading the project's work every pass for every product froze Studio before (2026-11-10).
     let held: boolean | undefined;
-    const unityHeld = () => (held ??= unityStudioBuilt(product) && !unityBuildGate(product, 'auto').go);
+    const unityHeld = () => (held ??= unityGated(product) && !unityBuildGate(product, 'auto').go);
     // A run refused for credits built nothing and says nothing about the change: never blamed (creditwait.ts).
     for (const { t } of list) if (t.build?.run && (buildCancelled(t.build.run, product) || heldRun(t.build.run))) setTask(t.id, { build: null });
     const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
@@ -758,11 +759,13 @@ export async function milestoneCheck(id: string) {
   const tasks = milestoneTasks(id).filter((t) => t.status === 'merged' && hasBeta(t.product) && t.criteria.length);
   // A Unity project Studio builds: its merges weren't built one by one (unitybuild-policy.ts, J 2026-11-11), so this
   // check is what builds beta's head, ONE build, once nothing else is queued for it, even with no criteria to play.
-  const unity = [...new Set(milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product) && unityStudioBuilt(t.product)).map((t) => t.product))];
+  const unity = [...new Set(milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product) && unityGated(t.product)).map((t) => t.product))];
   if (!runs.length) {
     // Checked again after a miss: once beta built again (the misses' fixes, or the next merge).
     if (!recheckDue(id, [...new Set([...tasks.map((t) => t.product), ...unity])])) return;
-    const products = [...new Set([...tasks.map((t) => t.product), ...unity])];
+    // Every product the milestone changed gets its one play, on its milestone build (play-policy.ts): nothing else plays it.
+    const changed = milestoneTasks(id).filter((t) => ['merged', 'verified'].includes(t.status) && hasBeta(t.product)).map((t) => t.product);
+    const products = [...new Set([...tasks.map((t) => t.product), ...unity, ...changed])];
     if (!products.length || !pmSettings().enabled) return announceMilestone(id);
     // Work still queued for a Unity project: its one build waits. The PM's pass after that work ends (a merge, a change
     // that ends: agents.ts kicks the loop) asks again; said once per reason in the decision log.
@@ -776,7 +779,7 @@ export async function milestoneCheck(id: string) {
     const { startBeta } = await import('./pipeline.ts');
     for (const product of products) {
       const plays = await playsFor(tasks.filter((x) => x.product === product));
-      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Build it for the milestone.'}`, plays, playtest: plays.length > 0, quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
+      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Play its build once for the milestone.'}`, plays, playtest: true, play: 'milestone', quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
       runs.push(r.id);
     }
     setMilestoneChecks(id, runs);

@@ -754,10 +754,12 @@ export function milestoneProgress(id: string) {
  * milestone can't wait for a build of each merge: that build would only come once the milestone was already complete.
  */
 export const codeComplete = (p: Pick<Progress, 'state' | 'merged' | 'total'>) => ['on beta', 'verified', 'live', 'done'].includes(p.state) || (p.total > 0 && p.merged === p.total);
-/** A product whose Unity builds wait for a milestone's end (betabuild.ts unityBuildOf: its builds list has a unity build). */
+/** A product whose Unity builds wait for a milestone's end (its own `build`, or betabuild.ts unityBuildOf). */
 export function unityGated(product: string | null | undefined): boolean {
   if (!product) return false;
-  try { return Boolean(unityBuildOf(loadProducts().find((p) => p.id === product) ?? {})); } catch { return false; }
+  // Both kinds of Unity project: one Studio builds from GitHub (its `builds`), and one with its own `build` (pipeline.ts
+  // betaBody asks the same rule before that build).
+  try { const p: any = loadProducts().find((x) => x.id === product) ?? {}; return Boolean(p.build || unityBuildOf(p)); } catch { return false; }
 }
 /** Every task of the milestone's items (not dropped or ideas). */
 export const milestoneTasks = (id: string) => (db.prepare(`SELECT id FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[])

@@ -3,7 +3,7 @@
 // there (POST /api/hooks/github, ref refs/heads/main):
 //
 // - Web products: GitHub Pages publishes main by itself (Dose Of Destruction through its pages.yml; products with a build
-//   step build it in their own workflow). Studio records the deploy and playtests the live site once Pages is done.
+//   step build it in their own workflow). Studio records the deploy.
 // - Unity games: the source repo's main doesn't publish anything; the game is served from the website repo's Game/v<n>.
 //   Studio publishes: when that exact commit has a beta build, that tested build is committed to the website repo's
 //   main; otherwise the commit is built on the build server first (into a scratch copy of the website). Then Pages
@@ -21,7 +21,7 @@ import { unityBuild } from './buildpkgs.ts';
 import { startStep, updateStep, resumedStep } from './pipeline.ts';
 import { critical } from './drain.ts';
 import { repoMap } from './repos.ts';
-import { verifyLive, repoSlug, publisherOf } from './deploy.ts';
+import { repoSlug, publisherOf } from './deploy.ts';
 import { repoToken } from './ghtoken.ts';
 import { kickFollowups } from './followup-kick.ts';
 
@@ -127,7 +127,7 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       updateStep(s, { status: 'done', detail: after === before ? 'the build was already on the website' : `${p.site} ${MAIN} -> ${after.slice(0, 7)}: ${what}`, finished: true });
       run.end('done', `live: ${p.name} ${what}`);
       await fetchOrigin(site);
-      if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
+      // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
       return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what, release: release && { version: release.version, title: release.title } };
     });
   } catch (e: any) {
@@ -168,7 +168,7 @@ async function publishFromBeta(p: Product, sha: string, by: string, resumed?: st
         .run(id, p.id, 'deploy', p.site, before, after, sha, p.repo, null, sha, bb.version ?? null, by, `published ${what}`, Date.now());
       updateStep(s, { status: 'done', detail: after === before ? 'the build was already on the website' : `${p.site} ${MAIN} -> ${after.slice(0, 7)}: ${what}`, finished: true });
       run.end('done', `live: ${p.name} ${what}`);
-      if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
+      // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
       return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what, release: null };
     });
   } catch (e: any) {
@@ -215,8 +215,8 @@ export async function onMainPushGitHub(slug: string, sha: string) {
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, p.id, 'deploy', slug, last && last.after !== sha ? last.after : null, sha, null, null, null, null, null, 'a push to main', `pushed to main; ${publisherOf(p).says} it`, Date.now());
-    if (p.live) void verifyLive(p.id, sha, `Just went live (pushed to main, ${sha.slice(0, 7)})`);
-    out[p.id] = { deploy: id, note: p.live ? `${publisherOf(p).done}; Studio playtests the live site when it is out` : 'recorded (no live address to check)' };
+    // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
+    out[p.id] = { deploy: id, note: p.live ? `${publisherOf(p).done}` : 'recorded (no live address to check)' };
   }
   return out;
 }
@@ -261,8 +261,8 @@ export async function onMainPush(folder: string, sha: string) {
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, p.id, 'deploy', p.site, before === sha ? null : before, sha, null, null, null, null, null, 'a push to main', own ? 'pushed to main; its own server pulls it' : 'pushed to main; GitHub Pages publishes it', Date.now());
-    void verifyLive(p.id, sha, `Just went live (pushed to main, ${sha.slice(0, 7)})`);
-    out[p.id] = { deploy: id, pages, note: own ? `${publisherOf(p).done}; Studio playtests the live site when it is out` : 'GitHub Pages publishes it; Studio playtests the live site when it is out' };
+    // Going live doesn't play the live site (play-policy.ts): the milestone's play already played this build.
+    out[p.id] = { deploy: id, pages, note: own ? `${publisherOf(p).done}` : 'GitHub Pages publishes it' };
   }
   return out;
 }

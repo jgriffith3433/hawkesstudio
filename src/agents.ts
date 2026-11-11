@@ -54,6 +54,7 @@ import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
+import { PLAY_RULE } from './play-policy.ts';
 import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, managedElsewhere, managedNote, type Product, type Infra, type Playtest } from './config.ts';
 import { withPass } from './sitekeys.ts';
 import { getFinding, updateFinding } from './backlog.ts';
@@ -2902,25 +2903,13 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
           return;
         }
       }
-      // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). A game
-      // change a player would see is played here so it ships with shots and a clip (showcaseFor); others are played
-      // only when J asks (playtestChange), and beta's run after the merge judges the criteria.
-      const show = showcaseFor(c, p);
-      if (show) addLog(id, `playtesting the change so its pull request ships with shots and a walk-through clip (${show})`);
-      save({ step: show ? 'verify' : 'finish', tip: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, jobs: {}, verify: undefined, ...(show ? { showcase: true } : {}) });
+      // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). A change
+      // is not played by itself (play-policy.ts, J 2026-11-11): its milestone's one play of the build judges its criteria.
+      save({ step: 'finish', tip: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, jobs: {}, verify: undefined });
     }
 
-    if (ph.step === 'verify') {
-      if (resumed) update(id, { status: 'verifying', detail: 'playtesting the change' });
-      // A playtest J asked for: the change's scenario on its version (web: the worktree; Unity: a build of the branch).
-      // It never fails the change: a playtest that couldn't run (no build, no page server) says so on the change.
-      const jobs: JobMemo = { get: (k) => ph.jobs?.[k], set: (k, job) => save({ jobs: { ...ph.jobs, [k]: job } }) };
-      // The commit it played (verify.sha can move later, when the base is merged in): what pm.ts compares with beta to
-      // keep this playtest's criteria as the task's verdict (acceptance.ts changeVerdictHolds).
-      const head = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out.trim();
-      const verify: any = await verifyChange(getChange(id)!, p, findings, jobs, { asked: Boolean(ph.requested) }).catch((e: any) => ({ outcome: 'not played', error: `the playtest couldn't run: ${String(e.message ?? e).slice(0, 300)}` }));
-      save({ step: 'finish', verify: { ...verify, played: verify?.build?.sha || head || ph.tip } });
-    }
+    // A change that was about to be played before Studio stopped playing changes (play-policy.ts): it finishes unplayed.
+    if (ph.step === 'verify') save({ step: 'finish' });
 
     c = getChange(id)!;
     // A playtest on request: its results join what the change already had (sha, preview, canon), and it's ready again.
@@ -3022,22 +3011,6 @@ export function unityVisibleFiles(files: string[]) {
   return files.filter((f) => !UNITY_UNSEEN.test(f) && (UNITY_SEEN.test(f) || (/\.cs$/i.test(f) && FELT_CS.test(f))));
 }
 
-/**
- * Whether a ready change is played by itself so it ships with shots and a clip (settings showcase): a game's or a
- * site's change a player would see. Returns why, or null. A Unity change (showcase "all", the default) is played only
- * when it touches what a player sees or feels (unityVisibleFiles), reusing the change's build of that commit when
- * there is one (buildChange), and only while the day's agent cost is under maxCostPerDay.
- */
-export function showcaseFor(c: Pick<Change, 'worktree' | 'base' | 'repo' | 'task'> & { infra?: boolean }, p: Product, mode = agentSettings().showcase, spent = () => costToday().cost): string | null {
-  if (mode === 'off' || c.infra || !isGame(p)) return null;
-  if (c.task && isVideoTask(c.task)) return null;
-  const unity = (p.engine === 'unity' || Boolean(p.build) || Boolean(p.builds?.some((b) => b.tool === 'unity'))) && !isSiteChange(c as Change, p);
-  if (unity && mode !== 'all') return null;
-  if (unity && spent() >= agentSettings().maxCostPerDay) return null;
-  const seen = (unity ? unityVisibleFiles : visibleFiles)(changedFiles(c));
-  return seen.length ? `${seen.length} file${seen.length === 1 ? '' : 's'} a player sees: ${seen.slice(0, 3).join(', ')}${seen.length > 3 ? ', ...' : ''}` : null;
-}
-
 /** The pull request's "From the built game" section: shots, motion sheets and the walk-through video, or null. Pure. */
 export function showcaseSection(v: any) {
   if (!v || !playtested(v) || (!v.video && !v.shots?.length)) return null;
@@ -3124,22 +3097,15 @@ function agentScenarioOf(worktree: string): { scenario?: string; options?: Recor
  * verification had. The change is "verifying" meanwhile (resumable after a restart: changes.phase), then ready again
  * with the results; a playtest that can't run never fails it. Returns at once; the playtest goes on in the background.
  */
-export function playtestChange(id: string, by = 'J') {
+export function playtestChange(id: string, _by = 'J'): never {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
   if (c.infra) throw new Error(`${getInfra(c.product).name} changes have checks (CI, the tests, a smoke check), not a playtest.`);
   if (c.status !== 'ready') throw new Error(`The change is ${c.status}: a playtest can be asked for once it's ready.`);
   if (!fs.existsSync(c.worktree)) throw new Error(`${id}'s worktree is gone; revise it to rebuild it.`);
   if (running.has(id)) throw new Error(`${id} is busy`);
-  const ph: Phase = { step: 'verify', tip: c.verify?.sha ?? git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, requested: by };
-  update(id, { status: 'verifying', detail: 'playtesting the change', phase: ph, notes: [...c.notes, { at: Date.now(), by, text: 'asked for a playtest' }] });
-  addLog(id, `playtest asked for by ${by}`);
-  const land = claim(id);
-  void work(id, undefined, undefined, ph, true).finally(() => {
-    land();
-    void pump();
-  });
-  return getChange(id);
+  // Games are played once on each milestone's build (play-policy.ts, J 2026-11-11), not per change.
+  throw new StudioError(`${id} isn't played on its own: ${PLAY_RULE}. Its criteria are judged in its milestone's play.`, 409);
 }
 
 /**

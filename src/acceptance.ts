@@ -14,8 +14,8 @@
 // new play is started for these:
 // - the change's own playtest before it merged (its showcase) passed every criterion: once it merges and beta built
 //   it, that is the task's verdict, unless beta moved in the same files since that play (changeVerdictHolds);
-// - the one beta play before going live (golive-policy.ts playBeforeGoLive), any other bare beta play, and the daily
-//   run's plays of beta judge the criteria of every merged task not verified yet, in the same review (sweepCriteria;
+// - the milestone's one play of its build (pm.ts milestoneCheck, play-policy.ts), or a person's go live play of a commit
+//   no milestone played, judge the criteria of every merged task not verified yet, in the same review (sweepCriteria;
 //   phone criteria on the run's phone play at 390x844 when it has one). pm.ts reads them as it reads a beta check
 //   (runVerdicts): all met is verified, a "no" reopens it the usual way, unclear only waits (never an agent change:
 //   the play wasn't the task's own scenario).

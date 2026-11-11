@@ -1274,7 +1274,7 @@ const server = http.createServer(async (req, res) => {
         void onMainPush(folder, sha)
           .then((r) => betaPushes.unshift({ at: Date.now(), repo: folder, sha: sha.slice(0, 7), result: `main: ${JSON.stringify(r).slice(0, 300)}` }))
           .catch((e: any) => betaPushes.unshift({ at: Date.now(), repo: folder, sha: sha.slice(0, 7), result: `main failed: ${e.message ?? e}` }));
-        return send(res, 202, { ok: true, branch: 'main', note: 'going live: Studio publishes it (Unity games) and playtests the live site' });
+        return send(res, 202, { ok: true, branch: 'main', note: 'going live: Studio publishes it (Unity games)' });
       }
       return send(res, 200, { ok: true, ignored: `nothing to do for ${ref}` });
     }

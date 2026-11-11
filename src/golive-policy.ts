@@ -12,6 +12,7 @@
 // going live by itself safe, not a person.
 
 import { db } from './db.ts';
+import { PLAY_RULE } from './play-policy.ts';
 import { getProduct, managedElsewhere, betaPlayWhen } from './config.ts';
 
 export type Policy = 'auto' | 'hold' | 'ask';
@@ -224,12 +225,9 @@ async function autoGoLiveNow(productId: string, why: string): Promise<{ went?: s
       console.log(`[golive] ${p.id}: merging live into beta first (${why}): ${op.id}`);
       return { waits: 'merging live into beta first; it goes live once beta passes again' };
     }
-    // Beta playtests come once, before going live (config.ts betaPlayWhen): all that holds it is beta's newest commit not
-    // being played, so play it now, once for that commit, covering every merge since the last play.
-    if (plan.blockers?.length && playtestOnly(plan.blockers) && betaPlayWhen() === 'go-live' && plan.beta?.sha) {
-      const r = await playBeforeGoLive(p.id, plan.beta.short ?? plan.beta.sha.slice(0, 7), why);
-      if (r.started || r.playing) return { waits: r.started ? `playing beta ${plan.beta.short ?? ''} once before going live (${r.started})` : `beta's playtest before going live is under way (${r.playing})` };
-    }
+    // All that holds it is beta's newest commit not being played: Studio doesn't play it for going live (play-policy.ts).
+    // Its milestone's one play does, and that run's end wakes this again (pipeline.ts startBeta: wakeGoLives).
+    if (plan.blockers?.length && playtestOnly(plan.blockers)) return { waits: `beta ${plan.beta?.short ?? ''} goes live after its milestone's play (${PLAY_RULE})` };
     if (plan.blockers?.length) {
       console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${plan.blockers.join(' | ').slice(0, 400)}`);
       return { waits: plan.blockers.join(' ') };
@@ -258,13 +256,15 @@ export const BEFORE_GO_LIVE = 'Before go-live: playing beta';
 const focusFor = (short: string) => `${BEFORE_GO_LIVE} ${short} once, covering every merge since its last playtest. Check what changed works and nothing regressed.`;
 
 /**
- * Starts ONE beta playtest of beta's newest commit before it goes live (autoGoLive, betaPlayWhen "go-live"), unless one
+ * Plays beta's newest commit once when a PERSON takes it live and no milestone played it (play-policy.ts rule 3). Studio's
+ * own go-live never plays: it gets { held } and waits for the milestone's play. Otherwise starts ONE beta playtest, unless one
  * is already playing for the project (merges that land meanwhile wait for it: the next pass plays the newest commit) or
  * one already played this exact commit (a failed play holds it until a fix lands; no loop). Its run ends in autoGoLive,
  * which takes beta live if the play passed. Its review also judges the criteria of every merged task not verified yet
  * (pipeline.ts betaBody, acceptance.ts sweepFor): no play of its own for them. `start` is for the tests.
  */
-export async function playBeforeGoLive(productId: string, short: string, why: string, start?: (product: string, o: Record<string, unknown>) => { id: string }, cause?: 'person'): Promise<{ started?: string; playing?: string; played?: string; error?: string }> {
+export async function playBeforeGoLive(productId: string, short: string, why: string, start?: (product: string, o: Record<string, unknown>) => { id: string }, cause?: 'person'): Promise<{ started?: string; playing?: string; played?: string; held?: string; error?: string }> {
+  if (cause !== 'person') return { held: PLAY_RULE };
   const runs = db.prepare(`SELECT id, status, options FROM runs WHERE kind = 'beta' AND options LIKE ? AND products LIKE ? ORDER BY started DESC LIMIT 20`).all(`%${BEFORE_GO_LIVE}%`, `%"${productId}"%`) as any[];
   const playing = runs.find((r) => r.status === 'running');
   if (playing) return { playing: playing.id };
@@ -274,7 +274,7 @@ export async function playBeforeGoLive(productId: string, short: string, why: st
   if (done) return { played: done.id };
   try {
     const go = start ?? (await import('./pipeline.ts')).startBeta;
-    const r = go(productId, { focus: focusFor(short), playtest: true, reverify: true, ...(cause ? { cause } : {}) });
+    const r = go(productId, { focus: focusFor(short), playtest: true, reverify: true, cause, play: 'golive' });
     console.log(`[golive] ${productId}: playing beta ${short} once before going live (${why}): ${r.id}`);
     return { started: r.id };
   } catch (e: any) {

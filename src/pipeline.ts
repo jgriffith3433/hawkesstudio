@@ -46,6 +46,7 @@ import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
 import { isBillingError } from './llm.ts';
 import { kickFollowups } from './followup-kick.ts';
 import { NEUTRAL, hookMissing, libraryProject, openFindingCount } from './verdictwork.ts';
+import { PLAY_RULE, claimPlay, playsFor, type PlayCause } from './play-policy.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -251,23 +252,9 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     }
   }
   const products = ids.map((p) => getProduct(p));
-  // Games need a GPU to be judged fairly. On the server, the playtester (a T4 machine, about $0.53/hr) starts now, boots
-  // while Unity builds, and game playtests wait for it; the run stops it at the end. STUDIO_GPU_PLAYTESTS: playtester
-  // (default), fleet (a big GPU server instead, about $1.86/hr), off (games play in software and come out inconclusive).
-  const gpuMode = process.env.STUDIO_GPU_PLAYTESTS || 'playtester';
-  let usedPlaytester = false;
-  if (isServer() && gpuMode !== 'off' && products.some((p) => p.engine !== 'static')) {
-    const s = startStep(run, 'studio', 'gpu', 'playtests', gpuMode === 'fleet' ? 'checking for a ready GPU server' : 'starting the playtester (T4 GPU)');
-    usedPlaytester = gpuMode !== 'fleet';
-    if (!finishedBefore(s)) gpuGates.set(run, (gpuMode === 'fleet' ? ensureGpu((d) => updateStep(s, { detail: d })) : ensurePlaytester((d) => updateStep(s, { detail: d })))
-      .then((detail) => updateStep(s, { status: 'done', detail, finished: true }))
-      .catch((e: any) => updateStep(s, { status: 'failed', detail: `${e.message} (games are played in software instead)`, finished: true })));
-  }
+  // A run plays nothing and builds nothing (play-policy.ts, unitybuild-policy.ts; J, 2026-11-11): games are played once
+  // on each milestone's build, at its end. So no GPU is started for a run, and Gen's browser cap is left as it is.
   db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run(`running ${ids.length} products`, run);
-  // The scenarios this run will play, in order, so the Activity card can show "n of N" with N fixed (runplan.ts).
-  planRun(run, products.flatMap((p) => testsOf(p, o).map((t) => ({ product: p.id, name: nameOf({ ...t, scenario: t.scenario ? resolveScenario(p, t.scenario) : t.scenario }) }))));
-  // More browsers for a run that plays many projects, so they don't queue behind four (playtest-capacity.ts).
-  void import('./playtest-capacity.ts').then((C) => C.raiseForRun(new Set(products.flatMap((p) => testsOf(p, o).map((t) => `${p.id}|${t.scenario ?? ''}`))).size)).catch(() => {});
   await Promise.all(products.map((p) => runProduct(run, p, o).catch((e) => {
     const s = startStep(run, p.id, 'error', 'pipeline');
     updateStep(s, { status: 'failed', detail: String(e.message ?? e), finished: true });
@@ -280,15 +267,6 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   }
   // Daily runs: how real players do on each live site (the report's "Players" section; the PM files work from it).
   if ((db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'daily') await recordPlayers(run, ids);
-  // The games are played: the playtester stops (unless a playtest outside this run is still on it; then its idle stop does).
-  const gate = gpuGates.get(run);
-  if (gate) {
-    await gate;
-    gpuGates.delete(run);
-  }
-  {
-    if (usedPlaytester) await gen.request('/playtester/stop', { method: 'POST', body: { ifIdle: true } }).catch((e: any) => console.warn(`[studio] couldn't stop the playtester: ${e.message}`));
-  }
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(run) as any).c;
   db.prepare(`UPDATE runs SET status = ?, finished = ?, cost = ? WHERE id = ?`).run(endStatus({ ...runCounts(run), failed: 0 }, runCancelled(run)), Date.now(), cost, run);
   kickFollowups();
@@ -336,46 +314,6 @@ async function recordPlayers(run: string, ids: string[]) {
   }
 }
 
-/**
- * Set while a run is getting a GPU machine ready: game playtests wait for it (it boots while Unity builds). One per run,
- * since a daily run can go beside a manual one (startRun): neither drops the other's.
- */
-const gpuGates = new Map<string, Promise<unknown>>();
-const gpuGate = () => (gpuGates.size ? Promise.all(gpuGates.values()) : null);
-
-/** Starts the playtester (T4) and waits until its browser server answers. */
-async function ensurePlaytester(onDetail: (d: string) => void) {
-  const status = () => gen.request('/playtester');
-  let st = await status();
-  if (!st.exists) throw new Error('there is no playtester (hawkesgen playtester launch)');
-  if (st.state === 'running' && st.stage?.stage === 'ready') return `using the playtester ${st.id}`;
-  await gen.request('/playtester/start', { method: 'POST', body: { confirm: true } });
-  const end = Date.now() + 15 * 60_000;
-  while (Date.now() < end) {
-    await new Promise((res) => setTimeout(res, 10_000));
-    st = await status().catch(() => st);
-    onDetail(`playtester ${st.state}${st.stage ? `: ${st.stage.stage}` : ''}`);
-    if (st.state === 'running' && st.stage?.stage === 'ready') return `started the playtester ${st.id} (T4)`;
-  }
-  throw new Error('the playtester was not ready within 15 minutes');
-}
-
-/** Makes sure one GPU fleet server is ready (starting the most recently used one if none is). */
-async function ensureGpu(onDetail: (d: string) => void) {
-  const readyNow = async () => ((await gen.fleet()).servers ?? []).find((s: any) => s.state === 'running' && s.boot?.stage === 'ready');
-  let r = await readyNow();
-  if (r) return `using ${r.id} (${r.region})`;
-  onDetail('starting a GPU server for the playtests');
-  await gen.fleetAction('start', { confirm: true });
-  const end = Date.now() + 15 * 60_000;
-  while (Date.now() < end) {
-    await new Promise((res) => setTimeout(res, 15_000));
-    r = await readyNow().catch(() => null);
-    if (r) return `started ${r.id} (${r.region})`;
-  }
-  throw new Error('no GPU server became ready within 15 minutes');
-}
-
 /** One product's whole pipeline. */
 export async function runProduct(run: string, p: Product, o: RunOptions) {
   // Git.
@@ -414,47 +352,7 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   if (runCancelled(run)) return;
   if (betaLane() && wantsLocal && p.deploy?.prebuild) await prebuildBeta(run, p);
 
-  // Build (Unity), only when the source changed since the last good build.
-  if (p.build && !o.noBuild && wantsLocal && !runCancelled(run)) {
-    const built = await buildProduct(run, p, { force: o.forceBuild });
-    if (built?.status === 'done') for (const platform of p.build.tests ?? []) { if (runCancelled(run)) break; await testProduct(run, p, platform); }
-  }
-
-  // Playtests.
-  const tests = testsOf(p, o);
-  // A daily run plays beta too when the project's saved playtests are all @live and beta's newest commit hasn't been
-  // played: otherwise nothing ever played beta and every go-live stayed blocked on "beta hasn't been playtested"
-  // (2026-11-01). Once a day at most, and only while beta is ahead of live and unplayed, so it isn't a play per merge
-  // (beta is still played only when asked after a merge, J 2026-10-17).
-  const extra = wantsLocal && !tests.some((t) => t.where === 'local') && isDaily(run) && !runCancelled(run) ? await unplayedBeta(p) : null;
-  if (extra) {
-    tests.push(extra);
-    notePlaying(run, p.id, nameOf(extra), "beta's newest commit hadn't been played, so it couldn't go live");
-  }
-  const ran: string[] = [];
-  // The daily run's plays of beta also judge the criteria of every merged task not verified yet (acceptance.ts
-  // sweepFor): phone criteria on its phone play when it has one. Asked again before each play (a task may land meanwhile).
-  const kind = isDaily(run) ? 'daily' : 'other';
-  const phonePlay = tests.some((x) => x.where === 'local' && x.device === 'phone');
-  // Every local playtest of the run plays the beta build it built or kept: a newer build waits for them (betaplay.ts).
-  const release = p.build && betaLane() && tests.some((t) => t.where === 'local') ? holdBeta(p.id, run) : null;
-  try {
-    for (const t of tests) {
-      if (runCancelled(run)) break; // a cancelled run starts nothing more (cancel.ts)
-      // The daily review is full; live desktop runs check for regressions only (beta's full review sees the same code first).
-      const sweep = o.noReview ? null : sweepFor(p.id, { runKind: kind, where: t.where, device: t.device, phonePlay });
-      const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus, mode: t.where === 'live' && t.device !== 'phone' ? 'regression' : 'full', ...(sweep ? { sweep } : {}) });
-      if (res) ran.push(nameOf(t));
-    }
-  } finally {
-    release?.();
-  }
-  // Open findings from these scenarios that no review mentioned this time.
-  const quiet = notSeenIn(run, p.id, ran);
-  if (quiet.length) {
-    const s = startStep(run, p.id, 'backlog', 'not seen');
-    updateStep(s, { status: 'done', detail: `${quiet.length} open findings weren't seen this time (maybe fixed)`, data: { ids: quiet.map((f) => f.id) }, finished: true });
-  }
+  // No build and no playtest here (play-policy.ts, unitybuild-policy.ts): a run reports on what the milestones' plays found.
 }
 
 /**
@@ -468,25 +366,6 @@ export function betaPlaytestOf(p: Product): Playtest | undefined {
   const live = p.playtests.find((y) => y.where === 'live' && y.device !== 'phone');
   return live ? { ...live, where: 'local' } : undefined;
 }
-
-const isDaily = (run: string) => (db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'daily';
-
-/** The beta playtest to add to a daily run: only when the go-live plan says beta's newest commit hasn't been played. */
-async function unplayedBeta(p: Product): Promise<Playtest | null> {
-  const t = betaPlaytestOf(p);
-  if (!t) return null;
-  try {
-    const { deployPlan, isPlaytestBlocker } = await import('./deploy.ts');
-    const plan = await deployPlan(p.id, { notesWaitMs: 0 });
-    return plan.blockers.some(isPlaytestBlocker) ? t : null;
-  } catch {
-    return null;
-  }
-}
-
-/** The playtests a run plays for a product (the daily run and one-off runs). */
-const testsOf = (p: Product, o: RunOptions) => p.playtests.filter((t) => (o.where === 'local' ? t.where === 'local' : o.where === 'live' ? t.where === 'live' : true))
-  .filter((t) => !o.scenarios?.length || o.scenarios.includes(t.scenario ?? t.mode ?? ''));
 
 /** Stale beta checkouts Talk was told about (once per state, not every playtest). */
 const staleTold = new Set<string>();
@@ -790,6 +669,13 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
       if (d?.commit) played = { branch: BETA, sha: d.commit, title: `deployed beta${d.version ? ` ${d.version}` : ''}` };
     }
     const build = played ? String(played.build ?? played.sha) : null;
+    // Never twice on the same build (play-policy.ts): a scenario that already played to an end on this build, or is
+    // being played on it by another run now, is not played again, whoever asked; that play's result stands.
+    const before = !prior && !was?.job ? claimPlay(p.id, build, name, s, run) : null;
+    if (before) {
+      updateStep(s, { status: 'skipped', detail: `${before.status === 'running' ? 'being played on this build' : 'already played on this build'} (run ${before.run}${before.detail && before.status !== 'running' ? `: ${before.detail}` : ''}); ${PLAY_RULE}`.slice(0, 600), data: { played, sameAs: before }, finished: true });
+      return null;
+    }
     // A scenario this build is known not to have is skipped, not played (scenarios.ts).
     const serveDirOf = path.join(betaSiteDir(p), path.relative(p.site.split('/')[0], p.local.dir));
     const wrong = unityBeta ? servedMismatch(runBetaBuild(run, p.id), now, gameVersions(serveDirOf)) : null;
@@ -865,11 +751,6 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
         updateStep(s, { status: 'failed', detail: `the test sign-in failed: ${e.message}`, data: { played, url, signInFailed: true }, finished: true });
         return null;
       }
-    }
-    const gate = p.engine !== 'static' && !prior ? gpuGate() : null;
-    if (gate) {
-      updateStep(s, { detail: 'waiting for the GPU machine' });
-      await gate;
     }
     // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run: the run time counts from the
     // step's first start (kept on the step, so a restart never extends it), and 10 minutes without progress is stuck.
@@ -1362,6 +1243,9 @@ export const playtestRequest = (b: any): PartialOptions => ({ ...(typeof b.at ==
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
 export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: PartialOptions = {}) {
   const p = getProduct(productId);
+  // A one-off play (Talk, an agent, the API, the CLI) isn't started (play-policy.ts): games are played once on each
+  // milestone's build. No run is made: the caller hears why.
+  if (kind === 'playtest') throw new StudioError(`${p.name} isn't played on its own: ${PLAY_RULE}.`, 409);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
   tagRun(id, opts.origin);
@@ -1384,11 +1268,6 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
   try {
     if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
     else if (kind === 'test') await testProduct(id, p, opts.platform ?? 'EditMode', opts.category);
-    else {
-      const t: Playtest = { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options, ...(opts.at ? { at: opts.at } : {}), ...(opts.peers ? { peers: opts.peers } : {}) };
-      planRun(id, [{ product: p.id, name: nameOf({ ...t, scenario: t.scenario ? resolveScenario(p, t.scenario) : t.scenario }) }]);
-      await playtestProduct(id, p, t, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
-    }
     closeRun(id, `${kind} ${p.id}`);
   } catch (e: any) {
     if (runWaitsForCredits(id, p.id, e)) return;
@@ -1438,10 +1317,16 @@ function waitForCredits(run: string, product: string, step: string, why: { messa
  * and the same playtest is queued to play again after a backoff (transient.ts). False when the tries are used up: the
  * refusal then stands as the failure it is.
  */
+/** Why a beta run may play (play-policy.ts), from its saved options: what a run that plays it again carries. */
+export function runPlayOf(run: string): PlayCause | undefined {
+  const o = parse((db.prepare('SELECT options FROM runs WHERE id = ?').get(run) as any)?.options ?? null) as any;
+  return o?.play === 'milestone' || o?.play === 'golive' ? o.play : undefined;
+}
+
 function waitForRateLimit(run: string, product: string, step: string, t: Playtest, opts: PlayOptions, message: string, data: Record<string, unknown> = {}, job?: string): boolean {
   const kind = (db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'beta' ? 'beta' : 'playtest';
   const spec = kind === 'beta'
-    ? { scenario: t.scenario, options: t.options, criteria: opts.criteria, focus: opts.focus, playtest: true }
+    ? { scenario: t.scenario, options: t.options, criteria: opts.criteria, focus: opts.focus, playtest: true, play: runPlayOf(run) }
     : { scenario: t.scenario, mode: t.mode, where: t.where, device: t.device, seed: t.seed, options: t.options, at: t.at, peers: t.peers, review: opts.review, focus: opts.focus, reviewMode: opts.mode };
   const due = scheduleRateRetry({ run, product, kind, spec, why: message });
   if (!due) return false;
@@ -1478,7 +1363,12 @@ type BetaOptions = { focus?: string; reverify?: boolean; origin?: string | null;
    * milestone's check (pm.ts milestoneCheck, which asked the rule when it started it). None: automatic, so a Unity build
    * of beta's head runs only once a milestone is complete and nothing else is queued.
    */
-  cause?: 'person' | 'milestone' };
+  cause?: 'person' | 'milestone';
+  /**
+   * Why this run may play (play-policy.ts): its milestone's check, or a person taking beta live. None: it builds what it
+   * may and plays nothing. Carried to the run that takes it over (absorbed) and to a run that plays it again (429, credits).
+   */
+  play?: PlayCause };
 /** A reached milestone's check (pm.ts milestoneCheck): one scenario (none: the product's first local one) and the criteria judged on it. */
 export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; criteria: string[] };
 
@@ -1491,7 +1381,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}) }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}), ...(o.play ? { play: o.play } : {}) }), Date.now());
   tagRun(id, o.origin);
   // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
   if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) {
@@ -1520,7 +1410,7 @@ async function unchangedPass(p: Product, name: string): Promise<string | null> {
   return noRuntimeChange(files) ? `${name} passed on beta ${pass.sha.slice(0, 7)} (run ${pass.run}); since then only docs and notes changed (${files.length} file(s)): not played again` : null;
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause, play }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
     const nameFor = (x: { scenario?: string }) => {
@@ -1551,6 +1441,17 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     // The Beta button (or a push) for a Unity game on Cloud Run: there is no source checkout or beta website copy here, so
     // beta's head on GitHub is built like a build tag (GitHub mode). The local path asked Gen for a website copy it can't
     // have ("siteDir .work/beta/<product>-site doesn't exist", 2026-10-30). The commit already built: nothing to build.
+    // A Unity project with its own `build` goes by the same rule as one Studio builds from GitHub (unitybuild-policy.ts,
+    // J 2026-11-11): one build at a milestone's end, or what a person asked for. Held, the run ends: nothing is built and
+    // nothing plays an older build in its place. A build tag (tag) is a person's.
+    if (p.build && !tag && lane) {
+      const v = (await import('./unitybuild-policy.ts')).unityBuildGate(p.id, cause ?? 'auto');
+      if (!v.go) {
+        const s = startStep(id, p.id, 'build', 'unity');
+        updateStep(s, { status: 'skipped', detail: v.why, data: { held: v.why }, finished: true });
+        return void closeRun(id, `beta ${p.id} (Unity build held)`);
+      }
+    }
     let cloudBuilt = false;
     if (p.build && !tag && lane && process.env.K_SERVICE) {
       const { branchHead } = await import('./tagbuild.ts');
@@ -1637,6 +1538,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     const carried: BetaPlay[] = [];
     for (const o of absorbed(id)) {
       if (playtest === undefined && o.playtest !== undefined) playtest = o.playtest;
+      if (!play && o.play) play = o.play;
       for (const k of o.criteria ?? []) if (!(criteria ??= []).includes(k) && !settledAsk(p.id, { criteria: [k] })) criteria.push(k);
       if (!scenario && o.scenario) ({ scenario, options } = o);
       if (o.plays?.length) carried.push(...o.plays);
@@ -1672,7 +1574,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     if (skipPlay) {
       const s = startStep(id, p.id, 'playtest', 'beta');
       updateStep(s, { status: 'skipped', detail: 'not playtested: the owner skips beta playtests for this project; it goes live once CI on beta passes', finished: true });
-    } else if (lane && plays?.length) {
+    } else if (lane && plays?.length && playsFor(play)) {
       const release = p.build ? holdBeta(p.id, id) : null;
       try {
         // Only the scenarios of the tasks it judges (pm.ts playsFor), independent ones in parallel across the playtester's slots.
@@ -1685,7 +1587,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       } finally {
         release?.();
       }
-    } else if (lane && t && (playtest ?? betaPlaytestsOn())) {
+    } else if (lane && t && playsFor(play)) {
       // The smoke every beta build gets (go live needs it) is not played again for a commit that changed nothing a
       // player sees since its last clean pass, unless somebody asked for it (playtest: true), and plays ahead of the queue.
       const bare = !scenario && !criteria?.length;
@@ -1702,7 +1604,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       }
     } else if (lane && t) {
       const s = startStep(id, p.id, 'playtest', nameOf(t));
-      updateStep(s, { status: 'skipped', detail: 'not playtested: beta playtests run when asked for (studio beta, the Beta button), not after every merge', finished: true });
+      updateStep(s, { status: 'skipped', detail: `not playtested: ${PLAY_RULE}`, data: { held: PLAY_RULE }, finished: true });
     }
     closeRun(id, `beta ${p.id}`);
     // The owner said to keep going live (golive-policy.ts): beta's run passed, so it goes live by itself.

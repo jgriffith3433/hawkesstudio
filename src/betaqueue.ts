@@ -140,7 +140,7 @@ export function supersede(run: string, product: string, by: string, sha?: string
  * What the runs this one superseded asked for (and theirs, all the way back): their playtest wish, criteria and
  * scenario carry over to the build that covers them.
  */
-export function absorbed(run: string): { playtest?: boolean; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; focus?: string; plays?: { scenario?: string; options?: Record<string, unknown>; criteria: string[] }[] }[] {
+export function absorbed(run: string): { playtest?: boolean; play?: 'milestone' | 'golive'; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; focus?: string; plays?: { scenario?: string; options?: Record<string, unknown>; criteria: string[] }[] }[] {
   const out: any[] = [];
   const seen = new Set([run]);
   const todo = [run];

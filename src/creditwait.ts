@@ -16,7 +16,6 @@
 
 import { db, onDbWrite, newId } from './db.ts';
 import { CreditsNeeded } from './billing.ts';
-import { betaPlayWhen } from './config.ts';
 
 export const HOLD_MS = 60 * 60_000;
 
@@ -74,7 +73,7 @@ export function creditsWaitReason(now = Date.now()): string | null {
 }
 
 /** Starts the waiting beta runs again, each once. Returns the new run ids. `startBeta` is pipeline.ts's (a parameter: no import cycle). */
-export function resumeWaiting(startBeta: (product: string, o: { focus: string; playtest: boolean }) => { id: string }, now = Date.now(), playWhen: () => 'go-live' | 'merge' = betaPlayWhen): string[] {
+export function resumeWaiting(startBeta: (product: string, o: { focus: string; playtest: boolean; play?: 'milestone' | 'golive'; plays?: any[]; cause?: 'person' | 'milestone' }) => { id: string }, now = Date.now()): string[] {
   const rows = db.prepare('SELECT * FROM credit_waits WHERE resumed IS NULL').all() as any[];
   const started: string[] = [];
   const seen = new Set<string>();
@@ -83,13 +82,17 @@ export function resumeWaiting(startBeta: (product: string, o: { focus: string; p
     const took = db.prepare('UPDATE credit_waits SET resumed = ? WHERE id = ? AND resumed IS NULL').run(now, r.id);
     if (!Number(took.changes)) continue;
     // Only a beta run is played again (a one-off playtest or a daily run is asked for again by whoever wanted it).
-    const kind = (db.prepare('SELECT kind FROM runs WHERE id = ?').get(r.run) as any)?.kind;
+    const held = db.prepare('SELECT kind, options FROM runs WHERE id = ?').get(r.run) as any;
+    const kind = held?.kind;
     if (!r.product || kind !== 'beta' || seen.has(r.product)) continue; // one beta run per product, however many waited
     seen.add(r.product);
     try {
-      // Beta plays once, before going live (config.ts betaPlayWhen): the waiting run builds beta again; its play comes then.
-      const play = playWhen() === 'merge';
-      const b = startBeta(r.product, { focus: play ? 'Playing beta again: the earlier playtest was waiting for credits.' : 'Building beta again: the earlier run was waiting for credits (it plays before going live).', playtest: play });
+      // Started again for what started it (play-policy.ts): a milestone's (or a person's go live) play still plays, once
+      // (a scenario it already played on this build isn't played again); any other run only builds beta again.
+      let o: any = {};
+      try { o = JSON.parse(held?.options || '{}'); } catch { o = {}; }
+      const play = o.play === 'milestone' || o.play === 'golive' ? o.play : undefined;
+      const b = startBeta(r.product, { focus: play ? 'Playing beta again: the earlier playtest was waiting for credits.' : 'Building beta again: the earlier run was waiting for credits.', playtest: Boolean(play), ...(play ? { play } : {}), ...(play && o.plays ? { plays: o.plays } : {}), ...(o.cause ? { cause: o.cause } : {}) });
       db.prepare('UPDATE credit_waits SET resume_run = ? WHERE id = ?').run(b.id, r.id);
       started.push(b.id);
     } catch (e: any) {

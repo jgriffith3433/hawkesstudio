@@ -229,7 +229,7 @@ test('a person asking to go live gets beta\'s head built, past an earlier play w
   db.prepare('INSERT INTO steps (id, run, product, kind, name, status, detail, data, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(newId('s'), held, 'sou', 'build', 'web', 'skipped', 'held: x', J({ held: 'held: x' }), Date.now());
   const asked: Record<string, unknown>[] = [];
   const start = (_p: string, o: Record<string, unknown>) => { asked.push(o); return { id: 'r_new' }; };
-  assert.deepEqual(await G.playBeforeGoLive('sou', short, 'Studio', start), { played: held }, 'Studio\'s own go live waits for the milestone\'s build');
+  assert.ok((await G.playBeforeGoLive('sou', short, 'Studio', start)).held, 'Studio\'s own go live waits for the milestone\'s build and play');
   assert.equal(asked.length, 0);
   assert.deepEqual(await G.playBeforeGoLive('sou', short, 'J asked', start, 'person'), { started: 'r_new' });
   assert.equal(asked[0].cause, 'person', 'its Unity build runs: shipping needs it');

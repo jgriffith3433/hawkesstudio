@@ -26,9 +26,9 @@ const pm = await import('../src/pm.ts');
 const Cr = await import('../src/credits.ts');
 const ib = await import('../src/inbox.ts');
 
-const run = (kind = 'beta', status = 'running') => {
+const run = (kind = 'beta', status = 'running', options: Record<string, unknown> = {}) => {
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, status, 'x', JSON.stringify(['cwgame']), '{}', Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, status, 'x', JSON.stringify(['cwgame']), JSON.stringify(options), Date.now());
   return id;
 };
 const refusal = () => new CreditsNeeded(outOfCredits(9, 1, 'playtest.run'), 9, 1);
@@ -81,18 +81,18 @@ test('while waiting: one state, paid work does not start, the PM leaves tasks al
   assert.match(cards[0].text!, /Nothing failed and no agent was sent back/);
 });
 
-test('credits back: the waiting beta run plays once (and a daily or one-off run is not replayed)', async () => {
+test('credits back: the waiting milestone run plays once (and a daily or one-off run is not replayed)', async () => {
   db.exec('DELETE FROM credit_waits');
-  const beta = run('beta', 'cancelled');
-  const beta2 = run('beta', 'cancelled');
+  const beta = run('beta', 'cancelled', { play: 'milestone', cause: 'milestone', playtest: true });
+  const beta2 = run('beta', 'cancelled', { play: 'milestone', cause: 'milestone', playtest: true });
   const daily = run('daily', 'cancelled');
   for (const r of [beta, beta2, daily]) W.holdRun(r, 'cwgame', W.creditRefusal(refusal())!);
   const started: string[] = [];
-  const startBeta = (product: string, o: any) => { assert.equal(product, 'cwgame'); assert.equal(o.playtest, true); const id = `r_new${started.length}`; started.push(id); return { id }; };
-  const ids = W.resumeWaiting(startBeta, Date.now(), () => 'merge');
+  const startBeta = (product: string, o: any) => { assert.equal(product, 'cwgame'); assert.equal(o.playtest, true); assert.equal(o.play, 'milestone'); assert.equal(o.cause, 'milestone'); const id = `r_new${started.length}`; started.push(id); return { id }; };
+  const ids = W.resumeWaiting(startBeta, Date.now());
   assert.equal(ids.length, 1, 'two held beta runs of one product play once');
   assert.equal(W.creditsWaiting(), null, 'the wait is over');
-  assert.deepEqual(W.resumeWaiting(startBeta, Date.now(), () => 'merge'), [], 'a second event starts nothing');
+  assert.deepEqual(W.resumeWaiting(startBeta, Date.now()), [], 'a second event starts nothing');
   assert.equal(started.length, 1);
 });
 
@@ -118,12 +118,13 @@ test('a hold lapses after an hour (a cell hears no event), and a new refusal hol
   assert.equal(W.creditsWaiting(), null);
 });
 
-test('credits back with beta played only before going live: the waiting beta run builds, no play', async () => {
+test('credits back for a beta run no milestone started: it builds again, no play (play-policy.ts)', async () => {
   db.exec('DELETE FROM credit_waits');
   const beta = run('beta', 'cancelled');
   W.holdRun(beta, 'cwgame2', W.creditRefusal(refusal())!);
   const seen: any[] = [];
-  const ids = W.resumeWaiting((product: string, o: any) => { seen.push(o); return { id: 'r_build0' }; }, Date.now(), () => 'go-live');
+  const ids = W.resumeWaiting((product: string, o: any) => { seen.push(o); return { id: 'r_build0' }; }, Date.now());
   assert.equal(ids.length, 1);
   assert.equal(seen[0].playtest, false);
+  assert.equal(seen[0].play, undefined);
 });
