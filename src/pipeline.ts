@@ -1482,7 +1482,9 @@ function runWaitsForCredits(id: string, product: string, e: unknown): boolean {
  * quiet: ms a Unity beta run waits for more pushes before building (default STUDIO_BETA_QUIET_MS, 2 min; J's own Beta
  * button: 0). A newer beta run of the product supersedes one still waiting (betaqueue.ts).
  */
-type BetaOptions = { focus?: string; reverify?: boolean; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
+type BetaOptions = { focus?: string; reverify?: boolean;
+  /** The play before going live (golive-policy.ts): the merged tasks it judges in passing, chosen for the commit it plays (pm.ts coveredByBetaPlay). Empty: none. */
+  sweep?: Sweep; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
   /** The agent change whose merge into beta started this run (agents.ts approve): a Unity build skips the quiet time
    *  while no other change of the product is on its way into beta (betaqueue.ts mergesInFlight). */
   merge?: string;
@@ -1506,7 +1508,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}) }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), ...(o.sweep ? { sweep: o.sweep } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}) }), Date.now());
   tagRun(id, o.origin);
   // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
   if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) {
@@ -1535,7 +1537,7 @@ async function unchangedPass(p: Product, name: string): Promise<string | null> {
   return noRuntimeChange(files) ? `${name} passed on beta ${pass.sha.slice(0, 7)} (run ${pass.run}); since then only docs and notes changed (${files.length} file(s)): not played again` : null;
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause, sweep: goLiveSweep }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
     const nameFor = (x: { scenario?: string; device?: 'desktop' | 'phone' }) => {
@@ -1713,7 +1715,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       } else {
         // A play of beta that isn't a task's own check (the one before going live, the Beta button) judges every merged
         // task's criteria not verified yet in its review (acceptance.ts sweepFor): no play of its own for them.
-        const sweep = sweepFor(p.id, { runKind: 'beta', where: t.where === 'live' ? 'live' : 'local', device: t.device, asked: !bare });
+        const sweep = bare && goLiveSweep ? (goLiveSweep.criteria.length ? goLiveSweep : null) : sweepFor(p.id, { runKind: 'beta', where: t.where === 'live' ? 'live' : 'local', device: t.device, asked: !bare });
         await playtestProduct(id, p, t, { focus, mode: 'verify', criteria, abandon: newerBuild, ...(bare ? { priority: 5 } : {}), ...(sweep ? { sweep } : {}) });
         if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
       }

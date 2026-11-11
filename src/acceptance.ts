@@ -232,7 +232,9 @@ export function runVerdicts(steps: ReviewStep[], criteria: string[]): RunVerdict
 }
 
 /** How changeVerdictHolds reads git: the merge commit, a merge base, the files two commits differ in (null: can't tell). */
-export type CarryDeps = { merge: () => Promise<string | null>; fork: (a: string, b: string) => Promise<string | null>; files: (a: string, b: string) => Promise<string[] | null> };
+export type CarryDeps = { merge: () => Promise<string | null>; fork: (a: string, b: string) => Promise<string | null>; files: (a: string, b: string) => Promise<string[] | null>;
+  /** Whether the first commit is an ancestor of the second (null: can't tell). A play of a commit the merge contains is the verdict outright. */
+  isAncestor?: (a: string, b: string) => Promise<boolean | null> };
 /** Agents' notes are never part of the work (agents.ts NOTES). */
 const NOTES = /^\.hawkes\//;
 
@@ -256,6 +258,8 @@ export async function changeVerdictHolds(c: { verify: any }, criteria: string[],
   try {
     const merge = await deps.merge();
     if (!merge) return no('its merge commit on beta was not found');
+    // The commit it played is part of beta's merge: what was judged is what beta got (a merge commit; a squash isn't).
+    if (deps.isAncestor && (await deps.isAncestor(played, merge)) === true) return { holds: true, why: `its own playtest of ${played.slice(0, 7)} met all ${criteria.length} criteria, and that commit is part of beta's merge ${merge.slice(0, 7)}` };
     const fork = await deps.fork(played, `${merge}^1`);
     if (!fork) return no(`can't find where ${played.slice(0, 7)} left beta`);
     const mine = await deps.files(fork, played);
@@ -282,6 +286,12 @@ export function localGitDeps(dir: string, base: string, pr: number | null): Carr
   return {
     merge: async () => (pr ? (await run(['log', `origin/${base}`, '-F', `--grep=(#${pr})`, '--format=%H', '-n', '1'])) || null : null),
     fork: async (a, b) => (await run(['merge-base', a, b])) || null,
+    isAncestor: async (a, b) => {
+      fetched ??= gitAsync(dir, ['fetch', '--quiet', 'origin']).catch(() => null);
+      await fetched;
+      const r = await gitAsync(dir, ['merge-base', '--is-ancestor', a, b]);
+      return r.ok ? true : /fatal|unknown|not a valid|bad object/i.test(r.err) ? null : false;
+    },
     files: async (a, b) => {
       const out = await run(['diff', '--name-only', a, b]);
       return out === null ? null : out.split('\n').map((x) => x.trim()).filter(Boolean);

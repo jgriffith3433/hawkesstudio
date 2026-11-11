@@ -123,7 +123,7 @@ export type Task = {
   /** 'video': a video J screens (videos.ts); null: work judged on beta. */
   kind: string | null;
   /** The latest acceptance results: where they were judged (the change's verification, or beta), per criterion. */
-  checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; video?: string | null; verdict?: string; results: Check[];
+  checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; /** The commit the change's own playtest played (where 'change'). */ sha?: string; video?: string | null; verdict?: string; results: Check[];
     /** The change's own playtest became the verdict on beta (acceptance.ts changeVerdictHolds): why it still holds. */
     carried?: string } | null;
   /** How J can try it (the agent's words). */

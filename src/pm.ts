@@ -43,7 +43,7 @@ import {
 } from './roadmap.ts';
 import { gateTask, PHONE, splitPlays, focusWithGoals } from './taskbar.ts';
 import { askKey } from './playplan.ts';
-import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps } from './acceptance.ts';
+import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps, awaitingVerdict, SWEEP_MAX } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { fileUrl, signFileLinks } from './gen.ts';
@@ -273,7 +273,7 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
     // Parked on its Gen jobs (agents.ts WAITING_GEN): still working, without a slot (the roadmap says how far its jobs are).
     const next = ACTIVE.includes(c.status) || c.status === 'waiting on Gen' ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? mergedStatus(t, c) : null;
     if (next && next !== t.status) {
-      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' || next === GPU_WAIT ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
+      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' || next === GPU_WAIT ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, ...(c.verify.played ? { sha: String(c.verify.played) } : {}), video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
       if (next === 'merged') kick();
       if (next === GPU_WAIT) waitForGpu(t, c);
     }
@@ -458,6 +458,37 @@ export async function carryChangeVerdict(t: Task, deps?: Parameters<typeof chang
   return true;
 }
 
+/**
+ * The merged tasks the play before going live judges (golive-policy.ts playBeforeGoLive): merged and not verified yet,
+ * whose merge commit is an ancestor of the beta commit it plays (a task merged after that commit isn't in the build
+ * played), and only those whose criteria need no scenario the play doesn't already run (playsFor: the product's default
+ * beta scenario on desktop; a task's own scenario or a phone play would be a playtest of its own). Whole tasks, up to
+ * SWEEP_MAX criteria. `deps` are the tests'.
+ */
+export async function coveredByBetaPlay(product: string, betaSha: string, deps: { merge?: (t: Task) => Promise<{ slug: string; sha: string } | null>; includes?: typeof includesMerge; tasks?: Task[] } = {}): Promise<{ criteria: string[]; tasks: string[] }> {
+  const out = { criteria: [] as string[], tasks: [] as string[] };
+  if (!betaSha || !hasBeta(product)) return out;
+  const { betaPlaytestOf } = await import('./pipeline.ts');
+  const dflt = betaPlaytestOf(getProduct(product))?.scenario;
+  for (const t of deps.tasks ?? awaitingVerdict(product)) {
+    const own = await playsFor([t]);
+    if (!own.length || own.some((p) => p.device === 'phone' || p.options || (p.scenario && p.scenario !== dflt))) continue;
+    try {
+      const m = await (deps.merge ?? mergeOf)(t);
+      if (!m) continue;
+      const gt = deps.includes ? null : await import('./ghtoken.ts');
+      const gh = gt ? gt.githubFetch(await gt.repoToken(m.slug)) : (undefined as never);
+      const inside = await (deps.includes ?? includesMerge)(m.slug, m.sha, betaSha, gh);
+      if (inside !== true) continue;
+    } catch { continue; }
+    const add = [...new Set(t.criteria)].filter((k) => !out.criteria.includes(k));
+    if (out.criteria.length && out.criteria.length + add.length > SWEEP_MAX()) continue;
+    out.criteria.push(...add);
+    out.tasks.push(t.id);
+  }
+  return out;
+}
+
 /** A daily run's play behind a review: done, and not stuck (the rest of a daily run says nothing about it). */
 function playedClean(run: string, product: string, name: string) {
   const x = db.prepare(`SELECT status, detail, data FROM steps WHERE run = ? AND product = ? AND kind = 'playtest' AND name = ? ORDER BY started DESC LIMIT 1`).get(run, product, name) as any;
@@ -549,7 +580,7 @@ export function buildOf(product: string, r: { id: string; status: string; detail
  * build's error lines (decideFailedBuild: the one whose change touched the files they name, else the one merged last;
  * nothing while beta has moved since that build or a fix for it is underway). No beta run after a merge: one is started.
  */
-export async function followBuilds() {
+export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[1]) {
   const { getChange } = await changes();
   await settleCancelledBuilds(getChange);
   const byProduct = new Map<string, { t: Task; at: number }[]>();
@@ -577,7 +608,13 @@ export async function followBuilds() {
     const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
     for (const { t, at } of list) {
       const r = finished.find((x) => x.started >= at);
-      if (r && t.build?.run !== r.id) setTask(t.id, { build: buildOf(product, r, await proofFor(product, t, r.id)) });
+      if (r && t.build?.run !== r.id) {
+        setTask(t.id, { build: buildOf(product, r, await proofFor(product, t, r.id)) });
+        // Its change's own playtest met every criterion and beta's build of a commit with the merge succeeded: verified now,
+        // no beta run for it. A failed build leaves it merged (carryChangeVerdict needs build.ok).
+        const now = getTask(t.id);
+        if (now?.build?.ok === true) await carryChangeVerdict(now, deps).catch((e: any) => console.warn(`[pm] carry ${t.id}: ${e.message ?? e}`));
+      }
     }
     // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
     const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
@@ -695,7 +732,7 @@ async function decideFailedBuild(product: string, run: { id: string; started: nu
 }
 
 /** Beta's newest commit for a product (its source checkout's origin/beta), or null. */
-function betaHead(product: string) {
+export function betaHead(product: string) {
   try {
     const dir = repoDirs(getProduct(product)).source;
     return fs.existsSync(dir) ? shaOf(dir, `origin/${BETA}`) : null;
