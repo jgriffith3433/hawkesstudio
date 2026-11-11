@@ -3301,6 +3301,7 @@ async function pace(startedNow: number, deps: Partial<IdleDepsLike> = {}) {
     getScout,
     askJ: (text, o) => askJ(text, o),
     log: (detail) => logDecision('idle', IDLE_SUBJECT, null, detail.slice(0, 1500)),
+    selfFills: idleWorkIsStudios,
     ...deps,
   });
 }
