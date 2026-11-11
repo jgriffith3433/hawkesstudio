@@ -246,6 +246,21 @@ test("beta only moves forward: a build of an older commit is published at its ow
   assert.throws(() => C.saveProduct({ id: 'loop', name: 'Loop', engine: 'unity', repo: 'acme/loop', builds: [{ id: 'web', tool: 'unity', publish: { project: 'loop', path: 'Game/', commit: true } }] } as any), /own repository/);
 });
 
+test("a compile-only build finishing after the site build never takes beta's pointer", () => {
+  // hawkes-analytics, 2026-11-11: "package" is the played demo page, "unity-check" a compile check (playtest: false).
+  const analytics: any = { id: 'ha', name: 'HA', engine: 'unity', builds: [{ id: 'package', tool: 'npm', target: 'web' }, { id: 'unity-check', tool: 'unity', target: 'web', playtest: false }] };
+  assert.equal(B.mayMoveBeta(analytics, 'package'), true, 'the played build moves beta');
+  assert.equal(B.mayMoveBeta(analytics, 'unity-check'), false, 'the compile check leaves beta on the playable build');
+  // Alone, a compile-only build is all the project has to serve.
+  assert.equal(B.mayMoveBeta({ ...analytics, builds: [analytics.builds[1]] }, 'unity-check'), true);
+});
+
+test("setBeta changes what studio_previews reports", async () => {
+  await B.setBeta('site', 'web', 4);
+  const P = await import('../src/previews.ts');
+  assert.equal(P.betaPreview('site')?.version, 'web 4', 'beta is reported as the build it was moved to');
+});
+
 test("a build too big for git: its big folder stays on the public builds address and the committed pages point there", () => {
   const files = [
     { path: 'index.html', size: 2000 }, { path: 'TemplateData/style.css', size: 900 }, { path: 'TemplateData/logo.png', size: 30000 },
