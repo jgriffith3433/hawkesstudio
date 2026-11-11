@@ -26,7 +26,7 @@
 
 import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
 import { isVideoTask } from './videos.ts';
-import { unityBuildOf, buildProof, builtBy, includesMerge, missingScenarioSkips } from './betabuild.ts';
+import { unityBuildOf, buildProof, builtBy, buildFailedIn, includesMerge, missingScenarioSkips } from './betabuild.ts';
 import { heldBuildRun, milestoneBuildDue, unityBuildGate } from './unitybuild-policy.ts';
 import * as MB from './milestone-batch.ts';
 import fs from 'node:fs';
@@ -566,6 +566,8 @@ const unityStudioBuilt = (product: string) => { try { return Boolean(unityBuildO
 export async function proofFor(product: string, t: Task, runId: string, deps: { merge?: (t: Task) => Promise<{ slug: string; sha: string } | null>; includes?: typeof includesMerge } = {}) {
   if (!unityStudioBuilt(product)) return undefined;
   const built = builtBy(runId, product);
+  // A build that broke is a failed build (buildOf reads its error), not "built nothing" (betabuild.ts buildFailedIn).
+  if (!built && buildFailedIn(runId, product)) return undefined;
   if (!built) return buildProof({ unity: true, built: null, includes: null });
   let includes: boolean | null = null;
   try {
@@ -964,7 +966,7 @@ export function brokenCheck(run: string, product?: string): string | null {
   const held = heldBuildRun(run, p);
   if (held) return `beta's Unity build was held in run ${run} (${held}), so beta was not built or checked there`;
   // A Unity project Studio builds: a run with no build of beta's head built nothing, so it checked nothing.
-  const sp = unityStudioBuilt(p) ? buildProof({ unity: true, built: builtBy(run, p), includes: true }) : undefined;
+  const sp = unityStudioBuilt(p) && !buildFailedIn(run, p) ? buildProof({ unity: true, built: builtBy(run, p), includes: true }) : undefined;
   const build = buildOf(p, { ...r, status: r.status === 'failed' ? 'failed' : 'done' }, sp);
   return build.ok ? null : build.detail;
 }
