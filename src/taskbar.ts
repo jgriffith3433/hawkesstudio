@@ -96,12 +96,13 @@ const reasonsOf = (c: BarCheck) => [...c.missing.map((m) => `no ${m.replace(/\s*
 const SCHEMA = {
   type: 'object',
   properties: {
-    cannot: { type: 'string', description: 'Empty when the task can be shaped. Otherwise why the work itself is unbounded or unclear.' },
+    shapeable: { type: 'boolean', description: 'true when the task can be shaped to the bar (the usual case); false only when the work itself is unbounded or unclear.' },
+    cannot: { type: 'string', description: 'Only when shapeable is false: why the work itself is unbounded or unclear. Otherwise the empty string "", never a word like "Empty" or "none".' },
     goal: { type: 'string' }, reference: { type: 'string' }, axis: { type: 'string', enum: AXES }, phone: { type: 'string' }, outcome: { type: 'string' },
     work: { type: 'string', description: 'The task\'s work in the same scope, in a few sentences.' },
     criteria: { type: 'array', items: { type: 'string' } },
   },
-  required: ['cannot', 'goal', 'reference', 'axis', 'phone', 'outcome', 'work', 'criteria'],
+  required: ['shapeable', 'cannot', 'goal', 'reference', 'axis', 'phone', 'outcome', 'work', 'criteria'],
 };
 
 export const BAR_TEXT = `A game or site task carries: a player goal (one sentence on what the player feels or can do after it ships); a reference
@@ -147,7 +148,21 @@ class EmptyShape extends Error {}
 /** Text that says something: not blank, not only quotes, brackets, dashes or "none"/"n/a"/"null". */
 const meaningful = (v: unknown) => { const s = String(v ?? '').replace(/["'`“”‘’()\[\]{}\s.\-–—_*]/g, ''); return !!s && !/^(none|n\/?a|null|undefined|no|empty)$/i.test(s); };
 /** A shaper answer with no goal, outcome, work or criteria and no real reason to refuse: the call failed, it didn't judge. */
-const emptyAnswer = (o: any) => !o || (!meaningful(o.cannot) && !['goal', 'reference', 'outcome', 'work', 'phone'].some((k) => meaningful(o[k])) && !(Array.isArray(o.criteria) && o.criteria.some(meaningful)));
+/**
+ * A "cannot" that says the task CAN be shaped. Nov 11: the shaper filled "cannot" with "Empty: the work is bounded. It
+ * names ..." (it read the schema's "Empty when the task can be shaped" as the word to write), and every such answer parked
+ * a well-formed task (11 of Hawkes Games', 7 of I Can Be AI's, 12 of Dose of Destruction's). Such text is the shaper
+ * saying "nothing stops this", never a refusal.
+ */
+export const saysShapeable = (v: unknown) => {
+  const s = String(v ?? '').trim().replace(/^["'`“”‘’*_\s]+/, '');
+  if (/\b(unbounded|unclear|open[- ]ended|no measurable|cannot tell|can't tell)\b/i.test(s)) return false;
+  return /^(empty|none|n\/?a|null|nothing|no reason|not applicable)\b/i.test(s)
+    || /\b(can be shaped|is shapeable|(?:work|task) is bounded|is well[- ]?(?:formed|bounded|scoped)|is bounded)\b/i.test(s);
+};
+/** The shaper refuses the task: shapeable false (when it says), and a reason that is a reason, not "Empty: it's fine". */
+export const refuses = (o: any) => o?.shapeable !== true && meaningful(o?.cannot) && !saysShapeable(o?.cannot);
+const emptyAnswer = (o: any) => !o || (!refuses(o) && !['goal', 'reference', 'outcome', 'work', 'phone'].some((k) => meaningful(o[k])) && !(Array.isArray(o.criteria) && o.criteria.some(meaningful)));
 /** The stored bar, completed from the request's own headings (stored fields win). */
 export function effectiveBar(t: Pick<Task, 'request' | 'bar'>): Bar | null {
   const read = barOf(t.request);
@@ -206,7 +221,9 @@ WHAT IS MISSING: ${reasons.join('; ')}
 
 Keep the task's intent and scope: never widen it, never add features. Write the fields and 1 to 5 criteria (2 to 5 for a game
 or site) that a playtest can see or measure, each with something observable or a number; reuse its own criteria where they are good.
-If the work itself is an unbounded audit or explore with no measurable end, or you cannot tell what it should deliver, set "cannot" to why and leave the rest empty.`;
+Set "shapeable" to true and "cannot" to "" whenever the task can be shaped (almost always).
+Only if the work itself is an unbounded audit or explore with no measurable end, or you cannot tell what it should deliver,
+set "shapeable" to false, "cannot" to why, and leave the rest empty.`;
     const j: any = await (deps.ask ?? askOverride ?? askClaude)({ prompt, schema: SCHEMA, model: modelId('haiku'), maxTokens: 1500, purpose: 'task-bar', product: t.product, timeoutMs: 120_000 });
     if (j?.status !== 'done' || !j.result?.value) throw new Error(String(j?.error ?? j?.detail ?? 'no answer').slice(0, 200));
     out = j.result.value;
@@ -225,7 +242,7 @@ If the work itself is an unbounded audit or explore with no measurable end, or y
     return 'wait';
   }
   failures.delete(key);
-  if (meaningful(out?.cannot)) return park(t, [`cannot be shaped: ${String(out.cannot).trim().slice(0, 240)}`, ...reasons]);
+  if (refuses(out)) return park(t, [`cannot be shaped: ${String(out.cannot).trim().slice(0, 240)}`, ...reasons]);
   const shape = Object.fromEntries(BAR_FIELDS.map((k) => [k, String(out?.[k] ?? '').trim()]));
   const criteria = (Array.isArray(out?.criteria) ? out.criteria : []).map((x: unknown) => String(x).trim()).filter(Boolean).slice(0, 8);
   const request = composeRequest(kind, { ...shape, work: String(out?.work ?? '').trim() || workLine(t.request) || t.title }, t.request);
@@ -290,9 +307,14 @@ export function parkedTasks(tasks: Task[]) {
 
 /** A park whose "cannot be shaped" reason said nothing (empty, or only quotes): the shaper's call failed, the task was never judged. */
 const EMPTY_PARK = /cannot be shaped:\s*(?:["'`“”‘’]*\s*)(?:[;.]|$)/;
+/** The "cannot be shaped" reason of a park note (up to the next "; no ..." reason the gate appended). */
+const parkReason = (note: string) => /cannot be shaped:\s*(.*?)(?:;\s*(?:no |the rewrite|its request)|$)/s.exec(note)?.[1] ?? '';
+/** Parked on a non-answer: an empty reason, or one that says the task can be shaped ("Empty: the work is bounded..."). */
+const wronglyParked = (note: string) => EMPTY_PARK.test(note) || (/cannot be shaped:/.test(note) && saysShapeable(parkReason(note)));
 
 /**
- * Once at start-up (server.ts): every task the bar parked with an empty "cannot be shaped" is put back to planned, so the
+ * Once at start-up (server.ts): every task the bar parked with an empty "cannot be shaped", or one that said the task could
+ * be shaped ("Empty: the work is bounded"), is put back to planned, so the
  * gate judges it again on the next PM pass (headings in the request now count; an empty shaper answer waits instead of parking).
  * A task that now passes the pure check goes back with its pass recorded. Idempotent; returns the ids restored.
  */
@@ -301,12 +323,12 @@ export function recheckEmptyParks(): string[] {
   const restored: string[] = [];
   for (const { id } of rows) {
     const t = getTask(id);
-    if (!t || t.status !== 'idea' || t.bar?.gate?.verdict !== 'parked' || !EMPTY_PARK.test(String(t.note ?? ''))) continue;
+    if (!t || t.status !== 'idea' || t.bar?.gate?.verdict !== 'parked' || !wronglyParked(String(t.note ?? ''))) continue;
     const read = effectiveBar(t);
     const ok = checkTask({ ...t, bar: read }, barKindOf(t.product)).ok;
     // Passing: record the pass for this version. Otherwise drop the old verdict so the gate shapes it again.
     setBar(id, ok ? { ...read, gate: gateOf('pass', [], hashOf(t)) } : (() => { const { gate: _g, ...rest } = { ...(read ?? {}) } as Bar; return rest; })());
-    updateTask(id, { status: 'planned', note: ok ? 'back to planned: it meets the task bar (re-checked after an empty shaper answer)' : 'back to planned: the task bar parked it on an empty shaper answer and checks it again' });
+    updateTask(id, { status: 'planned', note: ok ? 'back to planned: it meets the task bar (re-checked after an empty shaper answer)' : 'back to planned: the task bar parked it on a shaper non-answer and checks it again' });
     logDecision('task-bar recheck', id, t.product, `"${t.title}" was parked by an empty shaper answer; back to planned${ok ? ' (it meets the bar)' : ' to be shaped again'}`);
     restored.push(id);
   }
