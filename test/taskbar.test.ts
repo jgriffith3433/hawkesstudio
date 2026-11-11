@@ -159,3 +159,49 @@ test('splitPlays and focusWithGoals', () => {
   assert.deepEqual(plays.map((p) => [p.device ?? 'desktop', p.criteria.length]), [['desktop', 1], ['phone', 1]]);
   assert.match(tb.focusWithGoals('Checking.', [rm.getTask(vagueTask().id)!, { title: 'X', bar: { goal: 'Sees the price' } } as any]), /Sees the price/);
 });
+
+test('a request carrying the headings (any case, bold, multi-line) passes the gate with no model call', async () => {
+  const it = rm.addItem({ product: 'tbgame', title: `Headings ${Math.random()}`, goal: 'Combat that lands', status: 'planned' });
+  const request = '**PLAYER GOAL:** The player feels the hit land\nand keeps swinging.\n\n- reference : Hades: the dash-strike freeze frame\n## Critic Axis: Feel\n\n`Phone`: The attack button sits under the right thumb.\n\nAdd hit-stop to the sword.';
+  const t = rm.addTask({ item: it.id, request, criteria: shaped.criteria });
+  let asked = 0;
+  assert.equal(await tb.gateTask(t, { ask: async () => { asked++; throw new Error('no call expected'); } }), 'ok');
+  assert.equal(asked, 0);
+  const now = rm.getTask(t.id)!;
+  assert.equal(now.bar!.gate!.verdict, 'pass');
+  assert.equal(now.bar!.goal, 'The player feels the hit land and keeps swinging.');
+  // Even with the bar not stored (a task written before the headings were read), the request's headings count.
+  rm.setBar(t.id, null);
+  db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('planned', t.id);
+  assert.equal(tb.effectiveBar(rm.getTask(t.id)!)!.axis, 'feel');
+});
+
+test('an empty shaper answer never parks: the task waits and stays planned', async () => {
+  for (const value of [{ cannot: '""', goal: '', reference: '', axis: '', phone: '', outcome: '', work: '', criteria: [] }, {}, { cannot: '', work: '', criteria: [] }]) {
+    const t = vagueTask();
+    assert.equal(await tb.gateTask(t, { ask: answer(value) }), 'wait');
+    assert.equal(await tb.gateTask(rm.getTask(t.id)!, { ask: answer(value) }), 'wait');
+    assert.equal(await tb.gateTask(rm.getTask(t.id)!, { ask: answer(value) }), 'wait');
+    assert.equal(rm.getTask(t.id)!.status, 'planned');
+  }
+});
+
+test('the re-check puts tasks parked on an empty "cannot be shaped" back to planned, and leaves real parks alone', () => {
+  const it = rm.addItem({ product: 'tbgame', title: `Recheck ${Math.random()}`, goal: 'Combat that lands', status: 'planned' });
+  const mk = (request: string, note: string) => {
+    const t = rm.addTask({ item: it.id, request, criteria: shaped.criteria });
+    rm.setBar(t.id, { ...(rm.getTask(t.id)!.bar ?? {}), gate: { verdict: 'parked', reasons: [], at: 1, hash: 'x' } });
+    rm.updateTask(t.id, { status: 'idea', note });
+    return t.id;
+  };
+  const withHeads = mk(shaped.request, 'parked by the task bar: cannot be shaped: ""; no player goal; no reference');
+  const bare = mk('Make combat feel better and more weighty than it is now, across many words so it is long enough to shape', 'parked by the task bar: cannot be shaped: ""; no player goal');
+  const real = mk(shaped.request, 'parked by the task bar: cannot be shaped: the work is an open-ended audit');
+  assert.deepEqual(tb.recheckEmptyParks().sort(), [withHeads, bare].sort());
+  assert.equal(rm.getTask(withHeads)!.status, 'planned');
+  assert.equal(rm.getTask(withHeads)!.bar!.gate!.verdict, 'pass');
+  assert.equal(rm.getTask(bare)!.status, 'planned');
+  assert.equal(rm.getTask(bare)!.bar?.gate, undefined);
+  assert.equal(rm.getTask(real)!.status, 'idea');
+  assert.deepEqual(tb.recheckEmptyParks(), []);
+});

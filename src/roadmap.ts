@@ -155,13 +155,14 @@ export function barOf(request: string, fields: Partial<Record<(typeof BAR_FIELDS
   const out: Bar = {};
   let cur: (typeof BAR_FIELDS)[number] | null = null;
   for (const line of String(request ?? '').split('\n')) {
-    const m = line.match(/^\s*(?:[-*#]+\s*)?(player goal|reference|critic axis|phone|outcome)\s*:\s*(.*)$/i);
+    // Any case, bullets, numbering, quotes and markdown emphasis around the label ("**Player goal:** x", "- Phone : x").
+    const m = line.replace(/\r$/, '').match(/^\s*(?:(?:[-*#>+]+|\d+[.)])\s*)?[*_`]*\s*(player\s+goal|reference|critic\s+axis|phone|outcome)\s*[*_`]*\s*[:：]\s*[*_`]*\s*(.*)$/i);
     if (m) {
-      cur = BAR_HEADS[m[1].toLowerCase()];
+      cur = BAR_HEADS[m[1].toLowerCase().replace(/\s+/g, ' ')];
       if (!out[cur]) out[cur] = m[2].trim();
       else cur = null;
     } else if (!line.trim()) cur = null;
-    else if (cur) out[cur] = `${out[cur]} ${line.trim()}`.trim();
+    else if (cur) out[cur] = `${out[cur]} ${line.trim()}`.replace(/[*_`]+\s*$/, '').trim();
   }
   for (const k of BAR_FIELDS) {
     const v = fields[k];

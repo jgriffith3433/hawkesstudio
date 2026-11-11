@@ -1465,6 +1465,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   chooseBrain();
   // Studio at rest is measured (the disk budget's baseline) and the queue looks once, before resumed work starts.
   void startQueue();
+  // Tasks the task bar parked on an empty shaper answer go back to planned, once, at start-up (taskbar.ts).
+  void import('./taskbar.ts').then((T) => { const n = T.recheckEmptyParks(); if (n.length) console.log(`[taskbar] ${n.length} task(s) parked on an empty shaper answer are planned again`); }).catch((e) => console.warn(`[taskbar] re-check: ${e.message ?? e}`));
   const changes = resumeChanges();
   // Changes that say they're being worked on with nothing behind them are carried on by themselves (agents.ts checkStuck).
   startStuckWatch();
