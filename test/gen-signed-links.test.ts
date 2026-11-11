@@ -80,9 +80,10 @@ test('Talk shows Gen images and videos inline once their type is known, as a lin
   assert.ok(md(`see ${u}`).includes('data-embed="a_0f1e"'), 'unknown type: the link, which hydrate resolves');
   mediaKind.a_0f1e = 'video';
   const v = md(`see ${u}.`);
-  assert.ok(v.includes('<video class="talk-video" src="/api/gen/v1/files/a_0f1e" controls'), v);
+  assert.ok(v.includes('<video class="talk-video" src="https://hawkesgen.ai/v1/files/a_0f1e?exp=1&amp;sig=ab" controls'), v);
   mediaKind.a_0f1e = 'image';
-  assert.ok(md(`[shot](${u})`).includes('<img class="talk-img" src="/api/gen/v1/files/a_0f1e"'));
+  assert.ok(md(`[shot](${u})`).includes('<img class="talk-img" src="https://hawkesgen.ai/v1/files/a_0f1e?exp=1&amp;sig=ab"'), 'the signed query stays intact');
+  assert.ok(md('![x](https://hawkesgen.ai/v1/files/a_0f1e)').includes('<img'), 'markdown image');
   mediaKind.a_0f1e = 'other';
   assert.ok(md(u).includes('data-media='), 'other files stay a link');
 });
