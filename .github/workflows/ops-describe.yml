@@ -44,6 +44,22 @@ jobs:
             echo "== running job executions in $r"
             gcloud run jobs executions list --project "$PROJECT" --region "$r" --limit 200 --format='value(metadata.name,status.startTime,status.completionTime)' 2>/dev/null | awk -F'\t' '$3=="" {print}' || true
           done
+          # What actually holds the region's CPU: every revision with instances in the last 10 minutes (active and idle
+          # both count against the Cloud Run CPU quota), and every revision that isn't ready (Cloud Run keeps trying to start
+          # one about once a minute, each try asking for its CPU). 2026-11-11: a cell's new revision got no CPU with the
+          # agents paused, and nothing here said what held it.
+          echo "== instances by revision, last 10 minutes (max)"
+          tok=$(gcloud auth print-access-token)
+          start=$(date -u -d '-10 min' +%FT%TZ); end=$(date -u +%FT%TZ)
+          curl -sS -G -H "Authorization: Bearer $tok" "https://monitoring.googleapis.com/v3/projects/$PROJECT/timeSeries" \
+            --data-urlencode 'filter=metric.type="run.googleapis.com/container/instance_count" AND resource.type="cloud_run_revision"' \
+            --data-urlencode "interval.startTime=$start" --data-urlencode "interval.endTime=$end" \
+            --data-urlencode 'aggregation.alignmentPeriod=600s' --data-urlencode 'aggregation.perSeriesAligner=ALIGN_MAX' \
+            | jq -r 'if .error then "(cannot read Cloud Monitoring: \(.error.message))" else (.timeSeries[]? | "\(.resource.labels.location) \(.resource.labels.service_name) \(.resource.labels.revision_name) \(.metric.labels.state): \(.points[0].value.int64Value // .points[0].value.doubleValue)") end' | sort || true
+          for r in us-east4 us-west1; do
+            echo "== revisions not ready in $r"
+            gcloud run revisions list --project "$PROJECT" --region "$r" --limit 300 --format='value(metadata.name,status.conditions[0].type,status.conditions[0].status,metadata.creationTimestamp)' 2>/dev/null | awk -F'\t' '!($2=="Ready" && $3=="True")' || true
+          done
           if [ -n "$SERVICE" ]; then
             region=$(gcloud run services list --project "$PROJECT" --filter="metadata.name=$SERVICE" --format='value(metadata.labels."cloud.googleapis.com/location")' | head -1)
             [ -n "$region" ] || { echo "no service $SERVICE"; exit 0; }
