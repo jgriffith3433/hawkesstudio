@@ -26,3 +26,11 @@ test('a game that loads Google frames or shows its own sign-in is not an auth wa
   assert.equal(authWallOf({ outcome: 'done' }), null);
   assert.equal(authWallOf(null), null);
 });
+
+test('a blocked play stuck on the sign-in card is an auth wall, whatever the outcome', () => {
+  const r = { outcome: 'blocked', stuck: 'no input changed the page: "Sign in with Google. Hawkes Studio, Gen and the beta sites."', events: [{ t: 3, type: 'milestone', detail: 'loaded' }], shots: [{ asset: 'a_card' }], ftue: { taps: 0 } };
+  const w = authWallOf(r)!;
+  assert.equal(w.kind, 'studio-signin');
+  assert.equal(failedByAuthWall(r, w).outcome, 'failed');
+  assert.equal(authWallOf({ outcome: 'blocked', events: [{ type: 'tap', detail: 'start' }] }), null);
+});
