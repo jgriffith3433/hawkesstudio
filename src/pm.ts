@@ -653,7 +653,7 @@ export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[
     }
     // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
     const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
-    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: last.at, action: 'beta-build' }).some((d) => d.product === product) && !unityHeld()) {
+    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !creditsWaitReason() && !betaBuildSpent(product, last.at) && !unityHeld()) {
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(product, { focus: `Building beta after "${last.t.title}" merged.`, playtest: false });
       logDecision('beta-build', last.t.id, product, `no beta run built "${last.t.title}" after its merge: started ${r.id}`);
@@ -665,7 +665,7 @@ export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[
     // A run that built nothing that includes a task's merge (betabuild.ts) proves nothing about it: never blamed on the task;
     // beta is built once more (a Unity project's beta run builds its head first).
     const unproven = list.filter((x) => { const b = getTask(x.t.id)?.build; return Boolean(b && b.run === newest.id && b.unproven); });
-    if (unproven.length && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: newest.started, action: 'beta-build' }).some((d) => d.product === product) && !unityHeld()) {
+    if (unproven.length && pmSettings().enabled && !creditsWaitReason() && !betaBuildSpent(product, newest.started) && !unityHeld()) {
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(product, { focus: `Building beta's head: run ${newest.id} didn't build a commit with ${unproven.map((x) => `"${x.t.title}"`).join(', ')}.`, playtest: false });
       logDecision('beta-build', unproven[0].t.id, product, `beta run ${newest.id} built nothing that includes ${unproven.length} merged task(s): started ${r.id}, which builds beta's head first`);
@@ -679,6 +679,21 @@ export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[
       deciding.delete(newest.id);
     }
   }
+}
+
+/**
+ * Whether the PM's own beta build for a product since `since` is spent: a run it started still runs or ran a build. A run
+ * that was held (Unity hold, credits) or cancelled built nothing, so its decision doesn't stop the next start: before
+ * 2026-11-11 the decision alone counted, and merged work waited for the next merge (or for ever) once one start was held.
+ * A decision whose run Studio no longer has counts (nothing to tell), so this never starts runs back to back.
+ */
+export function betaBuildSpent(product: string, since: number): boolean {
+  return listDecisions({ since, action: 'beta-build', limit: 10_000 }).some((d) => {
+    if (d.product !== product) return false;
+    const run = /started (r_[0-9a-f]+)/.exec(String(d.detail ?? ''))?.[1];
+    if (!run || !db.prepare('SELECT 1 FROM runs WHERE id = ?').get(run)) return true;
+    return !(buildCancelled(run, product) || heldRun(run) || heldBuildRun(run, product));
+  });
 }
 
 /**

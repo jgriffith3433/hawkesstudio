@@ -65,6 +65,24 @@ test('a failure is recorded with its reason; a restart puts a running one back, 
   assert.equal(ops.getOp('op_resume00001')!.attempts, 2);
 });
 
+test('an operation ended by Studio going live (a newer revision) is not counted as a restart it used up', async () => {
+  const now = Date.now();
+  const before = process.env.K_REVISION;
+  process.env.K_REVISION = 'studio-00182-new';
+  try {
+    // Ran on an older revision three times (three go lives in a row): still resumed, its attempts start again.
+    db.prepare(`INSERT INTO ops (id, kind, product, title, status, payload, created, started, attempts, rev, log) VALUES ('op_rollout0001', 'test-live', 'h', 'rolled', 'running', '{"product":"h","n":5}', ?, ?, 3, 'studio-00181-old', '[]')`).run(now, now);
+    // The same revision restarting three times is still a loop: given up.
+    db.prepare(`INSERT INTO ops (id, kind, product, title, status, payload, created, started, attempts, rev, log) VALUES ('op_rollout0002', 'test-live', 'i', 'looping', 'running', '{"product":"i","n":6}', ?, ?, 3, 'studio-00182-new', '[]')`).run(now, now);
+    ops.resumeOps();
+    assert.equal(ops.getOp('op_rollout0002')!.status, 'failed');
+    await until(() => ops.getOp('op_rollout0001')!.status === 'done');
+    assert.equal(ops.getOp('op_rollout0001')!.attempts, 1, 'attempts counted from the new revision');
+  } finally {
+    if (before === undefined) delete process.env.K_REVISION; else process.env.K_REVISION = before;
+  }
+});
+
 test('gitAsync: listed while it runs, Studio keeps ticking, and the answer is right', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-ops-git-'));
   spawnSync('git', ['init', '-q', dir]);

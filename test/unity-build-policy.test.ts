@@ -234,3 +234,66 @@ test('a person asking to go live gets beta\'s head built, past an earlier play w
   assert.deepEqual(await G.playBeforeGoLive('sou', short, 'J asked', start, 'person'), { started: 'r_new' });
   assert.equal(asked[0].cause, 'person', 'its Unity build runs: shipping needs it');
 });
+
+// Stall paths (/mnt/project-files/studio/stall-paths.md), 2026-11-11: a wait must have an end.
+test('the hold has an end: merged work that waited 6 h gets one build of beta\'s head, queued work or not', () => {
+  const now = Date.now();
+  const busyNoMilestone = { name: 'Yooba Land', milestone: null, changes: ['c_1'], tasks: ['k_1'], now };
+  assert.equal(P.unityBuildVerdict('auto', { ...busyNoMilestone, unbuiltSince: now - 5 * 3600_000 }).go, false, 'under 6 h: still held');
+  const due = P.unityBuildVerdict('auto', { ...busyNoMilestone, unbuiltSince: now - 6 * 3600_000 - 1 });
+  assert.equal(due.go, true, 'a busy project with no complete milestone still builds after 6 h');
+  assert.match(due.why, /waited 6 h for a build/);
+  assert.equal(P.unityBuildVerdict('milestone', { ...busyNoMilestone, unbuiltSince: now - 7 * 3600_000 }).go, true);
+  // What the rule reads: merged tasks with no build, or a build that proved nothing; not a built or failed one.
+  clearWork();
+  const it = rm.addItem({ product: 'sou', title: 'Biome props', status: 'planned' });
+  const t1 = rm.addTask({ item: it.id, request: 'Props' });
+  const t2 = rm.addTask({ item: it.id, request: 'Hats' });
+  const t3 = rm.addTask({ item: it.id, request: 'Forms' });
+  rm.setTask(t1.id, { status: 'merged', merged_at: now - 9 * 3600_000, build: { ok: false, unproven: true, run: 'r_x', at: now, unity: true, detail: 'built nothing' } });
+  rm.setTask(t2.id, { status: 'merged', merged_at: now - 10 * 3600_000, build: { ok: true, run: 'r_y', at: now, unity: true, detail: 'built OK' } });
+  rm.setTask(t3.id, { status: 'merged', merged_at: now - 11 * 3600_000, build: { ok: false, run: 'r_z', at: now, unity: true, detail: "beta's build failed" } });
+  assert.equal(P.unbuiltSince('sou'), now - 9 * 3600_000, 'only the unproven one waits for a build');
+  assert.equal(P.unityBuildGate('sou', 'auto').go, true, 'the gate reads it from the database');
+  clearWork();
+  assert.equal(P.unbuiltSince('sou'), null);
+});
+
+test('a beta build the PM started that was held or cancelled doesn\'t use up its one start', () => {
+  const since = Date.now() - 60_000;
+  db.prepare("DELETE FROM pm_log WHERE action = 'beta-build'").run();
+  assert.equal(pm.betaBuildSpent('sou', since), false, 'nothing started');
+  // Started, and its build was held (the Unity hold): it built nothing, so the next pass may start again.
+  const held = newId('r');
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?)').run(held, 'beta', 'done', 'x', J(['sou']), Date.now(), Date.now());
+  db.prepare('INSERT INTO steps (id, run, product, kind, name, status, detail, data, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(newId('s'), held, 'sou', 'build', 'web', 'skipped', 'held: x', J({ held: 'held: x' }), Date.now());
+  rm.logDecision('beta-build', 'k_1', 'sou', `no beta run built "x" after its merge: started ${held}`);
+  assert.equal(pm.betaBuildSpent('sou', since), false, 'a held run is not a build');
+  // A run that builds: spent (no second run beside it).
+  const real = newId('r');
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, started) VALUES (?, ?, ?, ?, ?, ?)').run(real, 'beta', 'running', 'x', J(['sou']), Date.now());
+  rm.logDecision('beta-build', 'k_1', 'sou', `beta run r_old built nothing that includes 1 merged task(s): started ${real}, which builds beta's head first`);
+  assert.equal(pm.betaBuildSpent('sou', since), true);
+  assert.equal(pm.betaBuildSpent('webby', since), false, 'per project');
+});
+
+test('the instance stays up while Studio owns work that waits, and only then', async () => {
+  const H = await import('../src/cloudhost.ts');
+  clearWork();
+  db.prepare("DELETE FROM changes").run();
+  db.prepare("UPDATE runs SET status = 'done' WHERE status IN ('queued', 'running')").run();
+  try { db.prepare("DELETE FROM ops WHERE status = 'waiting'").run(); } catch { /* no ops table */ }
+  assert.equal(await H.waitingWork(), null);
+  // Held by a gate (disk, CPU, a provider): before, Cloud Run stopped Studio here and the queue sat.
+  const c = change('queued');
+  assert.match(String(await H.waitingWork()), /1 agent change\(s\) waiting/);
+  db.prepare('DELETE FROM changes WHERE id = ?').run(c);
+  // Merged work waiting for its build: up, but only within the hold's end.
+  const it = rm.addItem({ product: 'sou', title: 'Sounds', status: 'planned' });
+  const t = rm.addTask({ item: it.id, request: 'Steps' });
+  rm.setTask(t.id, { status: 'merged', merged_at: Date.now() - 3600_000 });
+  assert.match(String(await H.waitingWork()), /merged task\(s\) waiting for beta's build/);
+  rm.setTask(t.id, { merged_at: Date.now() - 8 * 3600_000 });
+  assert.equal(await H.waitingWork(), null, 'past the hold\'s end it doesn\'t hold the instance up');
+  clearWork();
+});

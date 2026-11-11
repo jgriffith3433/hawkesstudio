@@ -35,7 +35,20 @@ export type UnityWork = {
   changes: string[];
   /** Roadmap tasks of the project in progress, or planned and able to start by themselves. */
   tasks: string[];
+  /** When the oldest merged task with no build of its own (none yet, or one that proved nothing) merged, or null. */
+  unbuiltSince?: number | null;
+  /** The time the rule is asked at (tests pass it; default now). */
+  now?: number;
 };
+
+/**
+ * The longest merged work waits for its Unity build (the same 6 h a complete milestone waits for more work,
+ * milestone-batch.ts). The hold is a wait with an end: a project that never goes quiet, or whose work sits outside any
+ * complete milestone, still gets one build of beta's head this often, so merged work can't wait for ever (Yooba Land,
+ * 2026-11-11: 13 merged tasks with no build while agents kept working on it). One build at a time per project still holds
+ * (builds.ts), so this is at most one build per project per 6 h under constant work.
+ */
+export const UNITY_HOLD_MAX_MS = () => Number(process.env.STUDIO_UNITY_HOLD_MAX_MS) || 6 * 3600_000;
 
 export type UnityVerdict = { go: boolean; why: string };
 
@@ -50,6 +63,8 @@ export function unityBuildVerdict(cause: UnityBuildCause, w: UnityWork): UnityVe
   if (cause === 'tag') return { go: true, why: 'a build-* tag asked for this commit' };
   if (cause === 'release') return { go: true, why: 'going live needs the release build' };
   if (cause === 'retry') return { go: true, why: 'a retry of a build that already ran' };
+  const waited = w.unbuiltSince ? (w.now ?? Date.now()) - w.unbuiltSince : 0;
+  if (waited >= UNITY_HOLD_MAX_MS()) return { go: true, why: `merged work has waited ${Math.round(waited / 3600_000)} h for a build (at most ${Math.round(UNITY_HOLD_MAX_MS() / 3600_000)} h): one build of beta's head now` };
   const queued = [w.changes.length ? plural(w.changes.length, 'agent change') : '', w.tasks.length ? plural(w.tasks.length, 'roadmap task') : ''].filter(Boolean);
   if (!w.milestone) return { go: false, why: `${heldWords(w.name)} (no milestone of it is complete yet${queued.length ? `; still queued: ${queued.join(', ')}` : ''})` };
   // The milestone's own check asked this rule when it started (milestoneBuildDue): work queued since then (the PM starts
@@ -89,7 +104,20 @@ export function unityWork(product: string): UnityWork {
   }
   const milestone = (R.listMilestones({ product, status: 'open' }) as any[])
     .find((m) => m.items.some((i: any) => i.product === product) && R.milestoneComplete(m)) ?? null;
-  return { name, milestone: milestone ? { id: milestone.id, title: milestone.title } : null, changes, tasks };
+  return { name, milestone: milestone ? { id: milestone.id, title: milestone.title } : null, changes, tasks, unbuiltSince: unbuiltSince(product) };
+}
+
+/** When the oldest merged task of the project that no build has covered merged (no build on it, or one that proved nothing). */
+export function unbuiltSince(product: string): number | null {
+  const rows = db.prepare(`SELECT merged_at, build FROM tasks WHERE product = ? AND status = 'merged' AND merged_at IS NOT NULL`).all(product) as { merged_at: number; build: string | null }[];
+  let oldest: number | null = null;
+  for (const r of rows) {
+    let b: any = null;
+    try { b = r.build ? JSON.parse(r.build) : null; } catch { /* unreadable: treat as no build */ }
+    if (b && (b.ok || !b.unproven)) continue; // built, or its build failed and an agent fixes it
+    if (oldest === null || r.merged_at < oldest) oldest = r.merged_at;
+  }
+  return oldest;
 }
 
 /** The verdict for one start of a project's Unity build (builds.ts startBuild, the beta run, a change's verify). */
