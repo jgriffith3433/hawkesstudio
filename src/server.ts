@@ -17,7 +17,7 @@ import { syncRepos } from './repos.ts';
 import { chooseBrain, ensureBrain } from './brains.ts';
 import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, markAllSeen, unseenConversations, untilIdle } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
-import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges, startStuckWatch } from './agents.ts';
+import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges, startStuckWatch, startQueue } from './agents.ts';
 import { startAssets } from './pipeline.ts';
 import { gitState, stopServers } from './local.ts';
 import { gen, genEvents, genUp, signFileLinks } from './gen.ts';
@@ -1386,6 +1386,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   // Builds nothing is going to finish (a run gone, or building past the maximum) are settled; later ones when Gen says so (builds.ts).
   void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); void import('./firebasebuild.ts').then((F) => F.retireActionsCards()).catch((e) => console.warn(`[studio] closing Actions cards: ${e?.message ?? e}`)); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
+  // Studio at rest is measured (the disk budget's baseline) and the queue looks once, before resumed work starts.
+  void startQueue();
   const changes = resumeChanges();
   // Changes that say they're being worked on with nothing behind them are carried on by themselves (agents.ts checkStuck).
   startStuckWatch();

@@ -83,10 +83,38 @@ export function onSizedMemoryVolume(limit = memInfo().limit): boolean {
 /** On a sized in-memory volume: room that must stay on it after a write. */
 export const MEMORY_VOLUME_FLOOR = 256 * MB;
 
-/** Soft ceiling: on a real disk or a sized in-memory volume, most of it; in RAM, this share of the memory (cgroup) limit. */
+/**
+ * What the working files hold with no change work under way (agents.ts notes it at start-up and whenever the queue goes
+ * idle): Studio's own clones, caches and the worktrees of changes that wait (ready, queued). On 2026-11-10 to 11 that
+ * alone was 1.87 to 2.05 GB in memory, above the 1.72 GB budget, so the gate refused every change with nothing running
+ * and nothing that could ever end to free room: 59 of 72 changes sat "waits for disk room" for hours. The budget is now
+ * that baseline plus a share of what is left above it, so Studio at rest can never use up the room meant for its work.
+ * Kept with the size of the volume it was measured on: on another volume (a remount, the tests' made-up disks) it
+ * doesn't apply.
+ */
+let baseline: { used: number; size: number; at: number } | null = null;
+export function noteDiskBaseline(d: DiskInfo = diskInfo(), now = Date.now()) {
+  baseline = { used: d.used, size: d.size, at: now };
+  return baseline;
+}
+/** The measured baseline of the volume as it is now (bytes), or 0 when none was measured on it. */
+export function diskBaseline(d: Pick<DiskInfo, 'size'> = diskInfo()): number {
+  return baseline && baseline.size === d.size ? baseline.used : 0;
+}
+/** Tests: forget the measured baseline. */
+export function resetDiskBaseline() { baseline = null; }
+
+/**
+ * Soft ceiling (when to sweep): what Studio holds at rest (diskBaseline) plus a share of the room above it, the room
+ * being the volume itself on a real disk or a sized in-memory volume, and the memory (cgroup) limit in RAM.
+ */
 export function diskBudget(limit = memInfo().limit): number {
-  if (onRealDisk() || onSizedMemoryVolume(limit)) return Math.floor(diskInfo().size * REAL_DISK_SHARE);
-  return Math.floor(limit * diskShare());
+  const bounded = onRealDisk() || onSizedMemoryVolume(limit);
+  const d = diskInfo();
+  const room = bounded ? d.size : limit;
+  const share = bounded ? REAL_DISK_SHARE : diskShare();
+  const base = Math.min(diskBaseline(d), room);
+  return Math.floor(base + (room - base) * share);
 }
 
 export function diskHigh(need = 0): boolean {
@@ -116,6 +144,19 @@ export function diskFull(need = 0): boolean {
   return memInfo().available - need < diskFloor();
 }
 
+/**
+ * The write can't fit at all, measured: the volume's own free space is less than it (a real disk, a sized in-memory
+ * volume, and the in-memory filesystem's own size), or in RAM less memory is free than it needs. Unlike diskFull this
+ * keeps no safety floor: it is what still refuses the only work when nothing else runs (ensureDiskRoom alone), since
+ * refusing then frees nothing and waits on nothing.
+ */
+export function diskExhausted(need = 0): boolean {
+  if (process.env.STUDIO_DISK_SWEEP === 'off') return false;
+  if (diskInfo().free < need) return true;
+  if (onRealDisk() || onSizedMemoryVolume()) return false;
+  return memInfo().available < need;
+}
+
 /** Room for one worktree (what a change waiting for disk room needs to start): not over budget and not full. */
 export const WORKTREE_NEED = 100 * MB;
 export function roomForAWorktree(): boolean {
@@ -125,7 +166,8 @@ export function roomForAWorktree(): boolean {
 export function diskSummary(): string {
   const d = diskInfo();
   const gb = (n: number) => (n / 1024 ** 3).toFixed(2);
-  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; ${onRealDisk() ? 'on disk' : onSizedMemoryVolume() ? 'in a sized memory volume' : 'in memory'}; budget ${gb(diskBudget())} GB; ${gb(memInfo().available)} GB of memory free)`;
+  const base = diskBaseline(d);
+  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; ${onRealDisk() ? 'on disk' : onSizedMemoryVolume() ? 'in a sized memory volume' : 'in memory'}; ${base ? `at rest ${gb(base)} GB; ` : ''}budget ${gb(diskBudget())} GB; ${gb(memInfo().available)} GB of memory free)`;
 }
 
 export type SweepReport = {
@@ -319,8 +361,12 @@ export async function sweepDisk(opts: {
 /**
  * Before a write that needs `need` more bytes: soft sweep if over the budget; if memory can't hold the write, a hard
  * sweep; then throw only if memory still can't hold it (diskFull). Returns the disk summary when it had to sweep.
+ *
+ * alone: no other change is at work (agents.ts diskRoomForCheckouts). Refusing then would wait for work to end when none
+ * is running, so a soft limit never refuses it: only a write that can't fit at all does (diskExhausted). The memory gate
+ * keeps the same rule (memgate.ts memRoom: one always runs).
  */
-export async function ensureDiskRoom(need = 0, opts: { keep?: Set<string>; repos?: string[]; say?: (s: string) => void } = {}): Promise<string | null> {
+export async function ensureDiskRoom(need = 0, opts: { keep?: Set<string>; repos?: string[]; say?: (s: string) => void; alone?: boolean } = {}): Promise<string | null> {
   if (process.env.STUDIO_DISK_SWEEP === 'off' || !diskHigh(need)) return null;
   opts.say?.(`[disksweep] disk high before a write (${diskSummary()}; need ${Math.round(need / MB)} MB): sweeping`);
   await sweepDisk({ soft: true, keep: opts.keep, repos: opts.repos, say: opts.say });
@@ -328,6 +374,10 @@ export async function ensureDiskRoom(need = 0, opts: { keep?: Set<string>; repos
   if (!diskFull(need)) return diskSummary();
   await sweepDisk({ hard: true, keep: opts.keep, repos: opts.repos, say: opts.say });
   if (!diskHigh(need) || !diskFull(need)) return diskSummary();
+  if (opts.alone && !diskExhausted(need)) {
+    opts.say?.(`[disksweep] past the soft limit, but no other work is running: the write goes ahead (${diskSummary()}; need ${Math.round(need / MB)} MB)`);
+    return diskSummary();
+  }
   throw new Error(`${onRealDisk() ? 'working' : 'in-memory'} disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). Cleared profiles, logs, tmp and ended worktrees; free space and try again.`);
 }
 

@@ -7,10 +7,18 @@
 // waiting for memory) did the same.
 //
 // Now a change whose publish or start failed PARK_AFTER times is parked: it is out of the pump's list, holds no slot of
-// its product (noRoomFor, aheadOf) and doesn't count as a stalled queue, and it is not started again until something
-// changes: Studio restarts, new code lands on its beta, or a person resumes it (Cancel then Resume, or the undo of the
-// decision). Woken by a restart or new code, it waits at the end of its product's line. An ops note (the decision log,
-// with an undo) says what was parked and why.
+// its product (noRoomFor, aheadOf) and doesn't count as a stalled queue. An ops note (the decision log, with an undo)
+// says what was parked and why.
+//
+// Parking ends the attempt, with its cause (J, 2026-11-11: "Make it so agents never get stuck. Ever"). It used to stay
+// queued until Studio restarted, new code landed on beta or a person resumed it, which on a quiet day is never ("It
+// starts again by itself after a Studio restart"). Now it ends failed through the one way a pass ends (agents.ts
+// endPass) with the failures as its detail, and the shared recovery takes it from there: a roadmap task is planned again
+// with that cause (pm.ts afterFailed; a failure on Studio's side isn't counted as a try and waits out Studio's backoff,
+// and after a few in a row Studio files a fix for itself), a finding goes back to open for the next fix, and J's own
+// request says why it stopped. The undo of the decision (or a revision) brings the same change back.
+//
+// Parks an older Studio left queued still wake as before: a restart, new code on beta, or a resume.
 //
 // Nothing here polls or sets a timer: it runs when the pump looks at each queued change (agents.ts resumeAllowed).
 import fs from 'node:fs';
@@ -18,7 +26,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { db } from './db.ts';
 import { PROJECTS } from './config.ts';
-import { getChange, changeLog, patchChange, pumpNow, type Change } from './agents.ts';
+import { getChange, changeLog, patchChange, pumpNow, endPass, revise, type Change } from './agents.ts';
 
 /** Failed publishes or starts (since it was last woken) before a change is parked. */
 export const PARK_AFTER = 3;
@@ -110,12 +118,19 @@ function park(c: Change, n: number) {
   const last = [...c.log].reverse().find((l) => FAIL_LINE.test(l))?.slice(9, 200) ?? '?';
   const why = `its publish or start failed ${n} times (last: ${last})`;
   savePark({ change: c.id, product: c.product, at: Date.now(), why, errors: failCount(c.log), boot: BOOT, beta: betaMark(c), notes: c.notes?.length ?? 0, woke: null, woke_why: null, manual: null });
-  patchChange(c.id, { detail: `queued: parked: ${why}. It starts again by itself after a Studio restart or new code on beta (at the end of its product's line), or when resumed`.slice(0, 300) });
   changeLog(c.id, `queue heal: parked: ${why}; the rest of ${c.product}'s queue goes ahead of it`);
-  const text = `"${c.title ?? c.id}" (${c.id}) parked: ${why}. It no longer holds ${c.product}'s queue; it starts again after a Studio restart, new code on beta, or a resume (undo this).`;
+  // The attempt ends here with its cause, and is planned again from it (the header): never left waiting for a restart.
+  void endPass(c.id, { detail: `failed: ${why}. Ended so it is planned again with that cause`, log: 'queue heal: ended with its cause, to be planned again (pm.ts afterFailed), not left queued' })
+    .catch((e) => console.warn(`[queue-heal] ${c.id}: ending it: ${e?.message ?? e}`));
+  const text = `"${c.title ?? c.id}" (${c.id}) parked: ${why}. It no longer holds ${c.product}'s queue; it ended with that cause and is planned again from it (undo this to run the same change again).`;
   console.warn(`[queue-heal] ${text}`);
   void import('./roadmap.ts').then(({ logDecision }) => logDecision('queue-park', c.task ?? c.id, c.product, text, { kind: 'queue-heal', op: 'park', change: c.id }))
     .catch((e) => console.warn(`[queue-heal] decision log: ${e?.message ?? e}`));
+}
+
+/** Tests: a park as an older Studio left it (the change still queued), to check that such parks still wake. */
+export function legacyPark(c: Change, why = 'kept failing') {
+  savePark({ change: c.id, product: c.product, at: Date.now(), why, errors: failCount(c.log), boot: BOOT, beta: betaMark(c), notes: c.notes?.length ?? 0, woke: null, woke_why: null, manual: null });
 }
 
 /** Whether a change is out of the queue for now (parked): the pump, the product's slots and the queue's health skip it. */
@@ -161,8 +176,12 @@ export function resumeParked(id: string, by = 'J'): string {
   const c = getChange(id);
   if (!c) throw new Error(`No change ${id}`);
   const p = parks.get(id);
-  if (!p || p.woke != null || c.status !== 'queued') return `${id} is not parked (${c.status})`;
-  wake(p, c, `resumed by ${by}`, true);
+  if (!p || p.woke != null || !['queued', 'failed'].includes(c.status)) return `${id} is not parked (${c.status})`;
+  // Ended by its park (the header): the same change runs again (a revision; refused while its task has a newer one).
+  if (c.status === 'failed') {
+    try { revise(id, `resumed after being parked (${p.why ?? 'it kept failing'})`, by); } catch (e: any) { return `${id} can't run again: ${e?.message ?? e}`; }
+  }
+  wake(p, getChange(id)!, `resumed by ${by}`, true);
   void pumpNow();
   return `${id} unparked`;
 }
