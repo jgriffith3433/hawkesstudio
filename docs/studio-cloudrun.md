@@ -291,8 +291,10 @@ CPU quota is per project and region. A project of their own was the first plan, 
 (the billing account's project limit). So by default they go to another region of the same project, which needs nothing
 from the owner. `src/jobsproject.ts`:
 
-- `jobsRegion`: `STUDIO_JOBS_REGION` (or `STUDIO_CELLS_JOBS_REGION` on the control service). By default it is `us-east1`,
-  a region where no server of Studio or Gen runs, or `us-east4` for a server that is itself in us-east1. `same` keeps
+- `jobsRegion`: `STUDIO_JOBS_REGION` (or `STUDIO_CELLS_JOBS_REGION` on the control service). By default it is `us-west1`,
+  a region where no server of Studio or Gen runs, or `us-east4` for a server that is itself in us-west1. It has to be a
+  region the project already uses: Google caps the regions a project's Cloud Run may use, and a fourth (us-east1) was
+  refused on 2026-11-11 (MaxRegionsPerProject). `same` keeps
   the jobs beside the server.
 - `STUDIO_JOBS_PROJECT` / `STUDIO_CELLS_JOBS_PROJECT` can also name another project.
 - A job start goes to that place. When the job isn't there yet, Studio copies it from beside the server with the same
