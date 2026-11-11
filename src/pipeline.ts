@@ -679,6 +679,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   const unlock = unityBeta ? await serveBeta(slot ? `${p.id}#${slot}` : p.id) : null;
   const free = () => { unlock?.(); release?.(); };
   let job: any;
+  let personaAsked = false; // set in the try below; `params` itself is block-scoped there
   let played: ReturnType<typeof playedLocal> = null;
   try {
     const now = unityBeta ? playedLocal(p) : null;
@@ -826,7 +827,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     const firstFive = isFirstFive(t.scenario);
     if (firstFive) Object.assign(params, firstFiveParams(url, isPhone(t) ? 'phone' : 'desktop'));
     // The newcomer persona (persona.ts) rides the first-five play once per game, device and week; the claim is taken first, so a second ask plays without it.
-    if (firstFive && (prior ? claimStepIs(p.id, isPhone(t) ? 'phone' : 'desktop', s) : claimPersona(p.id, isPhone(t) ? 'phone' : 'desktop'))) { Object.assign(params, personaParams()); noteClaimStep(p.id, isPhone(t) ? 'phone' : 'desktop', s); }
+    if (firstFive && (prior ? claimStepIs(p.id, isPhone(t) ? 'phone' : 'desktop', s) : claimPersona(p.id, isPhone(t) ? 'phone' : 'desktop'))) { Object.assign(params, personaParams()); personaAsked = true; noteClaimStep(p.id, isPhone(t) ? 'phone' : 'desktop', s); }
     if (t.mode === 'site') params.maxPages = 40;
     if (!firstFive && p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
     // The first five minutes meet the page as a stranger would (nothing set up), but a gated beta site still needs its pass to be
@@ -926,7 +927,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   // A first-five play: the numbers, the ftue.* metrics and the developer-UI problems go on the result (ftue.ts).
   if (job.status === 'done' && isFirstFive(t.scenario)) job.result = enrichFtue(job.result ?? {}, t.scenario, isPhone(t) ? 'phone' : 'desktop');
   // The persona's timeline, its cost on the step (the run line) and a finding per lost stretch (persona.ts).
-  const persona = job.status === 'done' && isFirstFive(t.scenario) && params.persona ? personaOf(job.result ?? {}, isPhone(t) ? 'phone' : 'desktop') : null;
+  const persona = job.status === 'done' && isFirstFive(t.scenario) && personaAsked ? personaOf(job.result ?? {}, isPhone(t) ? 'phone' : 'desktop') : null;
   if (persona) { try { filePersonaFindings(p.id, persona, run, name); } catch (e: any) { console.warn(`[studio] persona findings for ${p.id}: ${e.message ?? e}`); } }
   // Phone load budget (phoneperf.ts): MB before gameplay, seconds to gameplay, fps p5 under 4x CPU + Slow 4G.
   if (job.status === 'done' && isPhone(t)) job.result = enrichPhonePerf(job.result ?? {}, 'phone');
