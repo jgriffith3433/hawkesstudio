@@ -490,11 +490,18 @@ export async function gameStatus(productId: string, base: string, userId?: strin
     soft(async () => (await import('./agents.ts')).listChanges({ product: p.id }).filter((c: any) => !['merged', 'closed'].includes(c.status)).slice(0, 8)
       .map((c: any) => ({ id: c.id, title: c.title, status: c.status, pr: c.pr_url ?? null, preview: c.verify?.preview ?? null }))),
   ]);
+  // The critic's scores each beside its target, and the open task for every dimension under it (critic.ts criticStatus).
+  const criticView = await soft(async () => {
+    const { criticStatus } = await import('./critic.ts');
+    const { openCriticTask } = await import('./pm.ts');
+    const c = criticStatus(p);
+    return { ...c, scores: c.scores.map((s: any) => ({ ...s, task: s.under ? openCriticTask(p.id, s.dimension)?.id ?? null : null })) };
+  });
   const links: Record<string, string> = await linksFor(repoSlug(p.github ?? p.repo), p).catch(() => ({}));
   return {
     game: { id: p.id, name: p.name, engine: p.engine, about: p.about, live: p.live || null, beta: p.beta ?? null, repo: p.github ?? (repoSlug(p.repo) ?? null), contract: Boolean(p.contract), playtests: (p.playtests ?? []).map((t: any) => `${t.scenario ?? t.mode}@${t.where}${t.device ? `:${t.device}` : ''}`) },
     ready: 'error' in (ready as any) ? ready : { ready: (ready as any).ready, next: (ready as any).next, missing: (ready as any).items.filter((i: any) => !i.ok).map((i: any) => i.what) },
-    playtests: plays, findings, changes,
+    playtests: plays, critic: criticView, findings, changes,
     links: { ...links, studio: `${base}/#today`, playtestsPage: `${base}/#playtests`, backlog: `${base}/#backlog` } as Record<string, string>,
   };
 }

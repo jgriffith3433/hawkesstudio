@@ -149,7 +149,11 @@ test('a playtest review that fails on credit goes to the Claude Code review, not
 test("the Claude Code review is held to Gen's limits", () => {
   const v = settleReview({ verdict: 'ship', findings: [{ title: 'a', severity: 'idea' }, { title: 'b', severity: 'blocker' }, { title: 'c', severity: 'bug' }], known: [{ id: 'f_1', status: 'fixed' }, { id: 'zz', status: 'fixed' }] }, { mode: 'full', maxFindings: 5, known: [{ id: 'f_1', title: 'x' }] });
   assert.equal(v.verdict, 'fix-first');
-  assert.deepEqual(v.findings.map((f: any) => f.title), ['b', 'c']);
+  // Polish and ideas stay beside bugs, worst first; the ship verdict no longer cuts to 2 (the cap is STUDIO_REVIEW_MAX, 10).
+  assert.deepEqual(v.findings.map((f: any) => f.title), ['b', 'c', 'a']);
+  const many = settleReview({ verdict: 'ship', findings: Array.from({ length: 14 }, (_, i) => ({ title: `p${i}`, severity: 'polish' })) }, { mode: 'full', maxFindings: 10 });
+  assert.equal(many.findings.length, 10);
+  assert.equal(many.trimmed, 4);
   assert.deepEqual(v.known.map((k: any) => k.id), ['f_1']);
 });
 

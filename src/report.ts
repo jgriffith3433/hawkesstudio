@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, rowToStep, parse, type Step } from './db.ts';
-import { getProduct, paths, today } from './config.ts';
+import { getProduct, paths, today, targetFor } from './config.ts';
 import { listFindings } from './backlog.ts';
 import { fileUrl } from './gen.ts';
 import { PUBLIC_URL } from './notify.ts';
@@ -156,7 +156,11 @@ export function reportMarkdown(run: string) {
       for (const s of five) L.push(...ftueLines(s.data.ftue, { step: s.id }));
     }
     // The critic's ten scores (critic.ts): a list, not a table, so it reads at 390 px.
-    for (const c of x.steps.filter((s) => s.kind === 'critic' && s.status === 'done')) L.push('', '### Critic', '', ...criticLines(c.data));
+    for (const c of x.steps.filter((s) => s.kind === 'critic' && s.status === 'done')) {
+      let tf: ((d: string) => number) | undefined;
+      try { const gp = getProduct(c.product); tf = (d) => targetFor(gp, d); } catch { /* a product no longer listed */ }
+      L.push('', '### Critic', '', ...criticLines(c.data, tf));
+    }
     // Real players on the live site (daily runs: pipeline.ts recordPlayers; bots and J's own devices left out).
     const players = x.steps.find((s) => s.kind === 'players');
     if (players) {

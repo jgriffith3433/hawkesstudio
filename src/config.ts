@@ -174,6 +174,13 @@ export type Product = {
    */
   references?: { game: string; best: string }[];
   /**
+   * The score the critic should reach per dimension (1-10; critic.ts DIMENSIONS), default 7 for any not named. A
+   * dimension scored under its target becomes one planned roadmap task (pm.ts workFromCritic).
+   */
+  targets?: Record<string, number>;
+  /** A dimension scored under this (default 6) is a high-priority task and shows "under the release floor" in the status. */
+  releaseFloor?: number;
+  /**
    * A game's own limits for the rubric's measured checks (quality.ts), by metric, when the starting values don't fit it:
    * e.g. { "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 60 } }.
    */
@@ -456,6 +463,8 @@ export type ProductInput = {
   repo?: string; about?: string; quality?: string; story?: string; contract?: boolean;
   /** The critic's reference games (Product.references). */
   references?: { game: string; best: string }[];
+  /** Critic targets per dimension (default 7) and the release floor (default 6): Product.targets, Product.releaseFloor. */
+  targets?: Record<string, number>; releaseFloor?: number;
   /** where: 'live' plays its live address; 'beta' (or 'local') plays its beta (its published beta site or beta address),
    *  for a project with one. peers: 2 to 4 real players on the same ?room= (a multiplayer scenario). */
   playtests?: { scenario?: string; mode?: 'site'; where: 'live' | 'beta' | 'local'; device?: 'phone'; peers?: number }[];
@@ -596,6 +605,38 @@ export function checkBuilds(list: unknown): BuildSpec[] {
  * own products file, or in J's Studio the added games beside products.json. Only the fields a customer's game has (no
  * local servers, deploy steps or devtools: those are products.json's), checked; written whole.
  */
+/** The ten things the critic scores (critic.ts re-exports them). */
+export const CRITIC_DIMENSIONS = [
+  'fun', 'feel', 'clarity', 'first five minutes', 'menus and UI', 'sound', 'art cohesion', 'story through play', 'phone', 'reasons to come back',
+] as const;
+export const DEFAULT_TARGET = 7;
+export const DEFAULT_RELEASE_FLOOR = 6;
+
+/** Checks `targets` (a score 1-10 per critic dimension) and `releaseFloor` (1-10): anything else is refused, never guessed. */
+export function cleanTargets(targets: unknown, releaseFloor: unknown): { targets: Record<string, number>; releaseFloor: number | null } {
+  const out: Record<string, number> = {};
+  if (targets != null) {
+    if (typeof targets !== 'object' || Array.isArray(targets)) throw new StudioError(`targets: an object of score per dimension (${CRITIC_DIMENSIONS.join(', ')})`, 400);
+    for (const [k, v] of Object.entries(targets as Record<string, unknown>)) {
+      const dim = CRITIC_DIMENSIONS.find((d) => d.toLowerCase() === k.trim().toLowerCase());
+      if (!dim) throw new StudioError(`targets: "${k}" is not a critic dimension (${CRITIC_DIMENSIONS.join(', ')})`, 400);
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 1 || n > 10) throw new StudioError(`targets.${dim}: a score from 1 to 10`, 400);
+      out[dim] = n;
+    }
+  }
+  let floor: number | null = null;
+  if (releaseFloor != null && releaseFloor !== '') {
+    floor = Number(releaseFloor);
+    if (!Number.isFinite(floor) || floor < 1 || floor > 10) throw new StudioError('releaseFloor: a score from 1 to 10', 400);
+  }
+  return { targets: out, releaseFloor: floor };
+}
+
+/** A game's target for one dimension (default 7) and its release floor (default 6). */
+export const targetFor = (p: Pick<Product, 'targets'>, dimension: string) => Number(p.targets?.[dimension] ?? DEFAULT_TARGET);
+export const releaseFloorOf = (p: Pick<Product, 'releaseFloor'>) => Number(p.releaseFloor ?? DEFAULT_RELEASE_FLOOR);
+
 export function saveProduct(input: ProductInput): Product {
   if (!customerStudio() && JSON.parse(fs.readFileSync(paths.products, 'utf8')).products.some((p: Product) => p.id === String(input.id ?? '').trim().toLowerCase())) {
     throw new StudioError(`"${input.id}" is one of products.json's (edited in git); pick another id for a new game.`, 409);
@@ -654,8 +695,10 @@ export function saveProduct(input: ProductInput): Product {
   const managedBy = input.managedBy ? String(input.managedBy).trim().replace(/\/+$/, '') : '';
   if (managedBy && !/^https:\/\/[\w.-]+(:\d+)?(\/[\w.~-]+)*$/.test(managedBy)) throw new StudioError("managedBy: the other Studio's https:// address (e.g. https://studio.hawkesgen.ai/o/<org>)", 400);
   const references = (Array.isArray(input.references) ? input.references : []).map((r) => ({ game: String(r?.game ?? '').trim().slice(0, 80), best: String(r?.best ?? '').trim().slice(0, 300) })).filter((r) => r.game).slice(0, 3);
+  const { targets, releaseFloor } = cleanTargets(input.targets, input.releaseFloor);
   const product: any = {
     ...(references.length ? { references } : {}),
+    ...(Object.keys(targets).length ? { targets } : {}), ...(releaseFloor != null ? { releaseFloor } : {}),
     id, name, engine: input.engine, ...(live ? { live } : {}), ...(beta ? { beta } : {}), ...(input.build ? { build: input.build } : {}), ...(builds.length ? { builds } : {}),
     ...(input.repo ? { repo: String(input.repo).slice(0, 200) } : {}),
     ...(kind !== 'game' ? { kind } : {}), ...(versionPath ? { versionPath } : {}), ...(repos.length ? { repos } : {}),

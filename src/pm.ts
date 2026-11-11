@@ -34,7 +34,7 @@ import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn, loadInfra, loadProducts, managedElsewhereId, fileSig } from './config.ts';
+import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn, loadInfra, loadProducts, managedElsewhereId, fileSig, CRITIC_DIMENSIONS, targetFor, releaseFloorOf } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
@@ -3320,6 +3320,94 @@ export async function workFromPlayers(run: string) {
       logDecision(bug ? 'players bug' : 'players idea', f.id, st.product, `${bug ? 'Backlog bug' : 'Ideas list'} from real players: "${f.title}"`, { kind: 'finding', id: f.id, status: 'wontfix', note: 'Filed from player data; undone in the PM log.' });
     }
     if (rows.length) out.push(`${name(st.product)}: ${rows.map((f) => `${f.id} "${f.title}" (${f.severity === 'bug' ? 'bug' : 'idea'})`).join(', ')}`);
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ the critic's scores become work
+
+/** The roadmap's critic axis (roadmap.ts AXES) that a critic dimension belongs to. */
+export const AXIS_OF_DIMENSION: Record<string, string> = {
+  'fun': 'core-loop', 'feel': 'feel', 'clarity': 'core-loop', 'first five minutes': 'first-minute', 'menus and UI': 'menus-ui',
+  'sound': 'sound', 'art cohesion': 'feel', 'story through play': 'story', 'phone': 'phone', 'reasons to come back': 'retention',
+};
+/** A task still on its way (the one to reuse); verified, live, done, dropped and failed ones are finished. */
+const OPEN_TASK = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'waiting for GPU'];
+const criticMark = (dimension: string) => `[critic:${dimension}]`;
+const clip = (v: unknown, n: number) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+/** The one open critic task for this game and dimension, if any (marked in its request). */
+export function openCriticTask(product: string, dimension: string): Task | null {
+  const rows = db.prepare(`SELECT id FROM tasks WHERE product = ? AND request LIKE ? AND status IN (${OPEN_TASK.map(() => '?').join(',')}) ORDER BY created`)
+    .all(product, `%${criticMark(dimension)}%`, ...OPEN_TASK) as { id: string }[];
+  return rows.length ? getTask(rows[0].id) : null;
+}
+
+/** The roadmap item this game's critic tasks hang on: made once, and again only if it can no longer start tasks. */
+function criticItem(product: string, now: number) {
+  const row = db.prepare(`SELECT id FROM items WHERE product = ? AND origin = 'critic' AND (status IN ('planned', 'in progress') OR (status = 'done' AND consumed IS NOT NULL)) ORDER BY created LIMIT 1`).get(product) as { id: string } | undefined;
+  if (row) return getItem(row.id)!;
+  return addItem({ product, title: 'Critic scores under target', goal: 'Every dimension the critic scores comes up to its target.', why: "The critic's weekly review: each score under target gets an owner and a fix.", origin: 'critic', by: 'Studio (critic)', status: 'planned', ord: now });
+}
+
+/** A critic score as a roadmap task that meets the task bar (taskbar.ts): player goal, reference, axis, phone line, criteria. */
+export function criticTaskOf(a: { product: string; game: string; dimension: string; score: number; target: number; floor: number; reference: string; why: string; fix: string; frame?: string | null; at?: string; scenario?: string | null }) {
+  const where = [a.frame ? `frame ${a.frame}` : '', a.at].filter(Boolean).join(', ');
+  const fix = clip(a.fix, 300) || `raise ${a.dimension}`;
+  const axis = AXIS_OF_DIMENSION[a.dimension] ?? 'core-loop';
+  const phone = a.dimension === 'phone';
+  const evidence = `Critic's review of ${a.game}${a.scenario ? ` (${a.scenario})` : ''}: ${a.dimension} scored ${a.score}/10, target ${a.target}/10.\nEvidence${where ? ` (${where})` : ''}: ${clip(a.why, 400) || 'none given'}\nReference game: ${a.reference}\nFix the critic named: ${fix}`;
+  const request = [
+    `Player goal: ${a.game} no longer loses a harsh player on ${a.dimension}: it reads ${a.target}/10 or better against ${a.reference}.`,
+    `Reference: ${a.reference}${where ? `, the moment at ${where}` : ''}.`,
+    `Critic axis: ${axis}`,
+    `Phone: ${phone ? 'this IS the phone dimension: every part of the fix is judged at 390x844 on touch.' : 'the fix shows at 390x844 on touch with no sideways scrolling and every tap target about 44 px.'}`,
+    '',
+    `Bring ${a.dimension} up to ${a.target}/10: ${fix}`,
+    '',
+    'Original request:',
+    `${criticMark(a.dimension)} ${evidence}`,
+  ].join('\n');
+  const criteria = [
+    `The next critic review of ${a.game} scores ${a.dimension} at ${a.target}/10 or higher (it was ${a.score}/10)`,
+    `Within one playtest of ${a.scenario ?? "the game"} the fix shows: ${fix}`.slice(0, 340),
+    `[phone] On a 390x844 touch playtest the change shows with no horizontal scrolling and every control reachable by tap`,
+  ];
+  return { title: `${a.dimension} ${a.score}/10 (target ${a.target}): ${clip(a.fix, 90) || 'raise it'}`.slice(0, 160), request, criteria, axis, priority: a.score < a.floor ? 'high' : 'normal' };
+}
+
+/**
+ * A critic review (critic.ts, a `critic` step) becomes work the same day: every dimension scored under its game's target
+ * (products.json `targets`, default 7) gets exactly one planned roadmap task for that game, naming the dimension and
+ * carrying the critic's evidence, its reference game and its fix, written to the task bar. A dimension that already has an
+ * open task reuses it (a planned one not yet started takes the newer evidence; one underway gets a comment): no duplicates.
+ * A dimension the critic couldn't judge ("no evidence") is not work. Returns a line per task made or reused.
+ */
+export function workFromCritic(productId: string, critic: any, run?: string | null, now = Date.now()) {
+  if (!critic || critic.verdict !== 'judged' || !Array.isArray(critic.scores)) return [];
+  const p = getProduct(productId);
+  const floor = releaseFloorOf(p);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const s of critic.scores) {
+    const score = Number(s?.score);
+    const dimension = String(s?.dimension ?? '');
+    if (!Number.isFinite(score) || !CRITIC_DIMENSIONS.includes(dimension as any) || seen.has(dimension)) continue;
+    seen.add(dimension);
+    const target = targetFor(p, dimension);
+    if (score >= target || /^no evidence/i.test(String(s.why ?? '').trim())) continue;
+    const t = criticTaskOf({ product: productId, game: p.name, dimension, score, target, floor, reference: clip(s.reference, 80) || 'its genre', why: s.why, fix: s.fix, frame: s.frame, at: s.at, scenario: critic.scenario });
+    const open = openCriticTask(productId, dimension);
+    if (open) {
+      if (open.status === 'planned' && open.tries === 0) updateTask(open.id, { title: t.title, request: t.request, criteria: t.criteria, axis: t.axis, priority: t.priority });
+      else addComment(open.id, `The critic scored ${dimension} ${score}/10 again (target ${target}/10)${run ? ` in ${run}` : ''}: ${clip(s.why, 300)} Fix: ${clip(s.fix, 300)}`, 'Studio (critic)', 'comment');
+      out.push(`${name(productId)} ${dimension} ${score}/10: reused ${open.id}`);
+      continue;
+    }
+    const item = criticItem(productId, now);
+    const task = addTask({ item: item.id, title: t.title, request: t.request, criteria: t.criteria, axis: t.axis, priority: t.priority, status: 'planned' });
+    logDecision('critic task', task.id, productId, `The critic scored ${name(productId)}'s ${dimension} ${score}/10 (target ${target}/10${score < floor ? `, under the release floor ${floor}` : ''}): planned "${task.title}" with its evidence, reference and fix.`, { kind: 'tasks', change: null, tasks: [{ id: task.id, status: 'dropped', tries: task.tries, note: 'Undone in the PM log.', checks: task.checks }] });
+    out.push(`${name(productId)} ${dimension} ${score}/10: planned ${task.id}`);
   }
   return out;
 }
