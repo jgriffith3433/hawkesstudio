@@ -139,7 +139,20 @@ export async function setBeta(projectId: string, build: string, version: number)
   const { sub } = await siteOf(p);
   const store = await siteStore();
   await store.put(`${sub}/beta.json`, Buffer.from(JSON.stringify({ build, version, sha: row.sha, at: Date.now() })), 'application/json');
+  // What studio_previews reports follows the pointer (it kept saying the old build after a person moved beta).
+  (await import('./previews.ts')).noteBeta(p.id, { status: 'ready', at: Date.now(), sha: String(row.sha ?? '').slice(0, 7), ref: 'beta', files: row.files ?? 0, version: `${build} ${version}` });
   return { project: p.id, build, version, url: row.url };
+}
+
+/**
+ * Whether a finished build may move beta's pointer: a compile-only build (playtest: false, e.g. a Unity compile check)
+ * never does while the project has a build that is played, since the beta site is what the playtests load (2026-11-11:
+ * hawkes-analytics' unity-check 2 replaced the demo page's package 41 and three beta playtests found no bot).
+ */
+export function mayMoveBeta(p: Product, build: string): boolean {
+  const spec = buildsOf(p).find((x) => x.id === build);
+  if (spec?.playtest !== false) return true;
+  return !buildsOf(p).some((x) => x.id !== build && x.playtest !== false && (x.target ?? 'web') === 'web');
 }
 
 /** How many versions of each build stay published (J, 2026-10-31: "Just keep only the latest version of the build"); beta's and mounted ones always stay. */
@@ -610,8 +623,8 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     const ghNow = githubFetch(await repoToken(slug));
     const head = await githubCommit(slug, 'beta', ghNow).catch(() => null);
     // A Firebase deploy of main is the live site going out (deploy.ts deployMain): it never moves beta.
-    const movesBeta = !o.change && !newer && !(b.tool === 'firebase' && ref === 'main') && (head ? head === sha : ref === 'beta');
-    if (!o.change && !movesBeta) say(`${b.id} ${version} is published at its own address; beta stays (${newer ? 'a newer build is ready' : `${sha.slice(0, 7)} isn't beta's newest commit`})`);
+    const movesBeta = !o.change && !newer && mayMoveBeta(p, b.id) &&!(b.tool === 'firebase' && ref === 'main') && (head ? head === sha : ref === 'beta');
+    if (!o.change && !movesBeta) say(`${b.id} ${version} is published at its own address; beta stays (${newer ? 'a newer build is ready' : !mayMoveBeta(p, b.id) ? 'it is compile-only and the project has a played build' : `${sha.slice(0, 7)} isn't beta's newest commit`})`);
     // Beta moved on while this build ran (PH Origins, 2026-11-11: #166-#170 merged during #165's build, the site stayed at
     // #165): beta's newest commit gets its own build now, so the site never waits for the next push. It takes its turn in
     // the line behind this one; a commit already built or already waiting is joined, never built twice.
