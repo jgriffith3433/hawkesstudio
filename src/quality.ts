@@ -297,7 +297,7 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
   const metrics = { ...(data.metrics ?? {}) } as Record<string, unknown>;
   // The review's own hitch measure (Hawkes Gen's motion pass on the recording).
   if (Number.isFinite(Number(data.motion?.worstHitchMs)) && metrics['video.worstHitchMs'] === undefined) metrics['video.worstHitchMs'] = Number(data.motion!.worstHitchMs);
-  if (data.software) for (const k of ['feel.worstHitchMs', 'video.worstHitchMs', 'feel.inputLatencyMs']) delete metrics[k];
+  if (data.software) for (const k of ['feel.worstHitchMs', 'video.worstHitchMs', 'feel.inputLatencyMs', 'phone.fpsP5', 'phone.fpsDipAt']) delete metrics[k];
   // The worst frame in play: with the sensor's flags, the worst hitch outside loading screens and a scene's first
   // seconds (loading ones are load stutter, a note). Every frame of 100 ms and over (4x the usual) is flagged.
   if (Array.isArray(data.feel) && Number.isFinite(Number(metrics['feel.worstHitchMs']))) {
@@ -356,6 +356,9 @@ const LIMIT_FIX: Record<string, string> = {
   'dead-presses': 'Answer each press on the frame it arrives: a pressed state, then the result, within 100 ms.',
   'silent-presses': 'Play a UI click through the WebAudio context within 150 ms of each press (tag it __hawkesSampleId = "ui-click").',
   'silence-in-play': 'Fill quiet gaps in play with ambient, footsteps or reactive SFX (menus and loading excluded).',
+  'phone-load-mb': 'Cut what loads before gameplay to at most 20 MB transferred on a mid-range phone (CrazyGames bar): defer non-critical assets, compress, code-split.',
+  'phone-load-time': 'Reach gameplay in at most 20 s under 4x CPU and Slow 4G: fewer blocking requests, smaller first paint, start play before secondary downloads finish.',
+  'phone-fps-p5': 'Raise fps p5 to at least 30 on a throttled phone: lower draw calls and overdraw, smaller textures, fewer per-frame allocations; watch the clip at the dip time.',
 };
 
 /** A first-five finding's evidence: where the clip is, and what stood in the way (ftue.ts puts both on the result). */
@@ -373,17 +376,38 @@ function firstFiveEvidence(check: string, r: any): string {
  * with a title that stays the same run to run, filed as bugs so agents fix them on beta (pipeline.ts fileFeel).
  * Flag-based fails are filed by the feel layer already; advisory readings are notes, never findings.
  */
+/** Asset list / dip time on a phone.* miss (keeps quality.ts free of a phoneperf import; pipeline files phonePerfFindings too). */
+function phoneEvidence(check: string, r: any): string {
+  const f = r?.phone;
+  if (!f || !check.startsWith('phone-')) return '';
+  if ((check === 'phone-load-mb' || check === 'phone-load-time') && Array.isArray(f.assets) && f.assets.length) {
+    const top = f.assets.slice(0, 5).map((a: any) => {
+      const path = String(a.path ?? a.url ?? '').slice(0, 80);
+      const mb = Math.round((Number(a.bytes) || 0) / 1e5) / 10;
+      return `${path} (${mb} MB)`;
+    });
+    return ` Five largest pre-gameplay assets: ${top.join('; ')}.`;
+  }
+  if (check === 'phone-fps-p5' && Number.isFinite(Number(f.fpsDipAt))) return ` Dip at ${Number(f.fpsDipAt)} s in the recording.`;
+  return '';
+}
+
 export function qualityFindings(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tuning?: QualityTuning; world?: Product['world'] }, r: any, scenario: string) {
   if (!r) return [];
-  const g = qualityGate(p, { metrics: r.metrics, feel: r.feel, polish: r.polish?.hits, software: Boolean(r.software) });
+  // Phone fps means nothing in software (same as hitch / input latency).
+  const metrics = { ...(r.metrics ?? {}) };
+  if (r.software) for (const k of ['phone.fpsP5', 'phone.fpsDipAt']) delete metrics[k];
+  const g = qualityGate(p, { metrics, feel: r.feel, polish: r.polish?.hits, software: Boolean(r.software) });
   const checks = rubricChecks(p.id);
   return g.fails.flatMap((f) => {
     const c = checks.find((x) => x.id === f.check);
     if (!c?.metric || !f.evidence.startsWith(`${c.metric} = `)) return [];
+    // phone-load misses are filed by phonePerfFindings (names the five largest assets / the fps dip time).
+    if (c.rule === 'phone-load') return [];
     return [{
       title: `Quality limit broken: ${c.id} (${f.title})`,
       severity: 'bug', area: c.id.startsWith('first-five') ? 'onboarding' : c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : (c.rule === 'sound-design' || c.id.startsWith('audio') || ['loudness', 'true-peak', 'silent-actions', 'identical-repeats', 'voice-duck', 'silence-in-play'].includes(c.id) ? 'audio' : c.rule === 'menus-and-ui' ? 'mobile' : 'gameplay'),
-      detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${firstFiveEvidence(c.id, r)}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
+      detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${firstFiveEvidence(c.id, r)}${phoneEvidence(c.id, r)}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
       shots: c.id === 'first-five-dev-ui' ? (r.ftue?.devUi ?? []).map((d: any) => d.shot).filter(Boolean) : [],
       fix: LIMIT_FIX[c.id] ?? `Bring ${c.metric} inside its limit, then play the scenario again.`,
     }];

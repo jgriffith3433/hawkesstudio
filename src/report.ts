@@ -13,6 +13,7 @@ import { playersSection } from './players.ts';
 import { planView, planLine } from './runplan.ts';
 import { criticLines } from './critic-view.ts';
 import { ftueLines } from './ftue.ts';
+import { phonePerfLines } from './phoneperf.ts';
 
 const SEV_ICON: Record<string, string> = { blocker: '🛑', bug: '🐞', polish: '✨', idea: '💡' };
 
@@ -154,6 +155,12 @@ export function reportMarkdown(run: string) {
     if (five.length) {
       L.push('', '### First five minutes', '');
       for (const s of five) L.push(...ftueLines(s.data.ftue, { step: s.id }));
+    }
+    // Phone load budget (phoneperf.ts): MB before gameplay, seconds to gameplay, fps p5 under 4x CPU + Slow 4G.
+    const phones = x.steps.filter((s) => s.kind === 'playtest' && s.data?.phone).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (phones.length) {
+      L.push('', '### Phone load (4x CPU, Slow 4G, DPR 2)', '');
+      for (const s of phones) L.push(...phonePerfLines(s.data.phone, { step: s.id, name: s.name }));
     }
     // The critic's ten scores (critic.ts): a list, not a table, so it reads at 390 px.
     for (const c of x.steps.filter((s) => s.kind === 'critic' && s.status === 'done')) {

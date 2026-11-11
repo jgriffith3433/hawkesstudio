@@ -179,6 +179,22 @@
         { "id": "silent-presses", "kind": "playtest", "what": "A press with no sound start within 150 ms (the audio probe's events).", "metric": "ui.silentPresses", "max": 0, "optional": true, "problem": "quality.silent-presses" },
         { "id": "menu-review", "kind": "review", "what": "The fun reviewer comments on the menu screens it sees: size, reach, safe areas, feedback, and whether they look like this game's own." }
       ]
+    },
+    {
+      "id": "phone-load",
+      "title": "A mid-range phone over mobile data is playing within 20 s and stays smooth",
+      "why": "CrazyGames' mobile homepage bar is at most 20 MB and 20 s to gameplay; Poki's Cannon Clash case shows a fast first load wins. A phone playtest that only checks layout at 390x844 misses a mid-range CPU and Slow 4G, so a heavy first payload ships unnoticed.",
+      "build": [
+        "Keep the payload before gameplay at most 20 MB transferred: defer non-critical assets, compress textures and audio, code-split, and start play before secondary downloads finish.",
+        "Reach gameplay within 20 s on a mid-range phone over Slow 4G (the phone twin: Gen applies CDP 4x CPU throttling, Slow 4G and DPR 2 at 390x844 touch).",
+        "Hold fps p5 at least 30 during play under that throttle; report the dip time when it drops.",
+        "Every phone playtest reports phone.mbBeforeGameplay, phone.secondsToGameplay and phone.fpsP5 (src/phoneperf.ts). A miss files a finding naming the five largest pre-gameplay assets, or the clip time of the fps dip."
+      ],
+      "checks": [
+        { "id": "phone-load-mb", "kind": "playtest", "what": "Megabytes transferred before gameplay on a throttled phone run: at most 20.", "metric": "phone.mbBeforeGameplay", "max": 20, "optional": true, "problem": "quality.phone-load-mb" },
+        { "id": "phone-load-time", "kind": "playtest", "what": "Seconds to gameplay on a throttled phone run: at most 20.", "metric": "phone.secondsToGameplay", "max": 20, "optional": true, "problem": "quality.phone-load-time" },
+        { "id": "phone-fps-p5", "kind": "playtest", "what": "fps p5 during play on a throttled phone run: at least 30.", "metric": "phone.fpsP5", "min": 30, "optional": true, "problem": "quality.phone-fps-p5" }
+      ]
     }
   ]
 }

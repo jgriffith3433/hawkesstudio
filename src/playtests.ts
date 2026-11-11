@@ -309,6 +309,8 @@ export function playtestData(job: any, url: string) {
   return {
     outcome: r.outcome, mode: r.mode, device: r.device ?? 'desktop', seconds: r.seconds, loadSeconds: r.loadSeconds, fps: r.fps, software: r.software ?? null,
     browser: r.browser ?? null, stuck: r.stuck ?? null, metrics: r.metrics, problems: r.problems, scenarios: r.scenarios,
+    // Phone load budget (phoneperf.ts): MB / seconds / fps p5 under 4x CPU + Slow 4G, plus the largest pre-gameplay assets.
+    phone: r.phone ?? null,
     video: r.video ?? outs.find((x: any) => x.kind === 'video')?.asset ?? null,
     thumb: r.shots?.length ? r.shots[r.shots.length - 1].asset : outs.filter((x: any) => x.kind === 'image').pop()?.asset ?? null,
     shots: r.shots?.length ?? 0,

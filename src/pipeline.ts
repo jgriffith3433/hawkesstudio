@@ -36,6 +36,7 @@ import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSi
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria, sweepFor, type Sweep } from './acceptance.ts';
 import { isFirstFive, enrichFtue, firstFiveParams, firstFiveOnBuild } from './ftue.ts';
+import { enrichPhonePerf, phonePerfFindings } from './phoneperf.ts';
 import { isPhone, runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from './betaqueue.ts';
@@ -904,6 +905,8 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   }
   // A first-five play: the numbers, the ftue.* metrics and the developer-UI problems go on the result (ftue.ts).
   if (job.status === 'done' && isFirstFive(t.scenario)) job.result = enrichFtue(job.result ?? {}, t.scenario, isPhone(t) ? 'phone' : 'desktop');
+  // Phone load budget (phoneperf.ts): MB before gameplay, seconds to gameplay, fps p5 under 4x CPU + Slow 4G.
+  if (job.status === 'done' && isPhone(t)) job.result = enrichPhonePerf(job.result ?? {}, 'phone');
   // The page was Studio's sign-in card or Google's: the game was never reached, whatever Gen's outcome says (authwall.ts).
   const wall = job.status === 'done' ? (await import('./authwall.ts')).authWallOf(job.result) : null;
   if (wall) {
@@ -931,7 +934,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   updateStep(s, {
     status: ok ? 'done' : 'failed', job: job.id,
     detail: ok ? `${r.outcome} in ${playTime(r.seconds ?? 0)}${at ? ` (from "${at}")` : ''} · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}${slow ? ` · ⚠ ${slow}` : ''}` : `failed: ${job.error ?? job.detail} (opened ${url})`,
-    data: ok ? { ...playtestData(job, url), ...(r.ftue ? { ftue: r.ftue } : {}), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
+    data: ok ? { ...playtestData(job, url), ...(r.ftue ? { ftue: r.ftue } : {}), ...(r.phone ? { phone: r.phone } : {}), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
     finished: true,
   });
   if (!ok && /^stuck:/.test(String(job.error ?? ''))) fileStuck(run, p, name, job);
@@ -1009,6 +1012,8 @@ function fileFeel(run: string, p: Product, name: string, scenario: string, r: an
       ...feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined }),
       ...audioFindings(r, { scenario }),
       ...uiFindings(r, { scenario }),
+      // Phone load budget: over 20 MB / 20 s names the five largest pre-gameplay assets; fps p5 under 30 names the dip time.
+      ...phonePerfFindings(r, { scenario }),
       // A measured limit the play broke (a hitch in play over 250 ms, input latency): a bug the agents fix on beta, so
       // the go-live gate clears by itself (deploy.ts qualityBlockers), never a "fix it" for the owner.
       ...qualityFindings(p, r, scenario),
