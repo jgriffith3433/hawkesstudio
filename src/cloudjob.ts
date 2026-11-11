@@ -647,7 +647,7 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
           // No room is the region's CPU quota (agent jobs, builds and Gen share it): the owner gets one Approve card to
           // raise it, filed with Google on the tap (quota.ts), instead of jobs waiting on it forever.
           void import('./cpuroom.ts').then((c) => c.learnFromNoRoom()).catch(() => {});
-          void import('./quota.ts').then((q) => q.askCpuForJobs(Math.round((Date.now() - since) / 60_000), st.message)).catch(() => {});
+          void import('./quota.ts').then((q) => q.askCpuForJobs(Math.round((Date.now() - since) / 60_000), st.message, f.execution)).catch(() => {});
           return true;
         }
         if (st && !st.done && Date.now() - heardAt > JOB_SILENT_MS()) {
