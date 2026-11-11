@@ -160,6 +160,34 @@ export const withDiskVolume = (volumes: any[] | undefined) => [...(volumes ?? []
  */
 export const CELL_MEMORY_DISK = { sizeLimit: '2560Mi' } as const;
 export const memoryDiskVolume = () => ({ name: CELL_DISK.name, emptyDir: { medium: 'MEMORY', sizeLimit: CELL_MEMORY_DISK.sizeLimit } });
+/**
+ * When Google last refused a cell its working disk (ms), kept in the cell's own env so the next roll knows without asking
+ * again. 2026-11-11 06:48-07:57: every roll asked for the disk again ("the next roll asks for the disk again"), Google
+ * took each revision but never started an instance for it (no line of output, the startup probe timing out after
+ * 10 minutes), and seven rolls in a row went back, the rollbacks with the disk too: J's Studio stayed on old code.
+ */
+export const DISK_REFUSED_ENV = 'STUDIO_DISK_REFUSED_AT';
+/** How long after a refusal a roll tries the disk again (a raise may have been granted meanwhile); one roll's try. */
+export const diskRetryMs = () => Number(process.env.STUDIO_CELLS_DISK_RETRY_MS) || 6 * 3600_000;
+export type VolumeMode = 'disk' | 'memory' | 'none';
+/** What working volume a revision (or template) has, and when the disk was last refused for it. */
+export function volumeMode(t: any): { mode: VolumeMode; refusedAt: number | null } {
+  const v = (t?.volumes ?? []).find((x: any) => x?.name === CELL_DISK.name);
+  const mode: VolumeMode = !v ? 'none' : v.emptyDir?.medium === 'MEMORY' ? 'memory' : 'disk';
+  const at = Number((t?.containers?.[0]?.env ?? []).find((e: any) => e?.name === DISK_REFUSED_ENV)?.value);
+  return { mode, refusedAt: Number.isFinite(at) && at > 0 ? at : null };
+}
+/**
+ * Whether a roll asks for the working disk: yes when the serving revision has it, or never had a working volume (an older
+ * cell, or nothing known); a cell that runs in memory because the disk was refused stays there until diskRetryMs after
+ * the refusal. A refusal with no time on it (before this was kept) counts from now.
+ */
+export function wantsDisk(serving: { mode: VolumeMode; refusedAt: number | null } | null, now = Date.now()): { disk: boolean; refusedAt: number | null } {
+  if (!serving || serving.mode === 'disk') return { disk: true, refusedAt: null };
+  if (serving.mode === 'none' && serving.refusedAt === null) return { disk: true, refusedAt: null };
+  const at = serving.refusedAt ?? now;
+  return now - at >= diskRetryMs() ? { disk: true, refusedAt: at } : { disk: false, refusedAt: at };
+}
 /** The working disk's volume swapped for the in-memory one (`plain`: no volume at all, the last resort). */
 export function withoutDisk(body: any, plain = false) {
   const b = structuredClone(body);
@@ -295,13 +323,16 @@ export async function serviceImage(service: string, c = cellsConfig()): Promise<
  * CELL_LIMITS gets raised and every one gets CELL_STARTUP_PROBE: the roll after a deploy is what brings
  * older cells up to date).
  */
-export async function setImage(service: string, image: string, o: { dry?: boolean; disk?: boolean | 'none'; retry?: number } = {}, c = cellsConfig()) {
+export async function setImage(service: string, image: string, o: { dry?: boolean; disk?: boolean | 'none'; retry?: number; refusedAt?: number | null } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${service}`;
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
   // retry: the same image again as a new revision (an unchanged template makes none); the try's number in its env does it.
   const env = (ct: any) => {
-    const vars = withJobsEnv(ct.env, c);
+    let vars = withJobsEnv(ct.env, c);
+    // Without the disk the refusal's time goes with the revision (wantsDisk reads it on the next roll); with it, it goes.
+    vars = vars.filter((v: any) => v?.name !== DISK_REFUSED_ENV);
+    if ((o.disk === false || o.disk === 'none') && o.refusedAt) vars = [...vars, { name: DISK_REFUSED_ENV, value: String(o.refusedAt) }];
     return { env: o.retry ? [...vars.filter((v: any) => v?.name !== 'STUDIO_ROLL_TRY'), { name: 'STUDIO_ROLL_TRY', value: String(o.retry) }] : vars };
   };
   const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, ...env(ct), resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
@@ -394,13 +425,23 @@ export async function newRevisionServes(service: string, image: string, c = cell
   return (await newRevisionOutcome(service, image, c, waitMs)).ok;
 }
 
-/** Why a service's revision failed, in Google's words (its failed conditions), or null. */
-const failureOf = (sv: any): string | null => {
-  const bad = [sv?.terminalCondition, ...(sv?.conditions ?? [])].filter((x: any) => x?.state === 'CONDITION_FAILED' && x?.message);
+const shortName = (n: unknown) => String(n ?? '').split('/').pop()!;
+/** The newest revision Cloud Run has made for a service (a roll notes it before it changes the service). */
+export async function createdRevision(service: string, c = cellsConfig()): Promise<string | null> {
+  const sv = await gapi(`${base(c)}/services/${service}`, { missingOk: true }).catch(() => null);
+  return sv?.latestCreatedRevision ? shortName(sv.latestCreatedRevision) : null;
+}
+/** Why a revision itself failed, in Google's words, or null (still starting, or ready). */
+export const revisionFailure = (r: any): string | null => {
+  const bad = [r?.terminalCondition, ...(r?.conditions ?? [])].filter((x: any) => x?.state === 'CONDITION_FAILED' && x?.message && (!x.type || /^(Ready|ContainerHealthy|ResourcesAvailable|ContainerReady)$/.test(String(x.type))));
   return bad.length ? bad.map((x: any) => String(x.message)).join(' ').slice(0, 500) : null;
 };
 /** The revision was refused for its working disk (Google's ephemeral disk quota, or the disk itself), not for the image. */
 export const diskFailure = (why: string | null | undefined) => /ephemeral (disk|storage)|emptyDir|volume .*(disk|quota)|disk allocation/i.test(String(why ?? ''));
+
+/** The revision never answered on its port in the startup window (no crash named): a disk Google won't attach looks
+ * exactly like this (2026-11-11: instances "started" once a minute, never one line of output). */
+export const startTimedOut = (why: string | null | undefined) => /startup probes? timed out|failed to become healthy|wasn't serving in time/i.test(String(why ?? ''));
 
 /** Google said the revision got no CPU (the region's Cloud Run CPU quota), not that the image failed. */
 export const cpuFailure = (why: string | null | undefined) => /cpu[ _]?allocation|quota.{0,40}\bcpu\b|\bcpu\b.{0,40}quota|no available instance|insufficient (cpu|resources)/i.test(String(why ?? ''));
@@ -441,51 +482,82 @@ export async function yieldJobCpu(o: { dry?: boolean; log?: (s: string) => void 
   return out;
 }
 
-/** newRevisionServes with Google's reason when it doesn't. */
-export async function newRevisionOutcome(service: string, image: string, c = cellsConfig(), waitMs = 11 * 60_000): Promise<{ ok: boolean; why: string | null }> {
+/**
+ * newRevisionServes with Google's reason when it doesn't. Only the revision this roll made counts (`since`: the newest
+ * one before it changed the service): the service's own conditions keep the last failure of an OLDER revision until the
+ * new one settles, and on 2026-11-11 every roll read that stale "startup probes timed out after 10m" within 20 to 60
+ * seconds of starting, called its own revision failed, went back, and left it starting with nobody waiting for it.
+ */
+export async function newRevisionOutcome(service: string, image: string, c = cellsConfig(), waitMs = 11 * 60_000, since?: string | null): Promise<{ ok: boolean; why: string | null }> {
   const end = Date.now() + waitMs;
-  let why: string | null = null;
+  const url = `${base(c)}/services/${service}`;
   while (Date.now() < end) {
-    const sv = await gapi(`${base(c)}/services/${service}`, { missingOk: true }).catch(() => null);
-    const created = sv?.latestCreatedRevision, ready = sv?.latestReadyRevision;
-    const failed = (sv?.conditions ?? []).some((x: any) => x.type === 'RoutesReady' && x.state === 'CONDITION_FAILED') || sv?.terminalCondition?.state === 'CONDITION_FAILED';
-    if (sv?.template?.containers?.[0]?.image === image && created && created === ready && !sv?.reconciling) {
-      const tr = (sv.trafficStatuses ?? sv.traffic_statuses ?? []) as any[];
-      if (!tr.length || tr.some((t) => (t.percent ?? 0) === 100 && (t.type === 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST' || String(t.revision ?? '').endsWith(String(ready).split('/').pop()!)))) return { ok: true, why: null };
+    const sv = await gapi(url, { missingOk: true }).catch(() => null);
+    const created = sv?.latestCreatedRevision ? shortName(sv.latestCreatedRevision) : null, ready = sv?.latestReadyRevision ? shortName(sv.latestReadyRevision) : null;
+    const mine = Boolean(created) && (since === undefined || created !== since) && sv?.template?.containers?.[0]?.image === image;
+    if (mine) {
+      if (created === ready && !sv?.reconciling) {
+        const tr = (sv.trafficStatuses ?? sv.traffic_statuses ?? []) as any[];
+        if (!tr.length || tr.some((t) => (t.percent ?? 0) === 100 && (t.type === 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST' || shortName(t.revision) === ready))) return { ok: true, why: null };
+      }
+      const rev = await gapi(`${url}/revisions/${created}`, { missingOk: true }).catch(() => null);
+      // Its own conditions first; the service's only once it names this revision as created and has settled (it
+      // reconciles from the moment the new revision exists until that revision's outcome is known).
+      const failed = revisionFailure(rev) ?? (!sv?.reconciling && sv?.terminalCondition?.state === 'CONDITION_FAILED' ? String(sv.terminalCondition.message ?? 'the new revision failed') : null);
+      if (failed) return { ok: false, why: failed };
     }
-    why = failureOf(sv) ?? why;
-    if (failed && !sv?.reconciling) return { ok: false, why };
     await new Promise((r) => setTimeout(r, Math.min(5000, Math.max(0, end - Date.now()))));
   }
-  return { ok: false, why: why ?? 'the new revision wasn\'t serving in time' };
+  return { ok: false, why: 'the new revision wasn\'t serving in time' };
 }
 
 /**
  * Deletes a cell service's revisions that failed and serve no traffic. Cloud Run keeps retrying a failed revision's
  * instance about once a minute (2026-11-11: twelve of J's cell revisions, 00106 to 00118, retried at once while us-east4
- * had no CPU), so a dead revision can take the room the new one needs. The serving revision, the latest one created
- * (it may still be starting) and any revision with traffic are never touched; a delete Google refuses is skipped.
+ * had no CPU), so a dead revision can take the room the new one needs. Also any revision that serves no traffic and is
+ * still not ready past the startup window (STARTUP_WINDOW_MS): one a roll gave up on keeps "retrying the health check"
+ * for good (2026-11-11 07:55: 00140, 00141 and 00142 all at once, each asking for an instance), so it never reads as
+ * failed. The serving revision, any revision with traffic, and the newest one while it may still be starting are never
+ * touched; a delete Google refuses is skipped.
  */
-export async function dropFailedRevisions(service: string, o: { dry?: boolean; log?: (s: string) => void } = {}, c = cellsConfig()): Promise<string[]> {
+export const STARTUP_WINDOW_MS = 11 * 60_000;
+export async function dropFailedRevisions(service: string, o: { dry?: boolean; log?: (s: string) => void; now?: number } = {}, c = cellsConfig()): Promise<string[]> {
   const url = `${base(c)}/services/${service}`;
   const sv = await gapi(url, { missingOk: true }).catch(() => null);
   if (!sv) return [];
-  const short = (n: unknown) => String(n ?? '').split('/').pop()!;
-  const keep = new Set([short(sv.latestReadyRevision), short(sv.latestCreatedRevision), ...((sv.trafficStatuses ?? sv.traffic ?? []) as any[]).map((t) => short(t.revision))].filter(Boolean));
+  const now = o.now ?? Date.now();
+  const keep = new Set([shortName(sv.latestReadyRevision), ...((sv.trafficStatuses ?? sv.traffic ?? []) as any[]).map((t) => shortName(t.revision))].filter(Boolean));
   const revs: any[] = (await gapi(`${url}/revisions?pageSize=200`).catch(() => null))?.revisions ?? [];
-  const failed = (r: any) => !r.reconciling && [r.terminalCondition, ...(r.conditions ?? [])].some((x: any) => x?.state === 'CONDITION_FAILED' && (!x.type || /^(Ready|ContainerHealthy|ResourcesAvailable)$/.test(String(x.type))));
+  const failed = (r: any) => !r.reconciling && Boolean(revisionFailure(r));
+  const ready = (r: any) => [r.terminalCondition, ...(r.conditions ?? [])].some((x: any) => x?.type === 'Ready' && x?.state === 'CONDITION_SUCCEEDED');
+  const created = (r: any) => { const t = Date.parse(String(r.createTime ?? '')); return Number.isFinite(t) ? t : null; };
+  // Past the window: Cloud Run had its whole startup probe for it (an unknown age counts as still starting).
+  const stale = (r: any) => !ready(r) && created(r) !== null && now - created(r)! > STARTUP_WINDOW_MS;
+  const newest = shortName(sv.latestCreatedRevision);
   const out: string[] = [];
   for (const r of revs) {
-    const name = short(r.name);
-    if (keep.has(name) || !failed(r)) continue;
+    const name = shortName(r.name);
+    if (keep.has(name)) continue;
+    // The newest goes only once it can no longer be starting: failed and settled, or stale.
+    if (!(name === newest ? stale(r) || (failed(r) && created(r) !== null && now - created(r)! > STARTUP_WINDOW_MS) : failed(r) || stale(r))) continue;
     try { await call('DELETE', `${url}/revisions/${name}`, undefined, { ...o, missingOk: true }); out.push(name); } catch { /* in use or already going */ }
   }
-  if (out.length) (o.log ?? ((s: string) => console.log(`[cells] ${s}`)))(`${service}: deleted ${out.length} failed revision${out.length === 1 ? '' : 's'} so they stop taking CPU (${out.join(', ')})`);
+  if (out.length) (o.log ?? ((s: string) => console.log(`[cells] ${s}`)))(`${service}: deleted ${out.length} revision${out.length === 1 ? '' : 's'} that failed or never started, so they stop taking CPU (${out.join(', ')})`);
   return out;
 }
 
-export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void; outcome?: typeof newRevisionOutcome; shortOfCpu?: typeof regionShortOfCpu; yieldCpu?: typeof yieldJobCpu; dropFailed?: typeof dropFailedRevisions } = {}, c = cellsConfig()) {
+/** The working volume of the revision a service serves now (null when unknown). */
+export async function servingVolume(service: string, c = cellsConfig()): Promise<{ mode: VolumeMode; refusedAt: number | null } | null> {
+  const sv = await gapi(`${base(c)}/services/${service}`, { missingOk: true }).catch(() => null);
+  const name = sv?.latestReadyRevision ? shortName(sv.latestReadyRevision) : null;
+  if (!name) return null;
+  const rev = await gapi(`${base(c)}/services/${service}/revisions/${name}`, { missingOk: true }).catch(() => null);
+  return rev?.containers ? volumeMode(rev) : null;
+}
+
+export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void; outcome?: typeof newRevisionOutcome; shortOfCpu?: typeof regionShortOfCpu; yieldCpu?: typeof yieldJobCpu; dropFailed?: typeof dropFailedRevisions; serving?: typeof servingVolume; now?: () => number } = {}, c = cellsConfig()) {
   const log = o.log ?? ((s: string) => console.log(`[cells] ${s}`));
+  const now = o.now ?? Date.now;
   const health = o.health ?? (async (url: string) => {
     for (let i = 0; i < 20; i++) {
       try { if ((await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(20_000) })).ok) return true; } catch { /* starting */ }
@@ -499,26 +571,36 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
     if (cell.image === image) continue;
     log(`${cell.service} → ${image}`);
     // Revisions that failed earlier (a roll that went back) keep asking Cloud Run for an instance; gone first.
-    if (!dryRun(o)) await (o.dropFailed ?? dropFailedRevisions)(cell.service, { ...o, log }, c).catch(() => []);
-    await setImage(cell.service, image, o, c);
+    if (!dryRun(o)) await (o.dropFailed ?? dropFailedRevisions)(cell.service, { dry: o.dry, log }, c).catch(() => []);
+    // The working volume follows what the cell runs now: a cell Google refused the disk stays in memory (wantsDisk), and
+    // so does its way back. Rolls asked for the disk every time, and when Google stopped saying no and just never started
+    // the revision, every roll and every rollback failed (2026-11-11 06:48-07:57).
+    const serving = dryRun(o) ? null : await (o.serving ?? servingVolume)(cell.service, c).catch(() => null);
+    const want = wantsDisk(serving, now());
+    let refusedAt = want.refusedAt;
+    let disk: boolean | 'none' = want.disk ? true : serving?.mode === 'none' ? 'none' : false;
+    const back: boolean | 'none' = serving?.mode === 'memory' ? false : serving?.mode === 'none' && serving.refusedAt !== null ? 'none' : disk;
+    if (!want.disk) log(`${cell.service}: stays off the working disk (Google refused it ${Math.round((now() - refusedAt!) / 60_000)} min ago; tried again after ${Math.round(diskRetryMs() / 3600_000)} h)`);
+    // Each try is judged by the revision it made, never by an older one's leftover failure (newRevisionOutcome).
+    const attempt = async (x: { disk: boolean | 'none'; retry?: number }) => {
+      const since = dryRun(o) ? null : await createdRevision(cell.service, c).catch(() => null);
+      await setImage(cell.service, image, { ...o, disk: x.disk, refusedAt, ...(x.retry ? { retry: x.retry } : {}) }, c);
+      return dryRun(o) ? { ok: true, why: null } : await (o.outcome ?? newRevisionOutcome)(cell.service, image, c, undefined, since);
+    };
     // Healthy means the NEW revision is ready and serving, then answering: the old one answers /api/health until it's
     // replaced, so a bad image used to pass every cell (2026-10-31 review). A cell that fails goes back to its image.
-    let out = dryRun(o) ? { ok: true, why: null } : await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
-    let disk: boolean | 'none' = true;
+    let out = await attempt({ disk });
     // Refused for its working disk, not its image (2026-11-10 22:41: "Quota exceeded for total allowable ephemeral disk
     // allocation per project per region", and every fix on main stayed off J's Studio): the same image without the disk.
-    // The next roll asks for the disk again, so the cell gets it back once Google allows it.
-    if (!out.ok && diskFailure(out.why)) {
+    if (!out.ok && disk === true && diskFailure(out.why)) {
       log(`${cell.service}: Google refused the new revision's working disk (${String(out.why).slice(0, 200)}); the new image without it`);
-      disk = false;
-      await setImage(cell.service, image, { ...o, disk: false }, c);
-      out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
+      disk = false; refusedAt = now();
+      out = await attempt({ disk });
       // The sized in-memory volume refused too (never seen; it needs no quota): the image with no volume at all.
       if (!out.ok && diskFailure(out.why)) {
         log(`${cell.service}: the in-memory working volume was refused too (${String(out.why).slice(0, 200)}); the new image with no volume`);
         disk = 'none';
-        await setImage(cell.service, image, { ...o, disk: 'none' }, c);
-        out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
+        out = await attempt({ disk });
       }
     }
     // No CPU for the new revision (2026-11-11 00:07: 00098 never got an instance while ~26 Unity build and agent job
@@ -528,14 +610,20 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
     if (!dryRun(o) && !out.ok && !diskFailure(out.why) && (cpuFailure(out.why) || (await (o.shortOfCpu ?? regionShortOfCpu)(c).catch(() => false)))) {
       log(`${cell.service}: the new revision got no CPU in ${c.region}${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}; jobs give way and the roll tries again`);
       await (o.yieldCpu ?? yieldJobCpu)({ ...o, log }, c).catch((e: any) => log(`${cell.service}: couldn't stop the jobs (${e.message})`));
-      await setImage(cell.service, image, { ...o, ...(disk === true ? {} : { disk }), retry: Date.now() }, c);
-      out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
+      out = await attempt({ disk, retry: now() });
+    } else if (!dryRun(o) && !out.ok && disk === true && startTimedOut(out.why)) {
+      // With the disk and no reason given (no instance ever started, the probe ran out): Google may refuse the disk
+      // without saying so. The same image without it; if that runs, the image was fine and the disk stays off for now.
+      log(`${cell.service}: the new revision with the working disk didn't start${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}; the same image without the disk`);
+      disk = false; refusedAt = now();
+      out = await attempt({ disk });
     }
     if (!dryRun(o) && !(out.ok && (await health(serviceUrl(cell.org, c))))) {
       log(`${cell.service} is not healthy on the new image${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
-      await setImage(cell.service, cell.image, { ...o, disk }, c).catch((e) => log(`${cell.service}: couldn't put it back (${e.message})`));
+      // Back on the volume it was serving with (a rollback that asked for a refused disk never started either).
+      await setImage(cell.service, cell.image, { ...o, disk: back, refusedAt: back === true ? null : serving?.refusedAt ?? refusedAt }, c).catch((e) => log(`${cell.service}: couldn't put it back (${e.message})`));
       // The new revisions that failed go too, so they don't hold the region's CPU against the next roll.
-      await (o.dropFailed ?? dropFailedRevisions)(cell.service, { ...o, log }, c).catch(() => []);
+      await (o.dropFailed ?? dropFailedRevisions)(cell.service, { dry: o.dry, log }, c).catch(() => []);
       return { image, done, failed: cell.service, left: cells.filter((x) => !done.includes(x.service) && x.service !== cell.service).map((x) => x.service) };
     }
     done.push(cell.service);
