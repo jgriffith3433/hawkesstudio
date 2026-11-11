@@ -1,0 +1,299 @@
+2026-11-11T00:32:08.073977Z		00095-gtp	time=2026-11-11T00:32:08.073Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:189552 elapsed=69.79188ms sz=49440				
+2026-11-11T00:32:09.752791Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:32:15.239009Z		00095-gtp	[disksweep] soft: nothing to clear; 2.27 GB used of 4.00 GB (56.6%; budget 1.72 GB; 0.77 GB of memory free)				
+2026-11-11T00:32:17.004129Z		00095-gtp	time=2026-11-11T00:32:17.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:238992				
+2026-11-11T00:32:17.064667Z		00095-gtp	time=2026-11-11T00:32:17.064Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:238992 elapsed=60.508773ms sz=4120				
+2026-11-11T00:32:18.004165Z		00095-gtp	time=2026-11-11T00:32:18.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:243112				
+2026-11-11T00:32:18.066477Z		00095-gtp	time=2026-11-11T00:32:18.065Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:243112 elapsed=62.220985ms sz=8240				
+2026-11-11T00:32:19.758741Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_cad9c740157e-mwbdsmsp/nudge
+2026-11-11T00:32:21.004682Z		00095-gtp	time=2026-11-11T00:32:21.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:251352				
+2026-11-11T00:32:21.063558Z		00095-gtp	time=2026-11-11T00:32:21.063Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:251352 elapsed=59.142343ms sz=32960				
+2026-11-11T00:32:23.873668Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_cad9c740157e-mwbdsmsp/nudge
+2026-11-11T00:32:25.004360Z		00095-gtp	time=2026-11-11T00:32:25.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:284312				
+2026-11-11T00:32:25.070870Z		00095-gtp	time=2026-11-11T00:32:25.069Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:284312 elapsed=66.174777ms sz=74160				
+2026-11-11T00:32:25.892849Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_cad9c740157e-mwbdsmsp/nudge
+2026-11-11T00:32:26.033863Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_cad9c740157e-mwbdsmsp/nudge
+2026-11-11T00:32:28.005395Z		00095-gtp	time=2026-11-11T00:32:28.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:358472				
+2026-11-11T00:32:28.090437Z		00095-gtp	time=2026-11-11T00:32:28.090Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:358472 elapsed=85.103261ms sz=168920				
+2026-11-11T00:32:29.005193Z		00095-gtp	time=2026-11-11T00:32:29.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:527392				
+2026-11-11T00:32:29.074509Z		00095-gtp	time=2026-11-11T00:32:29.073Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:527392 elapsed=69.288229ms sz=354320				
+2026-11-11T00:32:30.004606Z		00095-gtp	time=2026-11-11T00:32:30.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:881712				
+2026-11-11T00:32:30.078778Z		00095-gtp	time=2026-11-11T00:32:30.077Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:881712 elapsed=73.698702ms sz=82400				
+2026-11-11T00:32:31.006830Z		00095-gtp	time=2026-11-11T00:32:31.006Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:964112				
+2026-11-11T00:32:31.078858Z		00095-gtp	time=2026-11-11T00:32:31.078Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:964112 elapsed=72.078452ms sz=486160				
+2026-11-11T00:32:32.005639Z		00095-gtp	time=2026-11-11T00:32:32.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1450272				
+2026-11-11T00:32:32.079280Z		00095-gtp	time=2026-11-11T00:32:32.078Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1450272 elapsed=73.295062ms sz=90640				
+2026-11-11T00:32:33.005258Z		00095-gtp	time=2026-11-11T00:32:33.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1540912				
+2026-11-11T00:32:33.064220Z		00095-gtp	time=2026-11-11T00:32:33.063Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1540912 elapsed=59.300152ms sz=28840				
+2026-11-11T00:32:38.617146Z		00095-gtp	[crashlog] disk holds: (whole disk) 6554, /usr 2762, /opt 856, theplacedepartmentwebsite/.git 533, /root/.npm/_cacache 522, .work/c_4563674e343c 478, phoriginswebsite/.git 435, phoriginswebsite/videos 219, phoriginswebsite/play 129, phoriginswebsite/assets 123, .work/c_88cdeb289512 76, /root/.cache/node-gyp 67 (MB)				
+2026-11-11T00:32:41.322389Z	INFO	00099-f76	Starting new instance. Reason: MANUAL_OR_CUSTOMER_MIN_INSTANCE - Instance started because of customer-configured min-instances or manual scaling.				
+2026-11-11T00:32:44.004301Z		00095-gtp	time=2026-11-11T00:32:44.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1569752				
+2026-11-11T00:32:44.061991Z		00095-gtp	time=2026-11-11T00:32:44.061Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1569752 elapsed=57.682641ms sz=28840				
+2026-11-11T00:32:46.051971Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/health
+2026-11-11T00:32:47.763042Z	INFO	00095-gtp				202	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/hooks/github
+2026-11-11T00:32:55.006346Z		00095-gtp	time=2026-11-11T00:32:55.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1598592				
+2026-11-11T00:32:55.100930Z		00095-gtp	time=2026-11-11T00:32:55.100Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:1598592 elapsed=94.409548ms sz=630360				
+2026-11-11T00:32:55.225351Z		00095-gtp	[studio] synchronous git status --porcelain -- in c_4563674e343c held Studio for 1020 ms: use gitAsync				
+2026-11-11T00:32:56.004739Z		00095-gtp	time=2026-11-11T00:32:56.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2228952				
+2026-11-11T00:32:56.075138Z		00095-gtp	time=2026-11-11T00:32:56.074Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2228952 elapsed=70.321351ms sz=28840				
+2026-11-11T00:32:57.004894Z		00095-gtp	time=2026-11-11T00:32:57.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2257792				
+2026-11-11T00:32:57.079079Z		00095-gtp	time=2026-11-11T00:32:57.078Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2257792 elapsed=74.381993ms sz=292520				
+2026-11-11T00:32:58.006179Z		00095-gtp	time=2026-11-11T00:32:58.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2550312				
+2026-11-11T00:32:58.109777Z		00095-gtp	time=2026-11-11T00:32:58.109Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2550312 elapsed=103.772494ms sz=226600				
+2026-11-11T00:32:59.004537Z		00095-gtp	time=2026-11-11T00:32:59.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2776912				
+2026-11-11T00:32:59.099269Z		00095-gtp	time=2026-11-11T00:32:59.098Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2776912 elapsed=94.732388ms sz=82400				
+2026-11-11T00:32:59.496838Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:33:01.004339Z		00095-gtp	time=2026-11-11T00:33:01.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2859312				
+2026-11-11T00:33:01.080589Z		00095-gtp	time=2026-11-11T00:33:01.080Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2859312 elapsed=76.354315ms sz=45320				
+2026-11-11T00:33:01.479263Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:33:03.004750Z		00095-gtp	time=2026-11-11T00:33:03.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2904632				
+2026-11-11T00:33:03.079221Z		00095-gtp	time=2026-11-11T00:33:03.078Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2904632 elapsed=74.552863ms sz=57680				
+2026-11-11T00:33:04.022713Z		00095-gtp	time=2026-11-11T00:33:04.020Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2962312				
+2026-11-11T00:33:04.089131Z		00095-gtp	time=2026-11-11T00:33:04.088Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2962312 elapsed=67.906179ms sz=28840				
+2026-11-11T00:33:05.158280Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_b216ae47f339-mwbdlzew/nudge
+2026-11-11T00:33:06.022594Z		00095-gtp	time=2026-11-11T00:33:06.022Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2991152				
+2026-11-11T00:33:06.091842Z		00095-gtp	time=2026-11-11T00:33:06.091Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:2991152 elapsed=69.219189ms sz=321360				
+2026-11-11T00:33:07.021227Z		00095-gtp	time=2026-11-11T00:33:07.020Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3312512				
+2026-11-11T00:33:07.086052Z		00095-gtp	time=2026-11-11T00:33:07.085Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3312512 elapsed=64.841286ms sz=82400				
+2026-11-11T00:33:10.005650Z		00095-gtp	time=2026-11-11T00:33:10.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3394912				
+2026-11-11T00:33:10.090006Z		00095-gtp	time=2026-11-11T00:33:10.089Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3394912 elapsed=84.42881ms sz=366680				
+2026-11-11T00:33:11.004776Z		00095-gtp	time=2026-11-11T00:33:11.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3761592				
+2026-11-11T00:33:11.061435Z		00095-gtp	time=2026-11-11T00:33:11.061Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3761592 elapsed=56.787721ms sz=82400				
+2026-11-11T00:33:11.823580Z	WARNING	00095-gtp	The request was aborted after waiting too long for an available instance. Additional troubleshooting documentation can be found at: https://cloud.google.com/run/docs/troubleshooting#abort-request			429	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:33:13.008230Z		00095-gtp	time=2026-11-11T00:33:13.007Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3843992				
+2026-11-11T00:33:13.082358Z		00095-gtp	time=2026-11-11T00:33:13.081Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000007:3843992 elapsed=74.166753ms sz=420240				
+2026-11-11T00:33:13.082377Z		00095-gtp	time=2026-11-11T00:33:13.082Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:0				
+2026-11-11T00:33:13.158535Z		00095-gtp	time=2026-11-11T00:33:13.156Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:0 elapsed=74.942314ms sz=4152				
+2026-11-11T00:33:16.005463Z		00095-gtp	time=2026-11-11T00:33:16.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:4152				
+2026-11-11T00:33:16.083493Z		00095-gtp	time=2026-11-11T00:33:16.083Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:4152 elapsed=78.077786ms sz=193640				
+2026-11-11T00:33:17.004138Z		00095-gtp	time=2026-11-11T00:33:17.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:197792				
+2026-11-11T00:33:17.072785Z		00095-gtp	time=2026-11-11T00:33:17.072Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:197792 elapsed=68.71713ms sz=28840				
+2026-11-11T00:33:17.558971Z		00095-gtp	[crashlog] memory low: free 812 of 3916 MB; disk projects 2180, data 2180, tmp 2180 MB; biggest: MainThread 363, litestream 121, MainThread 28 MB; studio rss 363 MB; running: run r_687cdff7480e; changes c_230fe5671128,c_8928116a41b3,c_b216ae47f339,c_88cdeb289512,c_5c52231aed69,c_98a9c3eaa2a4; jobs followed 7; builds 0				
+2026-11-11T00:33:18.607027Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:33:19.004719Z		00095-gtp	time=2026-11-11T00:33:19.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:226632				
+2026-11-11T00:33:19.076582Z		00095-gtp	time=2026-11-11T00:33:19.075Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:226632 elapsed=71.725072ms sz=41200				
+2026-11-11T00:33:19.803204Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:33:20.004215Z		00095-gtp	time=2026-11-11T00:33:20.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:267832				
+2026-11-11T00:33:20.085890Z		00095-gtp	time=2026-11-11T00:33:20.085Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:267832 elapsed=81.855589ms sz=49440				
+2026-11-11T00:33:22.577481Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:33:23.004860Z		00095-gtp	time=2026-11-11T00:33:23.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:317272				
+2026-11-11T00:33:23.067090Z		00095-gtp	time=2026-11-11T00:33:23.066Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:317272 elapsed=62.446145ms sz=49440				
+2026-11-11T00:33:26.569983Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:33:27.005496Z		00095-gtp	time=2026-11-11T00:33:27.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:366712				
+2026-11-11T00:33:27.081353Z		00095-gtp	time=2026-11-11T00:33:27.080Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:366712 elapsed=75.865244ms sz=177160				
+2026-11-11T00:33:29.022523Z	WARNING	00095-gtp				400	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/memory/search?q=vertical+slice+North+Road+densify+ambient+loops+slice+playtest&product=yooba-land&limit=15
+2026-11-11T00:33:29.244500Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/agents/github
+2026-11-11T00:33:29.819760Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:33:30.004842Z		00095-gtp	time=2026-11-11T00:33:30.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:543872				
+2026-11-11T00:33:30.075931Z		00095-gtp	time=2026-11-11T00:33:30.075Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:543872 elapsed=70.978131ms sz=49440				
+2026-11-11T00:33:30.560854Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:33:31.005075Z		00095-gtp	time=2026-11-11T00:33:31.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:593312				
+2026-11-11T00:33:31.086740Z		00095-gtp	time=2026-11-11T00:33:31.086Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:593312 elapsed=81.898919ms sz=206000				
+2026-11-11T00:33:31.094135Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/health
+2026-11-11T00:33:31.832368Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:33:38.005735Z		00095-gtp	time=2026-11-11T00:33:38.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:799312				
+2026-11-11T00:33:38.086260Z		00095-gtp	time=2026-11-11T00:33:38.085Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:799312 elapsed=80.625357ms sz=37080				
+2026-11-11T00:33:41.195044Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_b216ae47f339-mwbdlzew/nudge
+2026-11-11T00:33:42.005053Z		00095-gtp	time=2026-11-11T00:33:42.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:836392				
+2026-11-11T00:33:42.064919Z		00095-gtp	time=2026-11-11T00:33:42.064Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:836392 elapsed=59.911123ms sz=41200				
+2026-11-11T00:33:42.323238Z	INFO	00099-f76	Starting new instance. Reason: MANUAL_OR_CUSTOMER_MIN_INSTANCE - Instance started because of customer-configured min-instances or manual scaling.				
+2026-11-11T00:33:45.549725Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:33:46.004846Z		00095-gtp	time=2026-11-11T00:33:46.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:877592				
+2026-11-11T00:33:46.058631Z		00095-gtp	time=2026-11-11T00:33:46.057Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:877592 elapsed=53.618459ms sz=82400				
+2026-11-11T00:33:47.509763Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:33:48.004448Z		00095-gtp	time=2026-11-11T00:33:48.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:959992				
+2026-11-11T00:33:48.070012Z		00095-gtp	time=2026-11-11T00:33:48.069Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:959992 elapsed=65.482646ms sz=37080				
+2026-11-11T00:33:48.179731Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/memory/search?q=vertical+slice+North+Road+densify+ambient+YoobaSliceLife&product=yoobaland&limit=15
+2026-11-11T00:33:49.003983Z		00095-gtp	time=2026-11-11T00:33:49.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:997072				
+2026-11-11T00:33:49.075557Z		00095-gtp	time=2026-11-11T00:33:49.075Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:997072 elapsed=71.451632ms sz=28840				
+2026-11-11T00:33:50.572621Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:33:51.004893Z		00095-gtp	time=2026-11-11T00:33:51.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1025912				
+2026-11-11T00:33:51.052934Z		00095-gtp	time=2026-11-11T00:33:51.052Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1025912 elapsed=48.092584ms sz=49440				
+2026-11-11T00:33:52.580303Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:33:53.005051Z		00095-gtp	time=2026-11-11T00:33:53.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1075352				
+2026-11-11T00:33:53.065394Z		00095-gtp	time=2026-11-11T00:33:53.064Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1075352 elapsed=60.290773ms sz=82400				
+2026-11-11T00:33:53.546541Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:33:54.003920Z		00095-gtp	time=2026-11-11T00:33:54.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1157752				
+2026-11-11T00:33:54.076589Z		00095-gtp	time=2026-11-11T00:33:54.076Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1157752 elapsed=72.657932ms sz=45320				
+2026-11-11T00:33:58.634305Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:33:59.005388Z		00095-gtp	time=2026-11-11T00:33:59.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1203072				
+2026-11-11T00:33:59.076915Z		00095-gtp	time=2026-11-11T00:33:59.076Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1203072 elapsed=71.567811ms sz=164800				
+2026-11-11T00:34:04.605546Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:34:05.004473Z		00095-gtp	time=2026-11-11T00:34:05.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1367872				
+2026-11-11T00:34:05.088532Z		00095-gtp	time=2026-11-11T00:34:05.088Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1367872 elapsed=84.28078ms sz=49440				
+2026-11-11T00:34:09.534210Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:34:10.004738Z		00095-gtp	time=2026-11-11T00:34:10.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1417312				
+2026-11-11T00:34:10.070986Z		00095-gtp	time=2026-11-11T00:34:10.070Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000008:1417312 elapsed=66.299628ms sz=119480				
+2026-11-11T00:34:13.005280Z		00095-gtp	time=2026-11-11T00:34:13.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:0				
+2026-11-11T00:34:13.074425Z		00095-gtp	time=2026-11-11T00:34:13.074Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:0 elapsed=69.167269ms sz=4152				
+2026-11-11T00:34:14.616979Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:34:14.717960Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/agents/github
+2026-11-11T00:34:15.005114Z		00095-gtp	time=2026-11-11T00:34:15.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:4152				
+2026-11-11T00:34:15.069950Z		00095-gtp	time=2026-11-11T00:34:15.069Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:4152 elapsed=64.854606ms sz=49440				
+2026-11-11T00:34:16.257063Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/health
+2026-11-11T00:34:16.583954Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:34:17.004724Z		00095-gtp	time=2026-11-11T00:34:17.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:53592				
+2026-11-11T00:34:17.076746Z		00095-gtp	time=2026-11-11T00:34:17.075Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:53592 elapsed=71.301061ms sz=4120				
+2026-11-11T00:34:17.755866Z		00095-gtp	[crashlog] memory low: free 837 of 3916 MB; disk projects 2178, data 2178, tmp 2178 MB; biggest: MainThread 361, litestream 99, MainThread 28 MB; studio rss 361 MB; running: run r_687cdff7480e; changes c_230fe5671128,c_8928116a41b3,c_b216ae47f339,c_88cdeb289512,c_5c52231aed69,c_98a9c3eaa2a4; jobs followed 7; builds 0				
+2026-11-11T00:34:18.004945Z		00095-gtp	time=2026-11-11T00:34:18.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:57712				
+2026-11-11T00:34:18.058997Z		00095-gtp	time=2026-11-11T00:34:18.058Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:57712 elapsed=54.130318ms sz=86520				
+2026-11-11T00:34:29.867620Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:34:31.005019Z		00095-gtp	time=2026-11-11T00:34:31.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:144232				
+2026-11-11T00:34:31.069077Z		00095-gtp	time=2026-11-11T00:34:31.068Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:144232 elapsed=63.988446ms sz=49440				
+2026-11-11T00:34:32.284669Z	ERROR	00099-f76			Ready condition status changed to False for Revision studio-o-j-studio-4f12-00099-f76 with message: Container failed to become healthy. Startup probes timed out after 10m (60 attempts with a period of 10s each). There was an initial delay of 0s. If this happens frequently, consider adjusting the probe settings.		
+2026-11-11T00:34:33.873427Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:34:35.004692Z		00095-gtp	time=2026-11-11T00:34:35.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:193672				
+2026-11-11T00:34:35.081545Z		00095-gtp	time=2026-11-11T00:34:35.081Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:193672 elapsed=77.022805ms sz=8240				
+2026-11-11T00:34:36.437124Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:37.004328Z		00095-gtp	time=2026-11-11T00:34:37.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:201912				
+2026-11-11T00:34:37.074521Z		00095-gtp	time=2026-11-11T00:34:37.074Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:201912 elapsed=70.516ms sz=28840				
+2026-11-11T00:34:40.417202Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:41.004154Z		00095-gtp	time=2026-11-11T00:34:41.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:230752				
+2026-11-11T00:34:41.063402Z		00095-gtp	time=2026-11-11T00:34:41.062Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:230752 elapsed=59.161992ms sz=57680				
+2026-11-11T00:34:42.431869Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:43.004518Z		00095-gtp	time=2026-11-11T00:34:43.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:288432				
+2026-11-11T00:34:43.082063Z		00095-gtp	time=2026-11-11T00:34:43.081Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:288432 elapsed=77.662935ms sz=28840				
+2026-11-11T00:34:43.871244Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_8928116a41b3-mwbddbup/nudge
+2026-11-11T00:34:44.424549Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:45.004641Z		00095-gtp	time=2026-11-11T00:34:45.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:317272				
+2026-11-11T00:34:45.073765Z		00095-gtp	time=2026-11-11T00:34:45.073Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:317272 elapsed=69.15849ms sz=255440				
+2026-11-11T00:34:48.420756Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:49.005043Z		00095-gtp	time=2026-11-11T00:34:49.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:572712				
+2026-11-11T00:34:49.068778Z		00095-gtp	time=2026-11-11T00:34:49.068Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:572712 elapsed=63.736015ms sz=86520				
+2026-11-11T00:34:50.430313Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:51.004643Z		00095-gtp	time=2026-11-11T00:34:51.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:659232				
+2026-11-11T00:34:51.112573Z		00095-gtp	time=2026-11-11T00:34:51.112Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:659232 elapsed=107.865067ms sz=28840				
+2026-11-11T00:34:54.416747Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:55.004741Z		00095-gtp	time=2026-11-11T00:34:55.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:688072				
+2026-11-11T00:34:55.065002Z		00095-gtp	time=2026-11-11T00:34:55.064Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:688072 elapsed=60.328083ms sz=37080				
+2026-11-11T00:34:55.568265Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:34:56.004332Z		00095-gtp	time=2026-11-11T00:34:56.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:725152				
+2026-11-11T00:34:56.065908Z		00095-gtp	time=2026-11-11T00:34:56.065Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:725152 elapsed=61.618964ms sz=45320				
+2026-11-11T00:34:56.418576Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:34:57.005055Z		00095-gtp	time=2026-11-11T00:34:57.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:770472				
+2026-11-11T00:34:57.071385Z		00095-gtp	time=2026-11-11T00:34:57.070Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:770472 elapsed=66.444388ms sz=49440				
+2026-11-11T00:34:57.661271Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_230fe5671128-mwbdx277/nudge
+2026-11-11T00:34:58.400220Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:35:00.004402Z		00095-gtp	time=2026-11-11T00:35:00.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:819912				
+2026-11-11T00:35:00.090936Z		00095-gtp	time=2026-11-11T00:35:00.090Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:819912 elapsed=86.716192ms sz=140080				
+2026-11-11T00:35:01.006169Z		00095-gtp	time=2026-11-11T00:35:01.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:959992				
+2026-11-11T00:35:01.080609Z		00095-gtp	time=2026-11-11T00:35:01.080Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:959992 elapsed=74.414214ms sz=206000				
+2026-11-11T00:35:01.254700Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/health
+2026-11-11T00:35:02.005725Z		00095-gtp	time=2026-11-11T00:35:02.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1165992				
+2026-11-11T00:35:02.081159Z		00095-gtp	time=2026-11-11T00:35:02.080Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1165992 elapsed=75.382444ms sz=304880				
+2026-11-11T00:35:02.427464Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:35:03.005163Z		00095-gtp	time=2026-11-11T00:35:03.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1470872				
+2026-11-11T00:35:03.077087Z		00095-gtp	time=2026-11-11T00:35:03.076Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1470872 elapsed=71.857522ms sz=131840				
+2026-11-11T00:35:06.414866Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:35:07.004467Z		00095-gtp	time=2026-11-11T00:35:07.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1602712				
+2026-11-11T00:35:07.084595Z		00095-gtp	time=2026-11-11T00:35:07.083Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1602712 elapsed=79.847197ms sz=37080				
+2026-11-11T00:35:08.004312Z		00095-gtp	time=2026-11-11T00:35:08.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1639792				
+2026-11-11T00:35:08.065997Z		00095-gtp	time=2026-11-11T00:35:08.065Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1639792 elapsed=61.693974ms sz=82400				
+2026-11-11T00:35:12.426022Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:35:13.006050Z		00095-gtp	time=2026-11-11T00:35:13.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1722192				
+2026-11-11T00:35:13.072086Z		00095-gtp	time=2026-11-11T00:35:13.071Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/00000009:1722192 elapsed=66.077148ms sz=41200				
+2026-11-11T00:35:13.072105Z		00095-gtp	time=2026-11-11T00:35:13.071Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:0				
+2026-11-11T00:35:13.139728Z		00095-gtp	time=2026-11-11T00:35:13.139Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:0 elapsed=67.398398ms sz=4152				
+2026-11-11T00:35:13.568928Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:35:14.005671Z		00095-gtp	time=2026-11-11T00:35:14.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:4152				
+2026-11-11T00:35:14.078996Z		00095-gtp	time=2026-11-11T00:35:14.078Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:4152 elapsed=73.507363ms sz=45320				
+2026-11-11T00:35:14.987685Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:35:15.135408Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:35:15.249995Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_98a9c3eaa2a4-mwbdxwot/nudge
+2026-11-11T00:35:16.004384Z		00095-gtp	time=2026-11-11T00:35:16.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:49472				
+2026-11-11T00:35:16.066426Z		00095-gtp	time=2026-11-11T00:35:16.065Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:49472 elapsed=61.931204ms sz=119480				
+2026-11-11T00:35:17.561010Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:35:18.005399Z		00095-gtp	time=2026-11-11T00:35:18.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:168952				
+2026-11-11T00:35:18.064824Z		00095-gtp	[crashlog] memory low: free 1016 of 3916 MB; disk projects 2023, data 2023, tmp 2023 MB; biggest: MainThread 365, litestream 107, MainThread 30 MB; studio rss 365 MB; running: run r_687cdff7480e; changes c_8928116a41b3,c_b216ae47f339,c_88cdeb289512,c_5c52231aed69,c_b3fd34e572b7,c_b83f553b550d; jobs followed 6; builds 0				
+2026-11-11T00:35:18.071577Z		00095-gtp	time=2026-11-11T00:35:18.071Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:168952 elapsed=66.224708ms sz=226600				
+2026-11-11T00:35:19.006521Z		00095-gtp	time=2026-11-11T00:35:19.006Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:395552				
+2026-11-11T00:35:19.076686Z		00095-gtp	time=2026-11-11T00:35:19.076Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:395552 elapsed=70.25259ms sz=230720				
+2026-11-11T00:35:20.004290Z		00095-gtp	time=2026-11-11T00:35:20.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:626272				
+2026-11-11T00:35:20.092839Z		00095-gtp	time=2026-11-11T00:35:20.092Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:626272 elapsed=88.595043ms sz=24720				
+2026-11-11T00:35:21.593020Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:35:23.021065Z		00095-gtp	time=2026-11-11T00:35:23.020Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:650992				
+2026-11-11T00:35:23.077065Z		00095-gtp	time=2026-11-11T00:35:23.076Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:650992 elapsed=56.12775ms sz=45320				
+2026-11-11T00:35:25.004805Z		00095-gtp	time=2026-11-11T00:35:25.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:696312				
+2026-11-11T00:35:25.076091Z		00095-gtp	time=2026-11-11T00:35:25.075Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:696312 elapsed=71.374451ms sz=276040				
+2026-11-11T00:35:25.564856Z	WARNING	00095-gtp	The request was aborted after waiting too long for an available instance. Additional troubleshooting documentation can be found at: https://cloud.google.com/run/docs/troubleshooting#abort-request			429	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:35:26.004096Z		00095-gtp	time=2026-11-11T00:35:26.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:972352				
+2026-11-11T00:35:26.078490Z		00095-gtp	time=2026-11-11T00:35:26.078Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:972352 elapsed=74.268943ms sz=82400				
+2026-11-11T00:35:28.005031Z		00095-gtp	time=2026-11-11T00:35:28.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1054752				
+2026-11-11T00:35:28.082708Z		00095-gtp	time=2026-11-11T00:35:28.082Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1054752 elapsed=77.670386ms sz=45320				
+2026-11-11T00:35:29.003806Z		00095-gtp	time=2026-11-11T00:35:29.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1100072				
+2026-11-11T00:35:29.071504Z		00095-gtp	time=2026-11-11T00:35:29.071Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1100072 elapsed=67.781968ms sz=12360				
+2026-11-11T00:35:31.598163Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:35:32.004566Z		00095-gtp	time=2026-11-11T00:35:32.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1112432				
+2026-11-11T00:35:32.089791Z		00095-gtp	time=2026-11-11T00:35:32.089Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1112432 elapsed=85.285911ms sz=45320				
+2026-11-11T00:35:33.552510Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:35:34.004376Z		00095-gtp	time=2026-11-11T00:35:34.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1157752				
+2026-11-11T00:35:34.073577Z		00095-gtp	time=2026-11-11T00:35:34.073Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1157752 elapsed=69.129089ms sz=37080				
+2026-11-11T00:35:42.682794Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:35:43.004980Z		00095-gtp	time=2026-11-11T00:35:43.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1194832				
+2026-11-11T00:35:43.065328Z		00095-gtp	time=2026-11-11T00:35:43.065Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1194832 elapsed=60.434214ms sz=24720				
+2026-11-11T00:35:45.597611Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:35:46.004064Z		00095-gtp	time=2026-11-11T00:35:46.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1219552				
+2026-11-11T00:35:46.062917Z		00095-gtp	time=2026-11-11T00:35:46.062Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1219552 elapsed=58.904763ms sz=53560				
+2026-11-11T00:35:46.257469Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/health
+2026-11-11T00:35:46.717543Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:35:47.004503Z		00095-gtp	time=2026-11-11T00:35:47.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1273112				
+2026-11-11T00:35:47.067240Z		00095-gtp	time=2026-11-11T00:35:47.066Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1273112 elapsed=62.696905ms sz=49440				
+2026-11-11T00:35:48.004470Z		00095-gtp	time=2026-11-11T00:35:48.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1322552				
+2026-11-11T00:35:48.061176Z		00095-gtp	time=2026-11-11T00:35:48.060Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1322552 elapsed=56.670661ms sz=24720				
+2026-11-11T00:35:48.604454Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:35:49.004674Z		00095-gtp	time=2026-11-11T00:35:49.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1347272				
+2026-11-11T00:35:49.073213Z		00095-gtp	time=2026-11-11T00:35:49.072Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1347272 elapsed=68.519349ms sz=53560				
+2026-11-11T00:35:50.607363Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:35:51.004808Z		00095-gtp	time=2026-11-11T00:35:51.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1400832				
+2026-11-11T00:35:51.078046Z		00095-gtp	time=2026-11-11T00:35:51.077Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1400832 elapsed=73.229153ms sz=57680				
+2026-11-11T00:35:52.576430Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:35:53.004022Z		00095-gtp	time=2026-11-11T00:35:53.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1458512				
+2026-11-11T00:35:53.072251Z		00095-gtp	time=2026-11-11T00:35:53.071Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1458512 elapsed=68.280829ms sz=28840				
+2026-11-11T00:35:56.606050Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:35:57.005441Z		00095-gtp	time=2026-11-11T00:35:57.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1487352				
+2026-11-11T00:35:57.067384Z		00095-gtp	time=2026-11-11T00:35:57.067Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1487352 elapsed=62.518075ms sz=37080				
+2026-11-11T00:35:58.615156Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:35:59.004228Z		00095-gtp	time=2026-11-11T00:35:59.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1524432				
+2026-11-11T00:35:59.082759Z		00095-gtp	time=2026-11-11T00:35:59.082Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1524432 elapsed=78.674346ms sz=28840				
+2026-11-11T00:36:00.605366Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:36:01.004433Z		00095-gtp	time=2026-11-11T00:36:01.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1553272				
+2026-11-11T00:36:01.070097Z		00095-gtp	time=2026-11-11T00:36:01.069Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1553272 elapsed=65.701466ms sz=37080				
+2026-11-11T00:36:01.317506Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_b216ae47f339-mwbdlzew/nudge
+2026-11-11T00:36:02.003844Z		00095-gtp	time=2026-11-11T00:36:02.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1590352				
+2026-11-11T00:36:02.073183Z		00095-gtp	time=2026-11-11T00:36:02.072Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1590352 elapsed=69.34897ms sz=41200				
+2026-11-11T00:36:02.617182Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:36:03.003768Z		00095-gtp	time=2026-11-11T00:36:03.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1631552				
+2026-11-11T00:36:03.088900Z		00095-gtp	time=2026-11-11T00:36:03.088Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1631552 elapsed=85.231541ms sz=28840				
+2026-11-11T00:36:06.601704Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:36:07.004173Z		00095-gtp	time=2026-11-11T00:36:07.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1660392				
+2026-11-11T00:36:07.061977Z		00095-gtp	time=2026-11-11T00:36:07.061Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1660392 elapsed=57.888351ms sz=37080				
+2026-11-11T00:36:07.605465Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:36:08.004646Z		00095-gtp	time=2026-11-11T00:36:08.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1697472				
+2026-11-11T00:36:08.078225Z		00095-gtp	time=2026-11-11T00:36:08.077Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1697472 elapsed=73.466443ms sz=45320				
+2026-11-11T00:36:09.603254Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:36:10.004154Z		00095-gtp	time=2026-11-11T00:36:10.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1742792				
+2026-11-11T00:36:10.054375Z		00095-gtp	time=2026-11-11T00:36:10.054Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1742792 elapsed=50.207186ms sz=37080				
+2026-11-11T00:36:10.622634Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:36:11.004734Z		00095-gtp	time=2026-11-11T00:36:11.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1779872				
+2026-11-11T00:36:11.075163Z		00095-gtp	time=2026-11-11T00:36:11.074Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1779872 elapsed=70.430901ms sz=37080				
+2026-11-11T00:36:11.611690Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:36:12.003998Z		00095-gtp	time=2026-11-11T00:36:12.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1816952				
+2026-11-11T00:36:12.068262Z		00095-gtp	time=2026-11-11T00:36:12.067Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000a:1816952 elapsed=64.239406ms sz=45320				
+2026-11-11T00:36:13.005502Z		00095-gtp	time=2026-11-11T00:36:13.005Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:0				
+2026-11-11T00:36:13.096767Z		00095-gtp	time=2026-11-11T00:36:13.082Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:0 elapsed=77.262966ms sz=4152				
+2026-11-11T00:36:15.590902Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:36:16.005109Z		00095-gtp	time=2026-11-11T00:36:16.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:4152				
+2026-11-11T00:36:16.078935Z		00095-gtp	time=2026-11-11T00:36:16.078Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:4152 elapsed=73.820523ms sz=86520				
+2026-11-11T00:36:17.004835Z		00095-gtp	time=2026-11-11T00:36:17.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:90672				
+2026-11-11T00:36:17.066318Z		00095-gtp	time=2026-11-11T00:36:17.066Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:90672 elapsed=61.523284ms sz=57680				
+2026-11-11T00:36:17.598758Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:36:18.003828Z		00095-gtp	time=2026-11-11T00:36:18.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:148352				
+2026-11-11T00:36:18.067572Z		00095-gtp	time=2026-11-11T00:36:18.067Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:148352 elapsed=63.771076ms sz=41200				
+2026-11-11T00:36:18.243535Z		00095-gtp	[crashlog] memory low: free 828 of 3916 MB; disk projects 2178, data 2178, tmp 2178 MB; biggest: MainThread 374, litestream 99, MainThread 31 MB; studio rss 374 MB; running: run r_687cdff7480e; changes c_8928116a41b3,c_b216ae47f339,c_88cdeb289512,c_5c52231aed69,c_b3fd34e572b7,c_b83f553b550d; jobs followed 7; builds 0				
+2026-11-11T00:36:18.629477Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge
+2026-11-11T00:36:19.004367Z		00095-gtp	time=2026-11-11T00:36:19.003Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:189552				
+2026-11-11T00:36:19.069688Z		00095-gtp	time=2026-11-11T00:36:19.069Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:189552 elapsed=65.440387ms sz=37080				
+2026-11-11T00:36:19.609045Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_88cdeb289512-mwbdqtzb/nudge
+2026-11-11T00:36:20.004506Z		00095-gtp	time=2026-11-11T00:36:20.004Z level=INFO msg="write wal segment" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:226632				
+2026-11-11T00:36:20.068574Z		00095-gtp	time=2026-11-11T00:36:20.068Z level=INFO msg="wal segment written" db=/data/studio.db replica=gcs position=2a28d3e8ef00efb6/0000000b:226632 elapsed=64.100616ms sz=49440				
+2026-11-11T00:36:22.103074Z	INFO	00095-gtp				200	https://studio-o-j-studio-4f12-388576319982.us-east4.run.app/api/cloudjobs/hawkes-agent-c_5c52231aed69-mwbdxn3p/nudge

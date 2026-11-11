@@ -245,8 +245,19 @@ export async function regionJobCpu(project: string, region: string): Promise<{ v
   return { vcpu, running, open };
 }
 
+/**
+ * Ends an execution. Cloud Run cancels only a running one ("cannot be cancelled because it is not running", 2026-11-11:
+ * 13 queued Unity builds and agent executions Studio had given up on stayed queued and took the region's CPU the moment
+ * any freed), so one that won't cancel because it hasn't started is deleted. One that already ended is left alone.
+ */
 export async function cancelExecution(name: string) {
-  await gapi(`https://run.googleapis.com/v2/${name}:cancel`, { body: {} }).catch(() => {});
+  try {
+    await gapi(`https://run.googleapis.com/v2/${name}:cancel`, { body: {} });
+  } catch (e: any) {
+    if (!/not running|FAILED_PRECONDITION/i.test(String(e?.message ?? e))) return;
+    const e2 = await gapi(`https://run.googleapis.com/v2/${name}`, { missingOk: true }).catch(() => null);
+    if (e2 && !e2.completionTime && !e2.startTime) await gapi(`https://run.googleapis.com/v2/${name}`, { method: 'DELETE', missingOk: true }).catch(() => {});
+  }
 }
 
 // ------------------------------------------------------------ Google sign-in
