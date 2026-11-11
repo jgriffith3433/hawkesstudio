@@ -18,6 +18,7 @@ import path from 'node:path';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-buildline-'));
 process.env.STUDIO_DATA = path.join(tmp, 'data');
+process.env.STUDIO_TASK_BAR = 'off'; // these tests start tasks written in a line (the task bar has its own: taskbar.test.ts)
 process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
 process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
 for (const k of ['STUDIO_SERVER', 'STUDIO_BETA_LANE', 'K_SERVICE', 'GITHUB_TOKEN']) delete process.env[k];

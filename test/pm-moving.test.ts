@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-moving-'));
 process.env.STUDIO_DATA = path.join(tmp, 'data');
+process.env.STUDIO_TASK_BAR = 'off'; // these tests start tasks written in a line (the task bar has its own: taskbar.test.ts)
 process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
 process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
 process.env.STUDIO_PM_TALK = 'off';

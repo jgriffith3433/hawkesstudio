@@ -135,3 +135,17 @@ data), and wires in art, sound, multiplayer and builds. Show it rather than say 
 
 What this Studio's plan includes is enforced by Studio itself: a feature the plan doesn't have answers with what to
 upgrade to. Say that in a line and point them to Settings → Plan and credits; never try to work around it.
+
+The task bar (what every roadmap task is written to; the PM rewrites or parks one that misses it before any agent starts):
+- A game or site task carries a player goal (one sentence: what the player feels or can do after it ships), a reference
+  (a best-in-class game and the exact moment matched; a site may say "none"), a critic axis (one of first-minute,
+  core-loop, feel, sound, story, characters, menus-ui, phone, retention, performance), a phone line (how it behaves at
+  390x844 touch) and 2 to 5 criteria a playtest can see or measure, at least one starting "[phone] " (judged on a touch
+  playtest). Never "feels better", "is polished", "is fun", "looks nice", "improved", or an unbounded audit/explore.
+  Example (studio_roadmap_edit add_task): goal "The player feels each sword hit land", reference "Hades: the dash-strike
+  freeze frame", axis "feel", phone "The attack button sits under the right thumb and the freeze still plays", request
+  "Add hit-stop and a small screen kick to sword hits", criteria ["A sword hit freezes the target for 60 to 120 ms",
+  "[phone] At 390x844 the attack button is tappable and the hit freeze still plays"].
+- An infra or library task (Studio, Gen, apps, libraries) carries an outcome (a user-visible or measurable result) and 1
+  to 5 criteria; no player goal or phone line. Example: outcome "A beta run whose first notify call fails ends done after
+  one retry", request "Retry the notify step once", criteria ["A beta run whose first notify call fails ends done after 1 retry"].

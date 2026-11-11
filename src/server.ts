@@ -814,7 +814,13 @@ const server = http.createServer(async (req, res) => {
       const b = method === 'GET' ? {} : await readJson(req);
       // Who acts (inbox.ts actor): J on the dashboard, J through Talk only in a turn he started, else Talk or the PM.
       const by = await (await import('./inbox.ts')).actor(req, b.by);
-      if (route === '/api/roadmap' && method === 'GET') return send(res, 200, { milestones: rm.listMilestones({ product: q('product'), status: q('milestones') }), items: rm.listItems({ product: q('product'), status: q('status') }), products: rm.roadmapProducts(), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES, milestones: rm.MILESTONE_STATUSES } });
+      if (route === '/api/roadmap' && method === 'GET') {
+        const items = rm.listItems({ product: q('product'), status: q('status') });
+        // The task bar's decisions per product (taskbar.ts), and the tasks it parked with their reason.
+        const bar = await import('./taskbar.ts');
+        const taskBar = Object.fromEntries([...new Set(items.map((i: any) => i.product as string))].map((id) => [id, { ...bar.taskBarCounts(id), parkedTasks: bar.parkedTasks(items.filter((i: any) => i.product === id).flatMap((i: any) => i.tasks ?? [])) }]));
+        return send(res, 200, { milestones: rm.listMilestones({ product: q('product'), status: q('milestones') }), items, taskBar, products: rm.roadmapProducts(), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES, milestones: rm.MILESTONE_STATUSES } });
+      }
       if (route === '/api/roadmap/milestones' && method === 'POST') { const ms = rm.addMilestone({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, ms); }
       m = /^\/api\/roadmap\/milestones\/(n_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getMilestone(m[1]) ? { ...rm.getMilestone(m[1]), ...rm.milestoneProgress(m[1]) } : { error: 'no such milestone' });

@@ -64,6 +64,7 @@ export const SLICE_CRITERIA = [
   'The area has its landmark, characters that move on their own, ambient sound and at least three kinds of interaction',
   'Its story beat plays as an event with sound or voice, not as text alone',
   'The fun review calls the slice a living world, not a demo',
+  '[phone] At 390x844 touch the area plays the same: its controls work by touch and nothing is cut off',
 ];
 export const BIBLE_CRITERIA = [
   `docs/world-bible.md exists with every section: ${BIBLE_SECTIONS.join(', ')}`,
@@ -95,8 +96,12 @@ export async function ensureFoundation(productId: string, by = 'Studio'): Promis
   // First on the roadmap: before every item already there.
   const first = Number((db.prepare('SELECT MIN(ord) AS o FROM items WHERE product = ?').get(p.id) as any)?.o ?? 0);
   const bible = rm.addItem({ product: p.id, title: BIBLE_TITLE, goal: `The plan of ${p.name}'s whole world before more is built`, why: 'A game is a full, living world, not a demo: plan the world first (game quality rules).', criteria: BIBLE_CRITERIA, status: 'planned', priority: 'high', by, ord: first - 2 });
-  const bt = rm.addTask({ item: bible.id, title: `${p.name}: world bible`, request: bibleRequest(p.name), criteria: BIBLE_CRITERIA, priority: 'high' });
+  // The task bar (taskbar.ts): the bible is a document (axis story, no phone line); the slice's goal is its area alive.
+  const bt = rm.addTask({ item: bible.id, title: `${p.name}: world bible`, request: bibleRequest(p.name), criteria: BIBLE_CRITERIA, priority: 'high',
+    goal: `Every agent after this builds one planned, living world of ${p.name}, not a demo`, reference: 'n/a: a planning document', axis: 'story', phone: 'n/a: a document' });
   const slice = rm.addItem({ product: p.id, title: SLICE_TITLE, goal: `One area of ${p.name} finished to the full bar before the game widens`, why: 'Prove the world is alive in one place before building more (game quality rules).', criteria: SLICE_CRITERIA, status: 'planned', priority: 'high', by, ord: first - 1 });
-  rm.addTask({ item: slice.id, title: `${p.name}: vertical slice`, request: sliceRequest(p.name), criteria: SLICE_CRITERIA, depends: [bt.id], priority: 'high' });
+  rm.addTask({ item: slice.id, title: `${p.name}: vertical slice`, request: sliceRequest(p.name), criteria: SLICE_CRITERIA, depends: [bt.id], priority: 'high',
+    goal: `The player walks one area of ${p.name} that is full and alive, with a story beat that happens around them`, reference: 'the best-in-class game that matches the world bible\'s tone: name it and the moment matched', axis: 'first-minute',
+    phone: 'The area plays at 390x844 with touch controls and nothing cut off' });
   return { added: [bible.id, slice.id] };
 }
