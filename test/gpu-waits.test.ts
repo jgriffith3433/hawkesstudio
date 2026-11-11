@@ -48,6 +48,10 @@ test('a follow-up added without GPU items keeps those of the GPU work it follows
   // Its own items win; a task naming nothing GPU gets none; another product's GPU task is never the source.
   assert.equal(rm.addTask({ item: it.id, request: `Own (${art.id})`, gpu: [{ tool: 'image.edit', count: 1 }] }).gpu?.items?.[0].tool, 'image.edit');
   assert.equal(rm.addTask({ item: it.id, request: 'Tune the beam timing' }).gpu, null);
+  // A task that depends on GPU work not started yet waits for its assets; it never copies (and pays for) its GPU list.
+  const sea = rm.addTask({ item: it.id, request: 'Make the sea (GPU)', gpu: ITEMS });
+  assert.equal(rm.addTask({ item: it.id, request: 'Fishing at the shore, using the sea', depends: [sea.id] }).gpu, null);
+  assert.equal(rm.addTask({ item: it.id, request: `After ${sea.id}: the boats` }).gpu, null);
   const other = rm.addItem({ product: 'gwother', title: 'Other', size: 'S', status: 'planned' });
   assert.equal(rm.addTask({ item: other.id, request: `Like ${art.id}` }).gpu, null);
 });
@@ -173,4 +177,10 @@ test('gpuReruns ignores STUDIO_FAILED_SQL runs, and answerQuestion("try again") 
   const [rerunId] = await pm.rerunGpuWaits(2, new Set(), { running: async () => true });
   assert.ok(rerunId, 'starts a fresh gpu-rerun change after try again');
   assert.equal(pm.gpuReruns(t.id), 1);
+});
+
+test('a criterion keeps its own leading number; only list markers come off', () => {
+  const it = rm.addItem({ product: 'gwart', title: 'Numbers', size: 'S', status: 'planned' });
+  const t = rm.addTask({ item: it.id, request: 'Numbers stay', criteria: ['0 console errors in a 5 min play', '60 fps on desktop', '- a bullet', '2. a numbered line', '3) another'] });
+  assert.deepEqual(t.criteria, ['0 console errors in a 5 min play', '60 fps on desktop', 'a bullet', 'a numbered line', 'another']);
 });
