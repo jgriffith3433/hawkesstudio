@@ -62,7 +62,7 @@ for (const prop of world.props) {
   if (gap > 0.02 || gap < -0.05) t.problem('bug', `quality.ground-contact: ${prop.name} ${(gap * 100).toFixed(0)} cm off the ground`);
 }
 t.metric('quality.maxQuietSeconds', director.longestQuietSeconds);
-t.metric('quality.textOnlyBeats', story.beats.filter((b) => b.onlyText).length);
+t.metric('quality.textOnlyBeats', story.beats.filter((b) => b.onlyText).length); // or let the story kit (hawkes-story.js) report it: Studio then measures it from the story events
 ```
 
 Unity (`com.hawkes.playtest`): the same codes on the scenario's `PlaytestRun`:

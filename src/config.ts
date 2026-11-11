@@ -185,6 +185,8 @@ export type Product = {
    * e.g. { "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 60 } }.
    */
   tuning?: Record<string, { max?: number; min?: number }>;
+  /** Story files the story-map check reads (relative to the repo, `*` in a file name allowed); default: beats.json, story/*.json, TheFinalSpark/Decision tree.txt (src/storymap.ts). */
+  storyMap?: string[];
   /**
    * Whether it has a 3D world the player moves through: the rubric's camera and controls checks apply only then. Unset:
    * Unity games, and any game whose playtest saw a camera or player move (quality.ts hasWorld3d). "none" for a site or

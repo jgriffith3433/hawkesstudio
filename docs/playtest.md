@@ -364,6 +364,39 @@ for loudness:
 The quality gate's `sound-design` rule holds them (`docs/quality.md`). One finding per broken limit names the action or
 sample and its time. A short timeline summary goes into `playtest.review` (`audio` param) and the critic's sound axis.
 
+## Story kit
+
+Story arrives through play: voiced barks that react to what the player did, short skippable in-engine cutscenes and real
+choices, driven by data and **counted by Studio** (`clients/web/hawkes-story.js`, Unity `HawkesStory` in `com.hawkes.playtest`
+0.5.0; skill `story-through-play`). Beats are data (`beats.json`: `barks`, `cutscenes`, `pages`; the header of
+`hawkes-story.js` has the shape). **Barks** carry requirements (facts, `seen`/`notSeen`, `any`/`not`), a priority, a cooldown
+(never under 300 s) and memory (what was said and when; `once`): of the eligible barks the highest priority wins, ties go to the
+least recently said, and the same bark never plays twice inside 5 minutes. **Cutscenes** voice each line through the sound kit
+(music ducks at least 6 dB), caption it inside the safe area (`env(safe-area-inset-*)`, Unity `Screen.safeArea`) and always have a
+Skip button of at least 44 x 44 px, one tap at 390x844.
+
+**What the probe reads** (pushed through `window.__hawkesPlaytestPush`, never polled): `story-kit` (the kit is in use),
+`story-beat` `{id, kind: bark|cutscene|choice, voiced, acted, captioned, textOnly, t}`, `story-cutscene` `{id, state:
+start|caption|skip|end, via, skipRect, captionRect, safe, viewport}`, `story-choice`, `story-activity` (`story.activity('door')`).
+A beat is **textOnly** when it shows words with no voice line and no acted scene.
+
+**Studio** (`src/story.ts`, run in `pipeline.ts` with the audio layer) turns them into **measured** metrics, replacing what a
+game used to self-report: `quality.textOnlyBeats` (beats told only in text; limit 0) and `quality.maxQuietSeconds` (longest stretch
+with no story beat, activity, sound or input; limit 10), plus `story.beats`, `story.voicedBeats`, `story.barkRepeats5m`,
+`story.cutsceneSkips`, `story.skipTooSmall` and `story.outsideSafeArea`. A game using the kit never reads "unmeasured". One
+finding per text-only beat, bark repeated inside 5 minutes, Skip under 44 px, caption or Skip outside the safe area, and quiet stretch,
+each naming the beat and its time. Scenario `story`: play to a bark, a cutscene and a skip by real input. Test `test/story-kit.test.ts`.
+
+## Story map
+
+The story-map check (`src/storymap.ts`) reads a story's graph on **every run that builds or plays** (`pipeline.ts runProduct`,
+step `story-map`; never on a timer): the kit's `beats.json` (`pages` with `choices`, `timeout`, `ending`), any story JSON with a
+`pages` list, and a plain-text decision tree (`TheFinalSpark/Decision tree.txt`: indent is depth, `END` / `ENDING: name` / `DEATH`
+under a page marks it an ending, `[timeout] page` is what a run-out clock does, `-> page` links back). A product's `storyMap`
+(products.json) lists other files. Per story it reports **endings**, the **share of pages with a real choice** (two or more
+different destinations), **forks that rejoin within one page** and **timeouts that default to a death**; each problem is a finding
+naming its page (timeout to death and dead links are bugs; rejoining forks and choices that all lead to one page are ideas).
+
 ## Sound kit
 
 The drop-in mixer that makes a game pass the sound-design rule (`clients/web/hawkes-sound.js`, Unity `HawkesSound` in
