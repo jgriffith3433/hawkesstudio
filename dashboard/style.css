@@ -292,6 +292,18 @@ body:has(#talk.on) main { padding-bottom: var(--space-3); }
 .talk-msg.streaming { border-style: dashed; }
 .talk-caret { display: inline-block; width: 7px; height: 1em; background: var(--accent); vertical-align: text-bottom; margin-left: 2px; animation: talk-blink 1s steps(2) infinite; }
 @keyframes talk-blink { 50% { opacity: 0; } }
+.talk-msg { min-width: 0; }
+.talk-scroll { max-width: 100%; overflow-x: auto; margin: 6px 0; -webkit-overflow-scrolling: touch; }
+.talk-table { border-collapse: collapse; font-size: var(--text-sm); white-space: nowrap; }
+.talk-table th, .talk-table td { border: 1px solid var(--border); padding: var(--space-1) var(--space-2); text-align: left; }
+.talk-table th { background: var(--surface-raised); }
+.talk-code { position: relative; }
+.talk-code pre { margin: 0; max-height: none; overflow: visible; white-space: pre; padding-right: 64px; }
+.talk-code .talk-copy { position: absolute; top: 6px; right: 6px; z-index: 1; font-size: var(--text-xs); padding: 2px 8px; }
+.talk-video { max-width: min(100%, 480px); border-radius: var(--radius-md); display: block; margin: 6px 0; background: #000; }
+.talk-ref { display: inline-block; max-width: 100%; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 0 var(--space-2); font-size: var(--text-sm); cursor: pointer; color: var(--violet, inherit); }
+.talk-ref:hover, .talk-ref:focus-visible { border-color: var(--violet, var(--border)); }
+.talk-ref.gone { opacity: .6; }
 .talk-msg hr { border: none; border-top: 1px dashed var(--border); margin: 8px 0; }
 .talk-voice { color: var(--text-muted); font-size: var(--text-sm); margin-right: 4px; }
 .talk-via { color: var(--text-muted); font-size: var(--text-sm); }
