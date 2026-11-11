@@ -400,6 +400,14 @@ export async function staleBeta(p: Product): Promise<string | null> {
   return msg;
 }
 
+/** Beta's newest commit as the server's clone knows it, after a sync (null when there's no clone or no beta branch). */
+async function betaTipOf(p: Product): Promise<string | null> {
+  const top = p.repo.split('/')[0];
+  if (!repoMap()[top]) return null;
+  await syncRepo(top, repoMap()[top], BRANCH, BETA).catch(() => {});
+  return shaOf(repoDirs(p).source, `origin/${BETA}`);
+}
+
 export const nameOf = (t: Playtest) => `${t.scenario ?? t.mode ?? 'auto'}@${t.where}${t.device === 'phone' ? ':phone' : ''}`;
 
 /** Runs a product's pre-deploy build on beta and commits it there (beta.ts prepareBeta), then syncs the checkout. */
@@ -653,6 +661,21 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     // not this instance's clone (2026-10-31: Star Skipper's beta playtest said it played main, the starter).
     // Any project whose local playtest plays the published beta site, github or not (2026-11-09: Imagine Live TV said it
     // played the server's beta checkout, but played its published site, which lagged the push).
+    if (t.where === 'local' && !was?.data?.played && !prior && !p.build && !siteBuildPublish(p.builds) && (await cloudBetaUrl(p))) {
+      // The published site must be beta's tip (servedpage.ts ensurePublishedCurrent): behind, it is published again and
+      // that is what's played; still behind, the verdict is stale (step stale + wrongBuild: no findings, no fixers).
+      const previews = await import('./previews.ts');
+      await previews.betaSettled(p.id);
+      const cur = await (await import('./servedpage.ts')).ensurePublishedCurrent({
+        tip: await betaTipOf(p), published: () => previews.betaPreview(p.id)?.sha, republish: async () => { await previews.buildPreview(p.id); },
+      });
+      if (!cur.ok) {
+        console.warn(`[studio] ${p.id} ${name} (${run}): ${cur.why}`);
+        updateStep(s, { status: 'failed', detail: cur.why, data: { stale: true, wrongBuild: true, published: cur.published, tip: cur.tip }, finished: true });
+        return null;
+      }
+      if (cur.republished) updateStep(s, { detail: `the beta site was behind ${BETA}: published again` });
+    }
     if (t.where === 'local' && !was?.data?.played && (p.github || !p.build) && (await cloudBetaUrl(p))) {
       const v = (await import('./previews.ts')).betaPreview(p.id);
       if (v?.sha && v.status === 'ready') played = { branch: BETA, sha: v.sha, title: v.ref };

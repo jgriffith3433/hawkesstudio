@@ -34,3 +34,40 @@ test('checkServedPage reads the page once and never fails on one it cannot read'
   assert.equal(await checkServedPage('https://x/', played, ok(page('0cac1b7'), 'application/json')), null);
   assert.equal(await checkServedPage('https://x/', played, (async () => { throw new Error('down'); }) as typeof fetch), null);
 });
+
+// PH Origins (2026-11-11): the published beta site stayed at #165 while beta had moved to #170; two runs judged it.
+test('a published site behind beta is published again and played; still behind, the verdict is stale', async () => {
+  const { ensurePublishedCurrent } = await import('../src/servedpage.ts');
+  const tip = '3544fa3aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  // Current: nothing to do.
+  let calls = 0;
+  assert.deepEqual(await ensurePublishedCurrent({ tip, published: () => '3544fa3', republish: async () => { calls++; } }), { ok: true, republished: false });
+  assert.equal(calls, 0);
+  // Unknown is never a failure.
+  assert.equal((await ensurePublishedCurrent({ tip: null, published: () => 'a6c1dff', republish: async () => { calls++; } })).ok, true);
+  assert.equal((await ensurePublishedCurrent({ tip, published: () => null, republish: async () => { calls++; } })).ok, true);
+  assert.equal(calls, 0);
+  // Behind, and republishing catches up.
+  let pub = 'a6c1dff';
+  const r = await ensurePublishedCurrent({ tip, published: () => pub, republish: async () => { calls++; pub = '3544fa3'; } });
+  assert.deepEqual(r, { ok: true, republished: true });
+  assert.equal(calls, 1);
+  // Behind, and still behind (or the republish throws): stale, with the sentence that says so.
+  const s = await ensurePublishedCurrent({ tip, published: () => 'a6c1dff', republish: async () => { throw new Error('build failed'); } });
+  assert.equal(s.ok, false);
+  if (!s.ok) { assert.match(s.why, /Stale verdict/); assert.match(s.why, /a6c1dff/); assert.match(s.why, /3544fa3/); assert.equal(s.published, 'a6c1dff'); }
+});
+
+test('a build of an older commit leaves beta\'s newest to be built', async () => {
+  process.env.STUDIO_DATA = (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'studio-catchup-'));
+  const { needsCatchUp } = await import('../src/builds.ts');
+  const base = { change: null, movesBeta: false, newer: false, head: '3544fa3', sha: 'a6c1dff', ref: 'beta', tool: 'npm' };
+  assert.equal(needsCatchUp(base), true);
+  assert.equal(needsCatchUp({ ...base, movesBeta: true }), false);
+  assert.equal(needsCatchUp({ ...base, head: 'a6c1dff' }), false);
+  assert.equal(needsCatchUp({ ...base, head: null }), false);
+  assert.equal(needsCatchUp({ ...base, change: 'c_1' }), false);
+  assert.equal(needsCatchUp({ ...base, ref: 'build-x' }), false);
+  assert.equal(needsCatchUp({ ...base, tool: 'unity' }), false);
+  assert.equal(needsCatchUp({ ...base, newer: true }), false);
+});
