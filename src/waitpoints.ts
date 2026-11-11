@@ -56,9 +56,9 @@ export const WAIT_POINTS: WaitPoint[] = [
   {
     id: 'queue-slot', what: 'A queued agent change waiting for one of the agent slots (or its product\'s line).',
     event: 'A pass landing, a status that frees a slot or leaves the line, memory or disk let go, a provider\'s hold lifting (agents.ts pump).',
-    deadline: '3 h in the queue', env: 'STUDIO_QUEUE_SLOT_MAX_MS', maxMs: 3 * H,
-    fallback: 'The change takes one overflow slot beside the full ones (never beside a change that collides with it; memory and disk gates still apply).',
-    fallbackKind: 'run-elsewhere', file: 'src/agents.ts', symbols: ['pumpPass', 'pickQueued', 'noRoomFor'], test: 'test/wait-points.test.ts', via: 'waits',
+    deadline: 'the slot holder\'s own: an agent pass with no sign of life past its step\'s stall limit (90 min) is taken over by the stuck check', env: 'STUDIO_STALL_MS', maxMs: 90 * MIN,
+    fallback: 'None of its own: full slots are agents working, not a stall. A slot whose pass hung or died is freed by the stuck check (checkStuck), and the next queued change starts. The number of slots is the owner\'s setting; Studio never goes past it.',
+    fallbackKind: 'carry-on', file: 'src/agents.ts', symbols: ['pumpPass', 'pickQueued', 'noRoomFor', 'checkStuck'], test: 'test/stuckwatch.test.ts', via: 'own',
   },
   {
     id: 'checkout-turn', what: 'A change\'s git checkout waiting for its turn (one at a time: they freeze Studio together).',

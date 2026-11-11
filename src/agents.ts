@@ -115,8 +115,7 @@ import { refreshFromTask } from './queue-follow.ts';
 import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './inflight.ts';
 import { noteRail, betaPart } from './change-rail.ts';
 import { noteTiming, timingOf } from './change-timing.ts';
-import { beginWait, endWait, endWaitsWhere, forgetWait, forgetWaitsWhere, lateWait, within, onDeadline, waitOverdue } from './waits.ts';
-import { deadlineOf } from './waitpoints.ts';
+import { beginWait, endWait, endWaitsWhere, within, onDeadline } from './waits.ts';
 import { noCommitOutcome, passState } from './outcomes.ts';
 
 db.exec(`
@@ -2457,8 +2456,6 @@ function freeHarness(): Harness | null {
  * bursts; each pass reads every queued change, so passes must never pile up (2026-11-10: a 224 s event-loop block).
  */
 let pumping: Promise<void> | null = null;
-/** Changes that may start beside the full slots once their wait in the queue passed its deadline (queue-slot). */
-const OVERFLOW_SLOTS = 1;
 const PUMP_RETRY_MS = () => Number(process.env.STUDIO_PUMP_RETRY_MS) > 0 ? Number(process.env.STUDIO_PUMP_RETRY_MS) : 60_000;
 /** Tests: a pass in place of the real one. */
 export const pumpHooks: { pass?: () => Promise<void> } = {};
@@ -2534,8 +2531,6 @@ async function pumpPass() {
   // A change checks its task as it is about to start (queue-follow.ts): a rewritten task gives it the new request, a gone
   // one closes it.
   const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce) && refreshFromTask(c.id) && duplicateHold(c.id));
-  // The waits of changes that left the queue (started, closed) end here; the ones in it are recorded below (waits.ts).
-  forgetWaitsWhere('queue-slot', (id) => getChange(id)?.status !== 'queued');
   // Each change's shape (its task, earlier changes and files: git) once per pass, however many candidates it sits beside.
   const shapes = new Map<string, WorkShape>();
   const shape = (c: Change) => shapes.get(c.id) ?? (shapes.set(c.id, shapeOf(c)), shapes.get(c.id)!);
@@ -2571,25 +2566,6 @@ async function pumpPass() {
     const detail = queuedDetail(c.detail ?? '', before, perProductLimit(c.product, s));
     if (detail !== (c.detail ?? '')) update(c.id, { detail });
     ahead.set(c.product, [...before, c.id]);
-  }
-  // queue-slot (waits.ts): a queued change waits for a slot with an end. One that has waited past its deadline takes ONE
-  // overflow slot beside the full ones, still never beside a change it collides with (limit, fit), and the memory and disk
-  // gates below still apply: slow work beats no work, and a full queue can never hold a change for ever.
-  const overflow: string[] = [];
-  if (s.maxConcurrent > 0 && slotHolders() + picks.length - ownPicks.length >= s.maxConcurrent && slotHolders() < s.maxConcurrent + OVERFLOW_SLOTS) {
-    const late = queued.filter((c) => !own(c) && !picks.includes(c.id) && (waitOverdue('queue-slot', c.id) || lateWait('queue-slot', c.id)));
-    const lane = (c: Change) => (isVideoTask(c.task) ? `video:${c.id}` : c.product);
-    for (const id of pickQueued(late.map((c) => ({ id: c.id, product: lane(c) })), [...busy, ...picks.map((x) => lane(getChange(x)!))], OVERFLOW_SLOTS - Math.max(0, slotHolders() - s.maxConcurrent), { limit, fit })) {
-      picks.push(id);
-      overflow.push(id);
-      forgetWait('queue-slot', id);
-      addLog(id, `waited past ${Math.round(deadlineOf('queue-slot') / 3600_000 * 10) / 10} h in the queue: it takes one overflow slot beside the full ones`);
-    }
-  }
-  // Every change still queued is waiting for a slot: recorded with when it ends (the idempotent begin keeps its first start).
-  for (const c of queued) {
-    if (picks.includes(c.id)) forgetWait('queue-slot', c.id);
-    else if (!lateWait('queue-slot', c.id)) beginWait('queue-slot', c.id, { waitsOn: String(c.detail ?? 'a free agent slot').slice(0, 200), product: c.product });
   }
   // Memory is the floor under maxConcurrent (memgate.ts): while too little is free, nothing new starts beside running work.
   // With nothing running in this process one always starts, whatever memory reads: refusing then waits for work to end
@@ -5579,7 +5555,6 @@ onHoldLifted(() => void pump());
 cpuWaits.begin = (tag, waitsOn, since, deadlineMs) => void beginWait('cpu-turn', tag, { waitsOn, since, deadlineMs });
 cpuWaits.end = (tag, how) => void endWait('cpu-turn', tag, how);
 // The fallbacks of the waits recorded here (waits.ts): a deadline passing wakes the part that carries on in its lesser way.
-onDeadline('queue-slot', () => void pump()); // the pass gives the overdue change its overflow slot
 onDeadline('harness-cap', () => void pump()); // the hour is up: the change goes again
 onDeadline('gen-wait', () => void pollGenWaits({ force: true })); // the jobs still unfinished are timed out, the agent goes on
 // No interval re-runs the queue (J, 2026-11-11: no watchdog, the parts catch themselves). Every wait has its own exit:

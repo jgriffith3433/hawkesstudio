@@ -37,11 +37,11 @@ A new gate gets an entry in `src/waitpoints.ts` and a section here, or `test/sta
 A queued agent change waiting for one of the agent slots (or its product's line).
 
 - **Waits on (event):** A pass landing, a status that frees a slot or leaves the line, memory or disk let go, a provider's hold lifting (agents.ts pump).
-- **Deadline:** 3 h in the queue (`STUDIO_QUEUE_SLOT_MAX_MS`; never more than 3 h)
-- **Fallback:** The change takes one overflow slot beside the full ones (never beside a change that collides with it; memory and disk gates still apply).
-- **Where:** `src/agents.ts` (`pumpPass`, `pickQueued`, `noRoomFor`)
-- **Test:** `test/wait-points.test.ts`
-- **Kind:** recorded in the `waits` table (durable, armed again at start-up)
+- **Deadline:** the slot holder's own: an agent pass with no sign of life past its step's stall limit (90 min) is taken over by the stuck check (`STUDIO_STALL_MS`; never more than 1.5 h)
+- **Fallback:** None of its own: full slots are agents working, not a stall. A slot whose pass hung or died is freed by the stuck check (checkStuck), and the next queued change starts. The number of slots is the owner's setting; Studio never goes past it.
+- **Where:** `src/agents.ts` (`pumpPass`, `pickQueued`, `noRoomFor`, `checkStuck`)
+- **Test:** `test/stuckwatch.test.ts`
+- **Kind:** keeps its own deadline (below); listed so no gate goes unnamed
 
 ### `checkout-turn`
 
