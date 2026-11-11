@@ -222,10 +222,49 @@ test("self-fill (J's own Studio, walk-away): with 17 idle products a task is pla
   pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 5 * 60_000);
   pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 6 * 60_000);
   assert.equal(ranked.length, count, 'no loop of scouts that found nothing');
-  pace.idleWatch({ free: 6, started: 1 }, deps, t1 + 7 * 60_000); // the slots were busy
+  pace.idleWatch({ free: 0, started: 1 }, deps, t1 + 7 * 60_000); // every slot busy
   pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 8 * 60_000);
   pace.idleWatch({ free: 6, started: 0 }, deps, t1 + 14 * 60_000);
   assert.equal(ranked.length, count + 1, 'and again after the slots have been busy');
+  // One agent busy for an hour and 5 free slots never "go busy": the scout that found nothing is tried again by its own deadline.
+  for (const [id, s] of scouts) if (s.status === 'running') scouts.set(id, { ...s, status: 'failed', report: null, detail: 'no report' });
+  const c2 = ranked.length;
+  pace.idleWatch({ free: 5, started: 0 }, deps, t1 + 20 * 60_000);
+  assert.equal(ranked.length, c2, 'not at once');
+  pace.idleWatch({ free: 5, started: 0 }, deps, t1 + 60 * 60_000);
+  assert.equal(ranked.length, c2 + 1, 'an hour on: scouted again though one slot stayed busy the whole time');
+});
+
+test('free slots are the trigger: 1 slot busy for an hour, 5 free, empty roadmap: scouts start within 5 minutes and a task is planned from the first report; scouts from before a deploy count again', () => {
+  const now0 = Date.now() + 30 * 86_400_000;
+  const scouts = new Map<string, { status: string; report: string | null; detail: string | null }>();
+  const planned: string[] = [];
+  const started: string[] = [];
+  let n = 0;
+  const deps = (boot?: number) => ({
+    idleProducts: () => ['fcA', 'fcB'],
+    startScout: (product: string) => { const id = `x_fc${++n}`; scouts.set(id, { status: 'running', report: null, detail: null }); started.push(product); return { id }; },
+    getScout: (id: string) => scouts.get(id) ?? null,
+    askJ: () => ({ id: 'q' }), log: () => {}, selfFills: () => true, bootedAt: boot,
+    addProposal: (product: string) => { planned.push(product); },
+  });
+  const d = deps();
+  pace.idleWatch({ free: 0, started: 1 }, d, now0 - 1); // clears the earlier state
+  // the PM starts nothing and one agent holds one slot of six, tick after tick, with 5 free
+  assert.equal(pace.idleWatch({ free: 5, started: 0 }, d, now0), 'waiting');
+  assert.equal(pace.idleWatch({ free: 5, started: 0 }, d, now0 + 5 * 60_000), 'scouting');
+  assert.equal(started.length, 2);
+  scouts.set('x_fc1', { status: 'done', report: '## Proposed roadmap item\n- Title: A', detail: null });
+  pace.idleWatch({ free: 5, started: 0 }, d, now0 + 6 * 60_000);
+  assert.equal(planned.length, 1, 'a task is planned from the first report');
+  // A start that left free slots over doesn't reset the clock either.
+  assert.equal(pace.idleWatch({ free: 4, started: 1 }, d, now0 + 7 * 60_000), 'scouting');
+  // Scouts of the old path (started before this process, report dropped) are read again.
+  for (const [id, s] of scouts) if (s.status === 'running') scouts.set(id, { ...s, status: 'failed', detail: 'lost' });
+  pace.idleWatch({ free: 5, started: 0 }, d, now0 + 8 * 60_000);
+  const before = started.length;
+  pace.idleWatch({ free: 5, started: 0 }, deps(now0 + 9 * 60_000), now0 + 10 * 60_000);
+  assert.ok(started.length > before, 'a scout from before the deploy is eligible again');
 });
 
 test("the idle products are those with no planned or running work; the idle question is J's alone to answer", async () => {

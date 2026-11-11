@@ -17,9 +17,12 @@
  * - cancelled: someone or something cancelled the build (cancel.ts): not a failure, not a build.
  * - superseded: a newer run took it over: the newer one's build counts.
  * - waiting: the run is still going or queued (Gen's builder queue, CPU room): neither built nor failed yet.
+ * - builder-lost: the build server lost or stalled it (Studio cancelled it for its own timeout, Hawkes Gen lost the job): says
+ *   nothing about the change; the same commit is built again and nothing is sent back (J, 2026-11-11: Place Department beta
+ *   0951995 "timed out after 92 min of building", median 3.3 min, was read as the art change breaking it).
  * - unread: a status this reading doesn't know: looked at again, never counted as built or failed.
  */
-export const BUILD_OUTCOMES = ['built', 'failed', 'unproven', 'held', 'cancelled', 'superseded', 'waiting', 'unread'] as const;
+export const BUILD_OUTCOMES = ['built', 'failed', 'unproven', 'held', 'cancelled', 'superseded', 'waiting', 'builder-lost', 'unread'] as const;
 export type BuildOutcome = (typeof BUILD_OUTCOMES)[number];
 
 export type BuildFacts = {
@@ -32,14 +35,21 @@ export type BuildFacts = {
   held?: boolean;
   cancelled?: boolean;
   superseded?: boolean;
+  /** A failed build step whose own words say the build server timed out, was cancelled by Studio for it, or lost the job (`isBuilderLoss`). */
+  builderLost?: boolean;
   /** betabuild.ts buildProof: whether the commit built includes the task's merge (Unity projects Studio builds). */
   proof?: { ok: boolean } | null;
 };
+
+/** Whether a failed build step's detail says the build SERVER failed, not the project (timeout, Studio's stuck cancel, a lost Gen job). */
+export const isBuilderLoss = (detail: string | null | undefined): boolean =>
+  /timed out after \d+ ?min|stuck in Hawkes Gen|cancelled by Studio|Studio stopped waiting|stopped: .*Gen job|lost this build|job (was )?lost/i.test(String(detail ?? ''));
 
 export function buildOutcome(f: BuildFacts): BuildOutcome {
   if (f.cancelled) return 'cancelled';
   if (f.held) return 'held';
   if (f.superseded || f.runStatus === 'skipped') return 'superseded';
+  if (f.builderLost) return 'builder-lost';
   if (f.proof && !f.proof.ok) return 'unproven';
   if (f.runStatus === 'running' || f.runStatus === 'queued') return 'waiting';
   if (f.failedBuildSteps > 0) return 'failed';

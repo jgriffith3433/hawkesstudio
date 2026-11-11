@@ -29,7 +29,7 @@ import { isVideoTask } from './videos.ts';
 import { unityBuildOf, buildProof, builtBy, buildFailedIn, includesMerge, missingScenarioSkips } from './betabuild.ts';
 import { heldBuildRun, milestoneBuildDue, unityBuildGate } from './unitybuild-policy.ts';
 import { beginWait, endWait, forgetWait, lateWait, onDeadline, waitOf, waitOverdue } from './waits.ts';
-import { buildOutcome, playOutcome, PLAYED_NOTHING } from './outcomes.ts';
+import { buildOutcome, isBuilderLoss, playOutcome, PLAYED_NOTHING } from './outcomes.ts';
 import * as MB from './milestone-batch.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
@@ -606,12 +606,13 @@ export function buildOf(product: string, r: { id: string; status: string; detail
   // Failed only in its playtest (a milestone's check): built. Failed with no failed step (the run itself threw): not.
   const steps = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(r.id) as any).n as number;
   // One reading of the run (outcomes.ts): a fixed set, so nothing defaults to "built nothing" or to a failure it didn't have.
-  const outcome = buildOutcome({ runStatus: r.status, failedBuildSteps: failed.length, failedSteps: steps, proof, held: heldRun(r.id) || Boolean(heldBuildRun(r.id, product)), cancelled: buildCancelled(r.id, product) });
+  const builderLost = failed.length > 0 && failed.every((x) => x.kind === 'build' && isBuilderLoss(x.detail));
+  const outcome = buildOutcome({ builderLost, runStatus: r.status, failedBuildSteps: failed.length, failedSteps: steps, proof, held: heldRun(r.id) || Boolean(heldBuildRun(r.id, product)), cancelled: buildCancelled(r.id, product) });
   const at = r.finished ?? Date.now();
   // A Unity project Studio builds from GitHub: only a run that built a commit with the task's merge counts (betabuild.ts).
   if (outcome === 'unproven') return { ok: false, unproven: true, run: r.id, at, unity, detail: `not built by beta run ${r.id}: ${proof?.why}`.slice(0, 1200) };
   // Held, cancelled, superseded, still going or unreadable: no build and no failure (nothing is blamed on the task).
-  if (outcome !== 'built' && outcome !== 'failed') return { ok: false, unproven: true, run: r.id, at, unity, detail: `not built by beta run ${r.id}: the run is ${outcome} (${String(r.detail ?? r.status).slice(0, 200)})`.slice(0, 1200) };
+  if (outcome !== 'built' && outcome !== 'failed') return { ok: false, unproven: true, ...(outcome === 'builder-lost' ? { builderLost: true } : {}), run: r.id, at, unity, detail: `not built by beta run ${r.id}: the run is ${outcome === 'builder-lost' ? 'lost by the build server (timed out or cancelled by Studio): the same commit is built again, nothing is sent back' : outcome} (${String(r.detail ?? r.status).slice(0, 200)})`.slice(0, 1200) };
   const ok = outcome === 'built';
   const why = failed.map((x) => `${x.kind} ${x.name}: ${String(x.detail ?? '').slice(0, 400)}`).join('; ') || String(r.detail ?? 'the beta run failed');
   return { ok, run: r.id, at, unity, detail: ok ? `built OK${unity ? ' (the Unity build compiled)' : ''} in beta run ${r.id}` : `beta's build failed (run ${r.id}): ${why}`.slice(0, 1200) };
@@ -624,7 +625,7 @@ export function buildOf(product: string, r: { id: string; status: string; detail
  */
 export function buildToRead(b: TaskBuild | null | undefined, run: string, product: string): boolean {
   if (b?.run !== run) return true;
-  return Boolean(b.unproven && buildFailedIn(run, product));
+  return Boolean(b.unproven && buildFailedIn(run, product) && !b.builderLost);
 }
 
 /** How long after a merge the PM waits for a beta run to build it before it starts beta's own build (beta-build). */
@@ -3364,19 +3365,31 @@ export async function tick() {
 }
 
 /** Products with no planned or running work: no roadmap task to do, no change in flight, no open bug or report. */
-export function idleProducts() {
+export function idleProducts(o: { selfFill?: boolean } = {}) {
   const busyStatuses = ['planned', 'working', 'needs answer', 'review'];
   return loadProducts().filter((p) => !managedElsewhereId(p.id)).map((p) => p.id).filter((id) => !isInfra(id)
     && !db.prepare(`SELECT 1 FROM tasks WHERE product = ? AND status IN (${busyStatuses.map(() => '?').join(',')}) LIMIT 1`).get(id, ...busyStatuses)
     && !db.prepare(`SELECT 1 FROM changes WHERE product = ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(id, ...LIVE)
-    && !db.prepare(`SELECT 1 FROM findings WHERE product = ? AND status = 'open' AND severity IN ('blocker', 'bug') LIMIT 1`).get(id));
+    // Where Studio fills the roadmap itself, open bugs nobody is working on don't make a product busy: free slots are the trigger.
+    && (o.selfFill || !db.prepare(`SELECT 1 FROM findings WHERE product = ? AND status = 'open' AND severity IN ('blocker', 'bug') LIMIT 1`).get(id))
+    // (a product whose open milestone has no tasks at all is work to plan: see milestonesToPlan)
+  ).concat(o.selfFill ? milestonesToPlan() : []).filter((id, i, a) => a.indexOf(id) === i);
+}
+
+/** Products with an open milestone that has no tasks at all (J, 2026-11-11: 7 such milestones sat empty): planning them is work, even with a change in flight. */
+export function milestonesToPlan(): string[] {
+  const rows = db.prepare(`SELECT DISTINCT m.product AS product FROM milestones m WHERE m.status = 'open' AND m.product IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM items i JOIN tasks t ON t.item = i.id WHERE i.milestone = m.id AND i.status != 'dropped' AND t.status != 'dropped')`).all() as { product: string }[];
+  const known = new Set(loadProducts().filter((p) => !managedElsewhereId(p.id) && !isInfra(p.id)).map((p) => p.id));
+  return rows.map((r) => r.product).filter((id) => known.has(id));
 }
 
 /** How likely an idle product is to matter: products with open milestones first, then the most recent work on it. */
 function idleRank(product: string) {
   const open = (db.prepare(`SELECT COUNT(*) AS n FROM milestones WHERE product = ? AND status = 'open'`).get(product) as any)?.n ?? 0;
   const recent = (db.prepare('SELECT MAX(COALESCE(updated, created)) AS t FROM tasks WHERE product = ?').get(product) as any)?.t ?? 0;
-  return open * 1e14 + recent;
+  // An open milestone with no tasks is the likeliest work to plan; then open milestones; then the most recent work.
+  return (milestonesToPlan().includes(product) ? 1e16 : 0) + open * 1e14 + recent;
 }
 
 /** One pace sample, and the idle-slot watch (pace.ts). startedNow: what this tick's startWork started. */
@@ -3388,7 +3401,7 @@ async function pace(startedNow: number, deps: Partial<IdleDepsLike> = {}) {
   samplePace({ freeSlots: Math.max(0, s.maxConcurrent - cap.active), parked });
   const { startScout, getScout } = await import('./scout.ts');
   return idleWatch({ free: agentSettings().enabled ? cap.free : 0, started: startedNow }, {
-    idleProducts, name,
+    idleProducts: () => idleProducts({ selfFill: idleWorkIsStudios() }), name,
     startScout: (product, question) => startScout(product, question, null, { quiet: true }),
     getScout,
     askJ: (text, o) => askJ(text, o),
