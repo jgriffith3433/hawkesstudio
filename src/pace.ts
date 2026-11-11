@@ -12,6 +12,7 @@
 // - "Where the time goes" (whereTimeGoes, in studio_pm status): today's median agent time, merge-to-verified, build and
 //   playtest time, time parked on Gen/GPU and idle slot-hours (the last two sampled by the PM's tick: samplePace).
 
+import { beginWait, endWait, onDeadline } from './waits.ts';
 import { db, J, parse } from './db.ts';
 import type { Check } from './roadmap.ts';
 
@@ -187,12 +188,18 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
   const st = readIdle();
   if (free <= 0 || started > 0) {
     if (st.since !== null) saveIdle({ ...st, since: null });
+    endWait('idle-roadmap', 'idle-slots', 'event');
+    endWait('idle-roadmap', 'scouts', 'event');
     return 'busy';
   }
+  // Idle slots with nothing planned are a wait of the shared rule (waits.ts, point idle-roadmap): recorded with the
+  // deadline (IDLE_MS), so the PM looks again when it passes even if nothing else wakes it, after a restart too.
   if (st.since === null) {
     saveIdle({ ...st, since: now });
+    beginWait('idle-roadmap', 'idle-slots', { waitsOn: 'a task or item being planned', deadlineAt: now + IDLE_MS(), since: now, renew: true });
     return 'waiting';
   }
+  beginWait('idle-roadmap', 'idle-slots', { waitsOn: 'a task or item being planned', deadlineAt: st.since + IDLE_MS(), since: st.since });
   if (now - st.since < IDLE_MS()) return 'waiting';
   const idle = deps.idleProducts();
   if (!idle.length) return 'nothing idle';
@@ -211,7 +218,10 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
   saveIdle(st);
   const first = Math.min(...Object.values(st.scouts).map((x) => x.at), now);
   const pending = idle.filter((p) => !st.scouts[p] || deps.getScout(st.scouts[p].id)?.status === 'running');
+  // The scouts get SCOUT_WAIT_MS to report, then the proposals go on with what's in (a wait with an end, same rule).
+  if (pending.length) beginWait('idle-roadmap', 'scouts', { waitsOn: `the scouts of ${pending.join(', ')} reporting`, deadlineAt: first + SCOUT_WAIT_MS, since: first });
   if (pending.length && now - first < SCOUT_WAIT_MS) return 'scouting';
+  endWait('idle-roadmap', 'scouts', now - first >= SCOUT_WAIT_MS ? 'deadline' : 'event');
   const lines = idle.map((p) => {
     const sc = st.scouts[p] ? deps.getScout(st.scouts[p].id) : null;
     const prop = proposalOf(sc?.report);
@@ -226,3 +236,6 @@ export function idleWatch({ free, started }: { free: number; started: number }, 
   saveIdle({ since: st.since, scouts: {}, asked: now, askedFor: [...new Set([...(st.asked && now - st.asked < REASK_MS ? st.askedFor : []), ...idle])], question: q.id });
   return 'asked';
 }
+
+// At the deadline the PM's next pass reads the idle slots again and carries on (scouts, then the roadmap fills itself).
+onDeadline('idle-roadmap', async () => { try { (await import('./pm.ts')).kick(0); } catch { /* no PM here */ } });

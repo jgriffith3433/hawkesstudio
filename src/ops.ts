@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { db, newId, J, parse } from './db.ts';
 import { startProfiler, captureBlock, describe, profiling, type BlockCause } from './loopprof.ts';
+import { beginWait, endWait, onDeadline } from './waits.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS ops (
@@ -186,6 +187,7 @@ export async function pump() {
 async function runOp(id: string) {
   clearTimeout(retryTimers.get(id));
   retryTimers.delete(id);
+  endWait('ops-wait', id, 'event');
   const op = getOp(id)!;
   const run = handlers.get(op.kind);
   const ctx: Ctx = {
@@ -209,6 +211,9 @@ async function runOp(id: string) {
       // attempts counts restarts mid-run (resumeOps): a wait isn't one.
       db.prepare(`UPDATE ops SET status = 'waiting', step = ?, wait = ?, attempts = 0, heartbeat = ? WHERE id = ?`).run(e.why.slice(0, 300), J(wait), Date.now(), id);
       append(id, `waiting: ${e.why.slice(0, 300)}`);
+      // A wait of the shared rule (waits.ts, point ops-wait): on a run's end it is woken (wakeOps); the deadline wakes it
+      // anyway, so a run that never ends (or an event nobody sent) can't park an operation for ever.
+      beginWait('ops-wait', id, { waitsOn: e.on ? `run ${e.on} ending (${e.why.slice(0, 120)})` : e.why.slice(0, 160), product: op.product, renew: true });
       return;
     }
     const before = getOp(id)?.wait;
@@ -221,6 +226,7 @@ async function runOp(id: string) {
       db.prepare(`UPDATE ops SET status = 'waiting', step = ?, wait = ?, attempts = 0, heartbeat = ? WHERE id = ?`).run(why.slice(0, 300), J(wait), Date.now(), id);
       append(id, `waiting: ${why}`);
       wakeAt(id, due);
+      beginWait('ops-wait', id, { waitsOn: `its retry (${cause})`, deadlineAt: due, product: op.product, renew: true });
       return;
     }
     db.prepare(`UPDATE ops SET status = 'failed', error = ?, finished = ? WHERE id = ?`).run(String(e?.message ?? e).slice(0, 2000), Date.now(), id);
@@ -250,11 +256,18 @@ export function wakeOps({ kind, product, run }: { kind?: string; product?: strin
     .filter((r) => (!kind || r.kind === kind) && (!product || r.product === product) && (!run || !r.wait || [run, null].includes((parse(r.wait) as any)?.on ?? null)));
   for (const r of rows) {
     db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ? AND status = 'waiting'`).run(r.id);
+    endWait('ops-wait', r.id, 'event');
     append(r.id, `woken${run ? ` (run ${run} ended)` : ''}: looking again`);
   }
   if (rows.length) setImmediate(() => void pump());
   return rows.length;
 }
+
+/** The deadline of an operation's wait (waits.ts): it runs again from the top and says why it still can't finish. */
+onDeadline('ops-wait', (w) => {
+  const r = db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ? AND status = 'waiting'`).run(w.subject);
+  if (r.changes) { append(w.subject, `waited ${Math.round((Date.now() - w.started) / 60_000)} min for ${w.waits_on}: running again from the top`); void pump(); }
+});
 
 /**
  * After a restart: running operations go back in the queue (handlers are idempotent), up to MAX_ATTEMPTS. Waiting ones
