@@ -49,42 +49,46 @@ test('failures are counted from the log: errors, failed agent jobs and resumes t
   assert.equal(H.failCount(null), 0);
 });
 
-test('a head that failed 3 times is parked: it holds no slot, and the next change of its product starts', async () => {
+// Parking used to leave the change queued until a Studio restart, new code on beta or a resume: on a quiet day, never
+// (2026-11-11, "It starts again by itself after a Studio restart"). It now ends the attempt with its cause, and the
+// shared recovery plans it again from there (pm.ts afterFailed).
+test('a head that failed 3 times is parked: it holds no slot, the next change of its product starts, and it ends with its cause', async () => {
   add('c_head00000001', { log: [...fails(3), '13:00:00 waiting for memory before carrying on (0.7 GB free of 3.8 GB)'] });
   add('c_next00000001');
   const out = look();
-  assert.deepEqual(out.parked, ['c_head00000001']);
-  assert.ok(H.parkedOut(A.getChange('c_head00000001')!));
-  assert.match(String(A.getChange('c_head00000001')!.detail), /^queued: parked: its publish or start failed 3 times/);
+  assert.deepEqual(out.parked, [], 'not left in the queue, parked');
+  const head = A.getChange('c_head00000001')!;
+  assert.equal(head.status, 'failed', 'ended, not left queued until a restart');
+  assert.match(String(head.detail), /^failed: its publish or start failed 3 times \(last: error: push failed: remote hung up \(2\)\)\. Ended so it is planned again with that cause/);
+  assert.equal(A.phaseOf('c_head00000001')?.failed, true, "a failure on Studio's side: the PM doesn't count it as a try");
   assert.deepEqual(picks(), ['c_next00000001'], 'the next change starts, not the one that keeps failing');
   // It doesn't count as a busy slot for the PM's planning either, nor as a queued change that sits stalled.
   db.prepare(`UPDATE changes SET status = 'merged' WHERE id = 'c_next00000001'`).run();
   assert.equal(A.noRoomFor(P, shape), null, 'a parked change takes no slot of its product');
   assert.equal(A.queueHealth().queued, 0);
-  // Not retried until something changes.
-  assert.equal(H.queueHold(A.getChange('c_head00000001')!), 'parked');
   assert.deepEqual(look(), { parked: [], woke: [] });
   // An ops note in the decision log, with an undo.
   await settle();
   const d = listDecisions({ action: 'queue-park' })[0];
-  assert.match(d.detail ?? '', /c_head00000001.*parked/);
+  assert.match(d.detail ?? '', /c_head00000001.*parked.*planned again/);
   assert.deepEqual(d.undo, { kind: 'queue-heal', op: 'park', change: 'c_head00000001' });
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = 'c_head00000001'`).run();
   look();
 });
 
-test('the pump parks a change the moment it reaches 3 failures', () => {
+test('the pump parks a change the moment it reaches 3 failures, and it ends then', () => {
   add('c_pump00000001', { log: fails(3) });
   add('c_pump00000002');
   assert.deepEqual(picks().filter((x) => x.startsWith('c_pump')), ['c_pump00000002']);
-  assert.ok(H.parkedOut(A.getChange('c_pump00000001')!));
+  assert.equal(A.getChange('c_pump00000001')!.status, 'failed');
   for (const id of ['c_pump00000001', 'c_pump00000002']) db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(id);
   look();
 });
 
-test('after a restart it is unparked at the end of its product\'s line, and parked again only after 3 new failures', () => {
-  add('c_old000000001', { log: fails(3) });
-  look();
+test("a park an older Studio left queued wakes after a restart at the end of its product's line", () => {
+  add('c_old000000001', { log: fails(2) });
+  H.legacyPark(A.getChange('c_old000000001')!);
+  assert.ok(H.parkedOut(A.getChange('c_old000000001')!));
   add('c_mid000000001');
   H.setBoot('a-later-studio');
   const woke = look();
@@ -96,19 +100,20 @@ test('after a restart it is unparked at the end of its product\'s line, and park
   db.prepare(`UPDATE changes SET status = 'merged' WHERE id = 'c_mid000000001'`).run();
   // Every change queued before it woke has started: its turn (ahead of what was queued after it woke).
   assert.deepEqual(picks(), ['c_old000000001']);
-  // One more failure is not three.
-  const log = [...fails(3), ...fails(1)];
-  db.prepare('UPDATE changes SET log = ? WHERE id = ?').run(JSON.stringify(log), 'c_old000000001');
+  // One more failure is not three; three new ones end it with its cause.
+  db.prepare('UPDATE changes SET log = ? WHERE id = ?').run(JSON.stringify([...fails(2), ...fails(1)]), 'c_old000000001');
   assert.equal(H.queueHold(A.getChange('c_old000000001')!), null);
-  db.prepare('UPDATE changes SET log = ? WHERE id = ?').run(JSON.stringify([...fails(3), ...fails(3)]), 'c_old000000001');
-  assert.deepEqual(look().parked, ['c_old000000001']);
+  db.prepare('UPDATE changes SET log = ? WHERE id = ?').run(JSON.stringify([...fails(2), ...fails(3)]), 'c_old000000001');
+  assert.equal(H.queueHold(A.getChange('c_old000000001')!), 'parked');
+  assert.equal(A.getChange('c_old000000001')!.status, 'failed');
   for (const id of ['c_old000000001', 'c_new000000001']) db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(id);
   look();
 });
 
-test('new code on beta wakes a parked change', () => {
-  add('c_beta00000001', { log: fails(4) });
-  assert.deepEqual(look().parked, ['c_beta00000001']);
+test('new code on beta wakes a park an older Studio left queued', () => {
+  add('c_beta00000001', { log: fails(1) });
+  H.legacyPark(A.getChange('c_beta00000001')!);
+  assert.ok(H.parkedOut(A.getChange('c_beta00000001')!));
   add('c_landed000001', { status: 'merged', merged_at: Date.now() });
   assert.deepEqual(look().woke, ['c_beta00000001']);
   assert.match(String(A.getChange('c_beta00000001')!.detail), /new code on beta/);

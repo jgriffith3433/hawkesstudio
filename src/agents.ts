@@ -41,6 +41,8 @@ import { unityCheckAsync, unityFixPrompt, issueLines, looksUnity, changedCsFiles
 import { rubricBrief, isGame, qualityGate, failLine } from './quality.ts';
 import { qualityScan, qualityFixPrompt, scanLines, type QualityScan } from './quality-scan.ts';
 import { diskWaits } from './diskwait.ts';
+import { noteDiskBaseline } from './disksweep.ts';
+import { isStudioProject } from './playtest-signin.ts';
 import { funReview } from './fun-review.ts';
 import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
@@ -334,6 +336,17 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   // waits for exactly that, unitybuild-policy.ts), not on its next minute.
   if (patch.status !== undefined && patch.status !== cur?.status && ['merged', 'failed', 'closed', 'cancelled'].includes(String(patch.status))) void import('./pm.ts').then((m) => m.kick()).catch(() => {});
   if (patch.status === 'failed' && cur?.status !== 'failed') reopenTaken(id, (parse(next.findings) ?? []) as string[], String(next.detail ?? ''));
+  // A status that changes what the queue may start wakes it, from wherever it was set (a pass, a cancel, a close, a
+  // merge on GitHub): a change leaving a running status frees its slot and its product's place; one moving to verifying
+  // frees its agent slot (AGENT_SLOT); one leaving the queue (failed, cancelled, closed) is no longer ahead of anything
+  // "behind" it. Only the pump's own starts (queued -> working/revising) don't: that pass already looks again.
+  if (cur && patch.status !== undefined && patch.status !== cur.status && wakesQueue(cur.status, String(patch.status))) void pump();
+}
+
+/** Whether a change moving from one status to another may let a queued change start (update wakes the queue then). */
+export function wakesQueue(from: string, to: string) {
+  if (from === 'queued' && (to === 'working' || to === 'revising')) return false;
+  return ACTIVE.split(',').includes(from) || from === 'queued' || to === 'verifying' || to === 'queued';
 }
 
 /**
@@ -674,6 +687,8 @@ export type Phase = {
   autoRetry?: number;
   /** Queued again to try by itself (endPass): not started before this time; the queue's own timer (pumpAt) wakes it. */
   notBefore?: number;
+  /** Its agent's Cloud Run job never started for want of room, n times in a row (waitForJobRoom); cleared once one runs. */
+  noRoom?: { n: number; at: number };
 };
 
 /**
@@ -1515,7 +1530,7 @@ export function agentMcp(id: string) {
 }
 
 /** An agent pass's end: `stopped` says why it ended before finishing ('time': Studio's time limit; 'turns': its turn limit; 'cut': no result). */
-type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut'; stderr?: string; harness?: Harness; model?: string };
+type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut'; stderr?: string; harness?: Harness; model?: string; noRoom?: string };
 /**
  * How an agent pass runs: as a new process (onStart records it), or reattached to one started before a restart; harness:
  * the provider it runs on (providers.ts), else the harness in use.
@@ -1784,6 +1799,50 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
   return r;
 }
 /** The last "[studio] ..." line a job's stderr has (why Studio gave up on it), without the prefix. */
+/**
+ * The job went because Cloud Run never started it for want of room (cloudjob.ts dropJob: the region's CPU quota is held),
+ * as that line says it, or null. Starting another job at once only adds an execution to the same full place (2026-11-11
+ * 05:06: about 7 passes and a Talk job each started again and again, 12 executions open and none running in us-east4).
+ */
+export function noRoomOf(stderr: string | undefined | null): string | null {
+  const line = lastStudioLine(stderr);
+  return line && /never started .*no room/i.test(line) ? line : null;
+}
+
+/** Times in a row a change's agent job may find no room before the attempt ends with that cause and is planned again. */
+export const JOB_ROOM_TRIES = 3;
+/** How long a change waits in the queue after its job found no room: 15 min, doubling, at most 2 hours. */
+export const jobRoomWaitMs = (n: number) => Math.min(2 * 3600_000, 15 * 60_000 * 2 ** Math.max(0, n - 1));
+
+/**
+ * The change's agent job never started (Cloud Run had no room): the pass doesn't start another job in the same place
+ * on the spot. It goes back to the queue through the one way a pass ends (endPass), holding no slot, no worktree and
+ * no execution (dropJob cancelled it), and starts again only through the queue: so within maxConcurrent (0 means none
+ * start), through the CPU gate (cpuroom.ts) and to the jobs' own place when there is one (jobsproject.ts). After
+ * JOB_ROOM_TRIES in a row it ends failed with that cause, a failure on Studio's side the PM plans again (pm.ts
+ * afterFailed: not a try, Studio's backoff, a fix for Studio itself after a few).
+ */
+async function waitForJobRoom(id: string, ph: Phase, why: string) {
+  const n = (ph.noRoom?.n ?? 0) + 1;
+  const where = await import('./jobsproject.ts').then((J) => { const p = J.startPlace(); return `${p.region}${p.project ? ` (${p.project})` : ''}`; }).catch(() => 'its region');
+  const cause = why.replace(/^\[studio\]\s*/, '').slice(0, 160);
+  const next: Phase = { ...ph, step: 'agent', proc: undefined, noRoom: { n, at: Date.now() } };
+  if (n > JOB_ROOM_TRIES) {
+    return endPass(id, {
+      detail: `failed: Cloud Run had no room for its agent job in ${where} ${n - 1} times in a row (${cause}); planned again with that cause`,
+      phase: { ...next, failed: true, noRoom: undefined },
+      log: `agent: its job found no room in ${where} ${n - 1} times in a row: the attempt ends with that cause (Studio's side, not a try)`,
+    });
+  }
+  const at = Date.now() + jobRoomWaitMs(n);
+  return endPass(id, {
+    detail: `queued: Cloud Run had no room for its agent job in ${where} (${cause}); it starts again through the queue after ${new Date(at).toISOString().slice(11, 16)} UTC (${n} of ${JOB_ROOM_TRIES})`,
+    phase: next,
+    retryAt: at,
+    log: `agent: its job never started (no room in ${where}): back in the queue holding no slot, no new job until ${new Date(at).toISOString().slice(11, 16)} UTC (${n} of ${JOB_ROOM_TRIES})`,
+  });
+}
+
 function lastStudioLine(stderr: string | undefined | null) {
   const l = String(stderr ?? '').split('\n').map((x) => x.trim()).filter((x) => x.startsWith('[studio] ')).pop();
   return l ? l.slice(9, 200) : null;
@@ -1820,12 +1879,17 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
       addLog(id, `agent: reattached to ${ph.proc.rec.unit} after a Studio restart`);
       const r = await runAgent(getChange(id)!, brief, s, env, resume, { ...fresh(), reattach: ph.proc });
       if (!r.lost) return { ...r, harness };
-      addLog(id, `agent: ${ph.proc.rec.unit} is gone with no result (${lastStudioLine(r.stderr) ?? 'the server restarted?'}); starting the pass again`);
       save({ proc: undefined });
+      // Cloud Run had no room to start it: another job now would wait in the same full place (waitForJobRoom).
+      const full = noRoomOf(r.stderr);
+      if (full) return { ...r, harness, noRoom: full };
+      addLog(id, `agent: ${ph.proc.rec.unit} is gone with no result (${lastStudioLine(r.stderr) ?? 'the server restarted?'}); starting the pass again`);
     }
     if (harness !== brainOf(ph)) save({ brain: harness });
     const first = await runAgent(getChange(id)!, brief, s, env, resume, fresh());
     if (!first.lost) return { ...first, harness };
+    const full = noRoomOf(first.stderr);
+    if (full) { save({ proc: undefined }); return { ...first, harness, noRoom: full }; }
     // Its job went with no result (Cloud Run never started it, or it went silent: cloudjob.ts dropJob): once more with a
     // new job, not counted as a try.
     addLog(id, `agent: its job went with no result (${lastStudioLine(first.stderr) ?? 'it never answered'}); starting the pass again`);
@@ -1871,6 +1935,10 @@ function claim(id: string, o: { flight?: boolean } = {}) {
     if (o.flight) dropFlight(id);
     if (passGen(id) === gen) running.delete(id);
     if (flightOf.get(id) === land) flightOf.delete(id);
+    // The slot it held is free: the queue looks again now, whoever started this pass (the pump, an answer, a conflict
+    // pass, a resume), and Studio at rest is measured again once nothing is at work.
+    queueIdle();
+    void pump();
   };
   flightOf.set(id, land);
   return land;
@@ -1878,7 +1946,17 @@ function claim(id: string, o: { flight?: boolean } = {}) {
 /** The changes counted in inFlight: a pass holding memory on this machine now. */
 const flying = new Set<string>();
 function takeFlight(id: string) { if (!flying.has(id)) { flying.add(id); inFlight++; } }
-function dropFlight(id: string) { if (flying.delete(id)) { inFlight--; memFreed(); } }
+function dropFlight(id: string) { if (flying.delete(id)) { inFlight--; memFreed(); void pump(); } }
+
+/**
+ * With no change at work in this process and no checkout under way, what the working files hold is Studio at rest: the
+ * disk budget is that plus a share of the room above it (disksweep.ts diskBudget), so idle Studio never uses up the
+ * room meant for its changes. Measured at start-up (startQueue) and each time the last pass lands.
+ */
+function queueIdle() {
+  if (running.size || checkoutsActive) return;
+  try { noteDiskBaseline(); } catch { /* no disk to read here */ }
+}
 
 /**
  * Runs a pass's agent step. On Cloud Run the agent is a job on another machine (detach.ts 'cloudrun'): while it works,
@@ -1988,11 +2066,32 @@ export function liveChangeOfTask(task: string, except?: string): { id: string; s
 
 /** The statuses of a change that holds one of its product's running slots. */
 const ACTIVE = 'working,verifying,revising';
-/** " behind c_..." when the product's slots are taken by changes running or waiting ahead of a new one; else "". */
+/**
+ * " behind c_..." when the product's slots are taken by changes running or waiting ahead of a new one; else "". A queued
+ * change that is held (parked, waiting for disk room, or not due before a later time) is not ahead of anything: the
+ * pump passes it by, so naming it would say a change waits behind one that holds nothing (2026-11-11: c_00b65fd57cf2
+ * read "behind c_1f94a6c6dcd4", a change that only waited for disk room).
+ */
 function aheadOf(product: string) {
-  const busy = [...listChanges({ status: ACTIVE, product }), ...listChanges({ status: 'queued', product }).filter((c) => !parkedOut(c))];
+  const busy = [...listChanges({ status: ACTIVE, product }), ...listChanges({ status: 'queued', product }).filter((c) => !heldInQueue(c))];
   return busy.length >= perProductLimit(product) ? ` behind ${busy[0].id}` : '';
 }
+/** A queued change the pump passes by for now (and so ahead of nothing): parked, waiting for disk room, or not due yet. */
+function heldInQueue(c: Change) {
+  if (parkedOut(c) || waitsForDisk(c.id)) return true;
+  const ph = phaseOf(c.id);
+  return Boolean(ph?.notBefore && !ph.failed && ph.notBefore > Date.now());
+}
+
+/**
+ * Studio's own work (J, 2026-11-11: a fix to Studio's stuck queue waited in that same queue behind product work):
+ * changes to Hawkes Studio itself, as a product of the beta lane (hawkes-studio) or as an infra target (Studio, Gen).
+ * They run in a lane of their own (OWN_LANE_SLOTS), never counted against the products' maxConcurrent and picked first,
+ * so a queue full of product work can never hold up the fix that unblocks it.
+ */
+export const studioOwn = (product: string) => isStudioProject(product) || isInfra(product);
+/** Agent slots of Studio's own lane, beside maxConcurrent (STUDIO_OWN_LANE_SLOTS; 1). */
+export const OWN_LANE_SLOTS = () => Math.max(1, Math.floor(Number(process.env.STUDIO_OWN_LANE_SLOTS) || 1));
 
 /** A queued change's detail with its " behind c_..." brought up to date: the first of `ahead` when they fill its product's slots, else none. */
 export function behindDetail(detail: string, ahead: string[], limit: number) {
@@ -2139,8 +2238,10 @@ const waitsForDisk = (id: string) => diskWait.holds(id);
 function waitForDisk(id: string, why: string) {
   diskWait.hold(id);
   const short = why.replace(/\. Cleared .*$/, '').replace(/^(in-memory|working) disk is full/, 'the disk is full');
+  const by = diskWait.deadline();
+  const until = by ? `, at the latest at ${new Date(by).toISOString().slice(11, 16)} UTC` : '';
   update(id, { status: 'queued', phase: null, detail: `queued: waits for disk room (${short.slice(0, 200)})` });
-  addLog(id, `disk: no room for its worktree (${short.slice(0, 200)}): back in the queue, it starts once work beside it ends or a sweep frees room`);
+  addLog(id, `disk: no room for its worktree (${short.slice(0, 200)}): back in the queue, it looks again once work beside it ends, a worktree is removed or a sweep frees room${until}`);
 }
 
 /** A revision's note, kept until the pump starts its pass (revise). */
@@ -2173,21 +2274,30 @@ export const QUEUE_STALL_MS = () => Number(process.env.STUDIO_QUEUE_STALL_MS) > 
  */
 const AGENT_SLOT = 'working,revising';
 /** Passes in this process that hold an agent slot (a verifying change's pass holds none). */
-function slotHolders() {
+function slotHolders(own = false) {
   let n = 0;
-  for (const id of running) if (getChange(id)?.status !== 'verifying') n++;
+  for (const id of running) {
+    const c = getChange(id);
+    if (c?.status !== 'verifying' && Boolean(c && studioOwn(c.product)) === own) n++;
+  }
   return n;
 }
+/** Changes holding an agent slot of the products' pool (Studio's own lane apart), from the database. */
+const productSlotRows = () => listChanges({ status: AGENT_SLOT, limit: 500 }).filter((c) => !studioOwn(c.product)).length;
 
 /** The queue now, for /api/health, /api/ops and the Resources page: stalled says why when it sits with free slots. */
 export function queueHealth(now = Date.now()) {
   const queued = listChanges({ status: 'queued', limit: 500 }).filter((c) => !parkedOut(c));
   const s = agentSettings();
-  const free = s.maxConcurrent - Math.max(listChanges({ status: AGENT_SLOT, limit: 500 }).length, slotHolders());
-  const oldest = Math.min(...queued.map((c) => c.updated ?? c.created ?? now), now);
+  const free = s.maxConcurrent - Math.max(productSlotRows(), slotHolders());
+  // Studio's own changes wait for their own lane, not the products' free slots: one waiting while its lane is busy
+  // isn't a stall of the products' queue.
+  const ownBusy = slotHolders(true) >= OWN_LANE_SLOTS();
+  const waiting = queued.filter((c) => !(ownBusy && studioOwn(c.product)));
+  const oldest = Math.min(...waiting.map((c) => c.updated ?? c.created ?? now), now);
   const held = deployPending() || noProviderFree();
-  const stalled = s.enabled === false ? null : queueStalled({ queued: queued.length, free, lastStartAt, oldestQueuedAt: oldest, now, memLow: memLow(), held });
-  return { queued: queued.length, free, max: s.maxConcurrent, lastStartAt, idleMin: Math.round((now - lastStartAt) / 60_000), stalled, heldBy: stalled ? queueHeldBy(queued.map((c) => c.detail)) : null };
+  const stalled = s.enabled === false ? null : queueStalled({ queued: waiting.length, free, lastStartAt, oldestQueuedAt: oldest, now, memLow: memLow(), held });
+  return { queued: queued.length, free, max: s.maxConcurrent, lastStartAt, idleMin: Math.round((now - lastStartAt) / 60_000), stalled, heldBy: stalled ? queueHeldBy(queued.map((c) => c.detail)) : null, why: pumpNote, diskWaiting: diskWait.size() };
 }
 
 /** The reasons queued changes give, counted (the first words of their detail): what holds the queue. */
@@ -2201,27 +2311,17 @@ export function queueHeldBy(details: (string | null | undefined)[]): string {
 }
 
 /**
- * The watchdog's look at the queue: when it's stalled, every timed hold (disk waits) is dropped so each change is
- * checked again now, the pump runs, and the reasons go to the log. A hold that is still true holds again on its own;
- * one that was wrong (a gate set below what the machine holds at rest) stops holding work for good.
+ * Whether the queue is stalled, said in the log (health shows the same through queueHealth). It only reports: nothing
+ * here unsticks the queue (J, 2026-11-11: no watchdog or supervisor does the rescuing). Every wait carries its own exit
+ * (the event that ends it, and the disk wait its own deadline: diskwait.ts), so a stall this reports is a bug in a gate
+ * to fix at its root, not something to paper over by dropping holds and pumping.
  */
 export function checkQueue(now = Date.now()): string | null {
-  const queued = listChanges({ status: 'queued', limit: 500 }).filter((c) => !parkedOut(c));
-  const s = agentSettings();
-  const active = listChanges({ status: AGENT_SLOT, limit: 500 }).length;
-  const free = s.maxConcurrent - Math.max(active, slotHolders());
-  const oldest = Math.min(...queued.map((c) => c.updated ?? c.created ?? now), now);
-  const why = queueStalled({ queued: queued.length, free, lastStartAt, oldestQueuedAt: oldest, now, memLow: memLow(), held: deployPending() || noProviderFree() });
+  const q = queueHealth(now);
+  const why = q.stalled;
   if (!why) return null;
-  const reasons = queueHeldBy(queued.map((c) => c.detail));
-  console.warn(`[stuckwatch] queue stalled: ${why}; the pump's last look: ${pumpNote}; held by: ${reasons}; dropping timed holds and starting the queue`);
-  // A drain flag no deploy took away (drain.ts; the deploy that set it died) holds the queue forever: it goes.
-  const stale = clearStaleDeployFlag();
-  if (stale) console.warn(`[stuckwatch] ${stale}`);
-  diskWait.clear();
-  lastStartAt = now;
-  void pump();
-  return `${why}; held by: ${reasons}`;
+  console.warn(`[queue] queue stalled: ${why}; the pump's last look: ${pumpNote}; held by: ${q.heldBy}`);
+  return `${why}; held by: ${q.heldBy}`;
 }
 
 /** The provider new work would go to now, when it isn't held; null when none is free. One look per pump pass. */
@@ -2317,7 +2417,14 @@ async function pumpPass() {
   // A video has a lane of its own (noRoomFor): only the studio-wide cap applies to it.
   const lane = (c: Change) => (isVideoTask(c.task) ? `video:${c.id}` : c.product);
   const busy = [...active.values()].map(lane);
-  const picks = pickQueued(queued.map((c) => ({ id: c.id, product: lane(c) })), busy, s.maxConcurrent - slotHolders(), { limit: (p) => (p.startsWith('video:') ? 1 : perProductLimit(p, s)), fit });
+  const limit = (p: string) => (p.startsWith('video:') ? 1 : perProductLimit(p, s));
+  // Studio's own work has its own lane (studioOwn): its slots aren't the products', and its picks go first, so the memory
+  // gate below keeps them when it lets only one start.
+  const own = (c: Change) => studioOwn(c.product);
+  // Agents paused (maxConcurrent 0) pause Studio's own lane too.
+  const ownFree = s.maxConcurrent > 0 ? OWN_LANE_SLOTS() - slotHolders(true) : 0;
+  const ownPicks = pickQueued(queued.filter(own).map((c) => ({ id: c.id, product: lane(c) })), busy, ownFree, { limit, fit });
+  const picks = [...ownPicks, ...pickQueued(queued.filter((c) => !own(c)).map((c) => ({ id: c.id, product: lane(c) })), busy, s.maxConcurrent - slotHolders(), { limit, fit })];
   // A queued change's " behind c_..." names what it waits for now, not one that finished since (J, 2026-10-18).
   const ahead = new Map<string, string[]>();
   for (const c of [...active.values(), ...picks.map((x) => getChange(x)!)]) ahead.set(c.product, [...(ahead.get(c.product) ?? []), c.id]);
@@ -2329,9 +2436,11 @@ async function pumpPass() {
     ahead.set(c.product, [...before, c.id]);
   }
   // Memory is the floor under maxConcurrent (memgate.ts): while too little is free, nothing new starts beside running work.
+  // With nothing running in this process one always starts, whatever memory reads: refusing then waits for work to end
+  // when none is running (the memory gate's own rule, memRoom).
   const could = picks.length;
   if (picks.length && memLow()) {
-    const room = inFlight > 0 ? 0 : 1;
+    const room = inFlight > 0 && running.size > 0 ? 0 : 1;
     const why = `queued: waits for memory to free up (${memSummary()})`;
     for (const id of picks.splice(room)) { const c = getChange(id); if (c && !String(c.detail ?? '').startsWith('queued: waits for memory')) update(id, { detail: why }); }
   }
@@ -2353,7 +2462,7 @@ async function pumpPass() {
     // After a restart the map is empty: a change still queued for another pass takes its newest note.
     const note = reviseNotes.get(c.id) ?? (c.detail === 'queued for another pass' ? c.notes.at(-1)?.text : undefined);
     reviseNotes.delete(c.id);
-    void work(c.id, back ? undefined : note, undefined, back, Boolean(back)).finally(() => {
+    void runPass(c.id, back ? undefined : note, undefined, back, Boolean(back)).finally(() => {
       land();
       remember(c.id);
       // A pass ending frees what it held: changes waiting for disk room may start now (this wakes the queue too). A
@@ -2564,6 +2673,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
       // Cancelled while it worked (cancelChange stopped it): not a failure, not a try; its branch and worktree stay.
       if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
+      if (r.noRoom) return waitForJobRoom(id, ph, r.noRoom);
       // Its commits go to GitHub now, before anything else can lose them (never throws; publish pushes again for real).
       const cw = getChange(id)!;
       const saved = await saveWork(cw.worktree, cw.branch, cw.base);
@@ -2577,7 +2687,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         return parkForHarness(id, ph, save, stop, r.harness);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, qualityFix: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, qualityFix: false, genDone: undefined, harness: undefined, proc: undefined, noRoom: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -3462,6 +3572,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       if (!ph.proc && ph.harness) addLog(id, `agent carries on after the harness hold (${ph.harness.kind})`);
       const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), forHarness(ph, ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : ph.harness ? harnessResume(getChange(id)!, ph) : undefined));
       if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
+      if (r.noRoom) return waitForJobRoom(id, ph, r.noRoom);
       // Its commits go to GitHub now, before anything else can lose them (never throws; publish pushes again for real).
       const cw = getChange(id)!;
       const saved = await saveWork(cw.worktree, cw.branch, cw.base);
@@ -3474,7 +3585,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         save({}, { cost: getChange(id)!.cost + r.cost });
         return parkForHarness(id, ph, save, stop, r.harness);
       }
-      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, harness: undefined, proc: undefined, noRoom: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -4723,7 +4834,9 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
   try {
     assertWorktreeRoot(c.worktree);
     const { removeChangeDirs } = await import('./disksweep.ts');
-    removeChangeDirs(c.worktree);
+    // Its files gone, room may have freed: changes waiting for disk room look again (diskwait.ts). The sweep below only
+    // tells them about what it clears itself, and this folder is gone before it measures.
+    if (removeChangeDirs(c.worktree) > 0) diskWait.freed(`${id}'s worktree was removed`);
   } catch { /* not under .work, or already gone */ }
   await gitAsync(repoDir, ['worktree', 'prune']).catch(() => {});
   await gitAsync(repoDir, ['branch', '-D', c.branch]).catch(() => {});
@@ -4789,9 +4902,13 @@ export const checkoutLimit = (now = Date.now()) => (now < lowerUntil || memLow()
  * Room for one more worktree beside the checkouts under way now (each counted at WORKTREE_NEED, this one included), or
  * why there is none ("... disk is full ..."). Called inside checkoutSlot, so two checkouts can't both see the same room.
  */
-export async function diskRoomForCheckouts(id: string, active = checkoutsActive): Promise<string | null> {
+export async function diskRoomForCheckouts(id: string, active = checkoutsActive, others = [...running].filter((x) => x !== id).length): Promise<string | null> {
   const d = await import('./disksweep.ts');
-  return d.ensureDiskRoom(d.WORKTREE_NEED * Math.max(1, active), { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) }).then(() => null, (e) => {
+  // No other change at work and no other checkout under way: this one is all the queue can start, and refusing it
+  // would wait for work to end when none runs (2026-11-11: 59 of 72 changes waited that way for hours). Only a write
+  // that can't fit at all refuses it then (disksweep.ts ensureDiskRoom alone).
+  const alone = others === 0 && active <= 1;
+  return d.ensureDiskRoom(d.WORKTREE_NEED * Math.max(1, active), { alone, say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) }).then(() => null, (e) => {
     const m = String(e?.message ?? e);
     if (/(in-memory|working) disk is full/.test(m)) return m;
     throw e;
@@ -5024,9 +5141,15 @@ export function checkStuck(now = Date.now()): StuckAction[] {
   return out;
 }
 
+/** What a pump start runs: a change's pass (work). The tests put a stand-in here to watch the queue on its own. */
+let runPass: typeof work = work;
+
 /** For the tests: a pass's claim, the watchdog's give-up, and code run as a pass of a change. */
 export const passInternals = {
   claim, abandonPass, offMachine, isRunning: (id: string) => running.has(id), inFlight: () => inFlight,
+  setRunPass: (f: typeof work | null) => { runPass = f ?? work; }, running: () => [...running],
+  waitForJobRoom: (id: string, ph: Phase, why: string) => waitForJobRoom(id, ph, why),
+  diskWait: () => diskWait, waitForDisk: (id: string, why: string) => waitForDisk(id, why), checkoutSlot: <T>(fn: () => Promise<T>) => checkoutSlot(fn),
   asPass: <T>(id: string, fn: () => T) => passCtx.run({ id, gen: passGen(id) }, fn),
 };
 
@@ -5204,5 +5327,16 @@ setInterval(() => void pollGenWaits(), genPollMs()).unref();
 setTimeout(() => void pump(), 5000).unref();
 // A hold lifted or a stand-in took over: parked and queued changes start now, not at the next minute.
 onHoldLifted(() => void pump());
-// A safety net for the local queue (no GitHub involved): queued changes never wait on a slot nobody frees.
-setInterval(() => void pump(), 60_000).unref();
+// No interval re-runs the queue (J, 2026-11-11: no watchdog, the parts catch themselves). Every wait has its own exit:
+// a slot or a product's place frees when a pass lands (claim) or a change's status moves (update); memory when a pass
+// lets go of it (dropFlight); disk room when a pass ends, a worktree is removed (cleanup) or a sweep frees room, with the
+// disk wait's own deadline for room freed outside Studio (diskwait.ts); a provider when its hold lifts (onHoldLifted);
+// a deploy drain when its flag goes or reaches its age (drain.ts, pumpPass); a retry or a resume gap at its own time
+// (pumpAt); a customer's plan or AI link when it changes (queuewake.ts); start-up (startQueue). With nothing running,
+// the memory and disk gates always let one change start.
+
+/** Start-up (server.ts, before the resumes): Studio at rest is measured, and the queue looks once. */
+export function startQueue() {
+  queueIdle();
+  return pump();
+}
