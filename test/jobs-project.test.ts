@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { jobCopy, jobsProject, jobsRegion, jobsApart, startInJobsPlace, copyJob, jobsHooks, resetJobsProject } from '../src/jobsproject.ts';
+import { jobCopy, jobsProject, jobsRegion, jobsApart, startInJobsPlace, copyJob, jobsHooks, resetJobsProject, startPlace, startsApart } from '../src/jobsproject.ts';
 import { cellsConfig, cellEnv, withJobsEnv } from '../src/cellrun.ts';
 import { RESERVE_VCPU } from '../src/cpuroom.ts';
 
@@ -133,4 +133,24 @@ test('with the jobs apart, nothing is kept back from their quota for the server'
   await withEnv({ STUDIO_GCP_PROJECT: 'staging', STUDIO_JOBS_PROJECT: 'jobs', STUDIO_CPU_RESERVE: undefined }, () => assert.equal(RESERVE_VCPU(), 0));
   await withEnv({ STUDIO_GCP_PROJECT: 'staging', STUDIO_JOBS_PROJECT: undefined, STUDIO_JOBS_REGION: undefined, STUDIO_CPU_RESERVE: undefined }, () => assert.equal(RESERVE_VCPU(), 0, 'another region by default'));
   await withEnv({ STUDIO_GCP_PROJECT: 'staging', STUDIO_JOBS_PROJECT: undefined, STUDIO_CELLS_JOBS_PROJECT: undefined, STUDIO_JOBS_REGION: 'same', STUDIO_CPU_RESERVE: undefined }, () => assert.equal(RESERVE_VCPU(), 8));
+});
+
+test('while starts fall back beside the server, the CPU gate counts the server\'s region and keeps its reserve (2026-11-11)', async () => {
+  await withEnv({ STUDIO_GCP_PROJECT: 'staging', STUDIO_GCP_REGION: 'us-east4', STUDIO_JOBS_PROJECT: undefined, STUDIO_JOBS_REGION: undefined, STUDIO_CELLS_JOBS_REGION: undefined, STUDIO_CPU_RESERVE: undefined }, async () => {
+    assert.deepEqual(startPlace(), { project: 'staging', region: 'us-west1' });
+    assert.equal(RESERVE_VCPU(), 0, 'apart: nothing kept back');
+    // The jobs' region refuses the copy (on 2026-11-11: MaxRegionsPerProject): the start runs in us-east4.
+    let away = false;
+    jobsHooks.gapi = async (_url: string, o: any = {}) => { if (o.missingOk) return null; if (o.body) throw new Error('Google Cloud answered 429: MaxRegionsPerProject'); return { template: { template: {} } }; };
+    const start = async (p: { project: string; region: string }) => { if (p.region === 'us-west1' && !away) throw new Error('Google Cloud answered 404 for x: not found'); return p.region; };
+    assert.equal(await startInJobsPlace('studio-cell-agent', start), 'us-east4');
+    assert.deepEqual(startPlace(), { project: 'staging', region: 'us-east4' }, 'the gate looks where the starts land');
+    assert.equal(startsApart(), false);
+    assert.equal(RESERVE_VCPU(), 8, 'and keeps the server its share there');
+    // The job is there now: the next start lands away and the gate follows.
+    away = true;
+    assert.equal(await startInJobsPlace('studio-cell-agent', start), 'us-west1');
+    assert.deepEqual(startPlace(), { project: 'staging', region: 'us-west1' });
+    assert.equal(RESERVE_VCPU(), 0);
+  });
 });

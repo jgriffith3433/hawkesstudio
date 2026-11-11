@@ -91,6 +91,17 @@ export async function copyJob(t: { from: Place; to: Place; job: string; fromNumb
   return 'made';
 }
 
+/**
+ * Where starts go now: the jobs' place, or the server's while the jobs can't run there (startInJobsPlace's fallback,
+ * until a start there works again). The CPU gate counts room where starts really land (cpuroom.ts): on 2026-11-11 the
+ * jobs' region refused them, every start ran beside the server, and the gate, looking at the empty jobs' region with
+ * nothing kept back, let them fill us-east4's CPU; Studio's own deploy was then refused for CPU quota.
+ */
+let fellBack = false;
+export const startPlace = (env: NodeJS.ProcessEnv = process.env): Place => (fellBack && jobsApart(env) ? serverPlace(env) : jobsPlace(env));
+/** Starts land apart from the server now (jobsApart, and the jobs' place takes them). */
+export const startsApart = (env: NodeJS.ProcessEnv = process.env) => jobsApart(env) && !fellBack;
+
 const missing = (e: any) => /answered (404|403)|NOT_FOUND|PERMISSION_DENIED|not found/i.test(String(e?.message ?? e));
 let warned = '';
 
@@ -103,20 +114,22 @@ export async function startInJobsPlace<T>(job: string, start: (p: Place) => Prom
   const server = serverPlace();
   if (!jobsApart()) return start(server);
   const to = jobsPlace();
+  const there = async () => { const r = await start(to); fellBack = false; return r; };
   try {
-    return await start(to);
+    return await there();
   } catch (e: any) {
     if (!missing(e)) throw e;
   }
   try {
     await copyJob({ from: server, to, job, fromNumber: process.env.STUDIO_CELLS_PROJECT_NUMBER || process.env.STUDIO_GCP_PROJECT_NUMBER });
-    return await start(to);
+    return await there();
   } catch (e: any) {
     const why = `${job}@${to.project}/${to.region}`;
     if (warned !== why) { warned = why; console.warn(`[jobs] ${job} can't run in ${to.project}/${to.region} yet (${String(e?.message ?? e).slice(0, 300)}); running it in ${server.project}/${server.region}`); }
+    fellBack = true;
     return start(server);
   }
 }
 
 /** Tests. */
-export function resetJobsProject() { warned = ''; delete jobsHooks.gapi; }
+export function resetJobsProject() { warned = ''; fellBack = false; delete jobsHooks.gapi; }

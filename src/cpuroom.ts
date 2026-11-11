@@ -18,7 +18,9 @@
 
 // With the jobs in a region (or project) of their own (jobsproject.ts) they share no quota with the server: nothing to
 // keep back, and the room is that place's quota (STUDIO_JOBS_CPU_QUOTA, else learned), counted over that place's jobs.
-import { jobsApart, jobsPlace } from './jobsproject.ts';
+// While the jobs' place refuses them and they run beside the server (startInJobsPlace), the gate counts the server's
+// region and keeps the reserve there again (startPlace / startsApart).
+import { startsApart as jobsApart, startPlace as jobsPlace } from './jobsproject.ts';
 
 export const RESERVE_VCPU = () => Number(process.env.STUDIO_CPU_RESERVE ?? (jobsApart() ? 0 : 8));
 export const AGENT_JOB_VCPU = () => Number(process.env.STUDIO_AGENT_JOB_CPU ?? 2);
