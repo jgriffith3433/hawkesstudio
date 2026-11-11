@@ -6,6 +6,7 @@
     ['needs', 'Needs you', 'needsList', (x) => `${esc(x.title)}`, 'inbox'],
     ['running', "Running", 'runningList', (x) => esc(x), 'live'],
     ['ready', 'Ready to ship', 'readyList', (x) => esc(x), 'golive'],
+    ['uncaptured', 'Not seen in engine yet', 'uncapturedList', (x) => esc(x), 'changes'],
   ];
   const card = (g) => `<div class="home-card" data-key="home:${esc(g.id)}" data-game="${esc(g.id)}">
     <h3>${esc(g.name)}</h3>

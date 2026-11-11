@@ -813,19 +813,20 @@ body.lt-big-open { overflow: hidden; }
 @media (max-width: 600px) { .bf-badge, .bf-running, .bf-done { padding: var(--space-3) var(--space-2); } .bf-badge .actions button { min-height: 40px; } }
 
 /* Home: per game counts (needs you, running, ready to ship); 390px wide phones get one column */
-.home-totals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 12px; }
+.home-totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0 12px; }
 .home-total { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); text-align: center; }
 .home-total b { display: block; font-size: var(--text-2xl); }
 .home-total span, .home-count span { font-size: var(--text-sm); opacity: .8; }
 .home-games { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
 .home-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); min-width: 0; }
 .home-card h3 { margin: 0 0 8px; overflow-wrap: anywhere; }
-.home-counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.home-counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .home-count { display: block; text-align: center; padding: var(--space-2) var(--space-1); border-radius: var(--radius-sm); background: var(--count-bg); color: inherit; text-decoration: none; min-height: 44px; }
 .home-count .n { display: block; font-size: var(--text-2xl); }
 .home-count.needs.some, .home-total.needs { box-shadow: inset 0 -3px 0 var(--warning); }
 .home-count.running.some, .home-total.running { box-shadow: inset 0 -3px 0 var(--blue); }
 .home-count.ready.some, .home-total.ready { box-shadow: inset 0 -3px 0 var(--accent); }
+.home-count.uncaptured.some, .home-total.uncaptured { box-shadow: inset 0 -3px 0 var(--warning); }
 .home-list ul { margin: 2px 0 6px 18px; padding: var(--space-0); overflow-wrap: anywhere; }
 @media (max-width: 480px) { .home-games { grid-template-columns: 1fr; } .home-total b { font-size: var(--text-2xl); } }
 
