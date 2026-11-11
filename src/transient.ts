@@ -33,7 +33,7 @@ export const hooks: { start: (kind: 'beta' | 'playtest', product: string, spec: 
   start: async (kind, product, spec, origin) => {
     const P = await import('./pipeline.ts');
     if (kind === 'beta') return P.startBeta(product, { ...(spec as any), origin }).id;
-    return P.startPartial('playtest', product, { ...(spec as any), origin }).id;
+    return null; // a one-off playtest isn't played again (play-policy.ts): only a beta run is
   },
 };
 
@@ -131,8 +131,8 @@ async function startAgain(r: any): Promise<string | null> {
     for (const b of options.builds as string[]) id = (await B.startBuild(product, { build: b, ref: options.ref, retry: 3, origin, cause }))?.id ?? id;
     return id;
   }
-  if (r.kind === 'beta') return P.startBeta(product, { focus: options.focus, criteria: options.criteria, scenario: options.scenario, options: options.options, playtest: options.playtest, plays: options.plays, origin, ...(options.cause ? { cause: options.cause } : {}) }).id;
-  if (['build', 'playtest', 'test'].includes(r.kind)) return P.startPartial(r.kind, product, { ...(options as any), origin, resumes: undefined, restarts: undefined, revived: undefined }).id;
+  if (r.kind === 'beta') return P.startBeta(product, { focus: options.focus, criteria: options.criteria, scenario: options.scenario, options: options.options, playtest: options.playtest, plays: options.plays, origin, ...(options.cause ? { cause: options.cause } : {}), ...(options.play ? { play: options.play } : {}) }).id;
+  if (['build', 'test'].includes(r.kind)) return P.startPartial(r.kind, product, { ...(options as any), origin, resumes: undefined, restarts: undefined, revived: undefined }).id;
   return null; // the daily run: tomorrow's covers it
 }
 

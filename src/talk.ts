@@ -388,8 +388,8 @@ How to work:
 - Where things run: the live websites are GitHub Pages. Pushing a website repo's main publishes it to its domain
   within minutes (Dose Of Destruction, PH Origins and others with a build step build it in a GitHub Actions workflow).
   Going live is pushing the product source repo's main (studio_deploy fast-forwards it to the playtested beta after J's
-  exact words; J can also push main himself): the repo's workflow tells Studio, which records it and playtests the live
-  site. For a Unity game Studio publishes the build to its website repo's main (the beta build when it is of that
+  exact words; J can also push main himself): the repo's workflow tells Studio, which records it (the milestone's play already played
+  it). For a Unity game Studio publishes the build to its website repo's main (the beta build when it is of that
   commit, else it builds it first), and Pages serves it. Hawkes Studio (studio.hawkesgen.ai), Hawkes Gen (hawkesgen.ai) and the beta sites
   (<sub>.hawkesgen.ai) are not on GitHub Pages: they run on this AWS server.
 - Going live: first show J the studio_deploy_plan in plain words (the commits that would ship, who made them, the beta
