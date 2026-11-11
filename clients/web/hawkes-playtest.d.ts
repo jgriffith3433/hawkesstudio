@@ -34,6 +34,14 @@ export interface Tracker {
   add(name: string, n?: number): void;
   event(type: string, detail?: unknown): void;
   problem(severity: Severity, message: string): void;
+  /** A first-five-minutes moment, once each, timed from the page opening: what a stranger waited for. */
+  milestone(name: 'gameplay' | 'first-input-accepted' | 'first-success' | `tutorial-step:${string}`, note?: string): void;
+  /** One tap or click needed to get from the first screen to play. */
+  tap(): void;
+  /** A terms, sign-in or menu screen between the stranger and the game, and the seconds it cost. */
+  wall(kind: 'terms' | 'sign-in' | 'menu' | 'loading' | 'ad' | 'other' | (string & {}), label: string, seconds: number): void;
+  /** A developer panel or debug control visible to a player (and its screenshot's asset id). */
+  devUi(what: string, shot?: string): void;
   log(line: string): void;
   finish(outcome?: Outcome): void;
   readonly seed: number;

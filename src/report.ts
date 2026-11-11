@@ -12,6 +12,7 @@ import { regressions } from './playtests.ts';
 import { playersSection } from './players.ts';
 import { planView, planLine } from './runplan.ts';
 import { criticLines } from './critic-view.ts';
+import { ftueLines } from './ftue.ts';
 
 const SEV_ICON: Record<string, string> = { blocker: '🛑', bug: '🐞', polish: '✨', idea: '💡' };
 
@@ -147,6 +148,12 @@ export function reportMarkdown(run: string) {
         const inline = (f.shots ?? []).slice(0, 3).map((a: string, i: number) => `![shot ${i + 1}](${fileUrl(a)})`).join(' ');
         L.push(`- ${SEV_ICON[f.severity] ?? '-'} **${f.title}** (${f.area}). ${f.detail} *Fix:* ${f.fix} ${shots}${inline ? `\n  ${inline}` : ''}`);
       }
+    }
+    // The first five minutes (ftue.ts): per device, seconds to gameplay, input and success, taps, words and the walls met.
+    const five = x.steps.filter((s) => s.kind === 'playtest' && s.data?.ftue).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (five.length) {
+      L.push('', '### First five minutes', '');
+      for (const s of five) L.push(...ftueLines(s.data.ftue, { step: s.id }));
     }
     // The critic's ten scores (critic.ts): a list, not a table, so it reads at 390 px.
     for (const c of x.steps.filter((s) => s.kind === 'critic' && s.status === 'done')) L.push('', '### Critic', '', ...criticLines(c.data));

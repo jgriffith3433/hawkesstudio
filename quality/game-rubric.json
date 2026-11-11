@@ -120,6 +120,26 @@
       ]
     },
     {
+      "id": "first-five-minutes",
+      "title": "A stranger is playing within 20 seconds and succeeds within a minute",
+      "why": "Vampire Survivors fires the first weapon before anything is read, and CrazyGames' bar is 20 seconds to gameplay: a stranger who opens a game cold leaves if the terms, sign-in or menus come first, or if the screen is a wall of words. Developer panels or debug controls on a public page read as an unfinished game.",
+      "build": [
+        "Gameplay within 20 s of the page opening, first input accepted within 30 s, first success (a kill, a score, a solved step) within 60 s, on a desktop and on a 390x844 phone.",
+        "At most 2 taps from the first screen to play: no terms wall, sign-in wall or menu chain before the game; ask for sign-in only when it is needed (to save), after the player has played.",
+        "At most 40 words on screen in the first minute: teach by doing (the first weapon fires on its own, the first obstacle shows the jump), never by paragraphs.",
+        "No developer or debug UI visible on a public page (FPS counters, level pickers, cheat panels, dev menus, 'debug' buttons): ship them behind a flag that is off, never in the live build.",
+        "Report the moments from the game's own bot where you can: t.milestone('gameplay'), t.milestone('first-input-accepted'), t.milestone('first-success'), t.milestone('tutorial-step:<name>') (hawkes-playtest.js, docs/playtest.md#first-five). The built-in first-five scenario plays the live page cold for 5 minutes and measures the same things from what is on screen."
+      ],
+      "checks": [
+        { "id": "first-five-gameplay", "kind": "playtest", "what": "Seconds from opening the public page cold to gameplay: at most 20.", "metric": "ftue.secondsToGameplay", "max": 20, "optional": true },
+        { "id": "first-five-input", "kind": "playtest", "what": "Seconds to the first input the game accepts: at most 30.", "metric": "ftue.secondsToFirstInput", "max": 30, "optional": true },
+        { "id": "first-five-success", "kind": "playtest", "what": "Seconds to the first success: at most 60.", "metric": "ftue.secondsToFirstSuccess", "max": 60, "optional": true },
+        { "id": "first-five-taps", "kind": "playtest", "what": "Taps or clicks from the first screen to play: at most 2.", "metric": "ftue.tapsToPlay", "max": 2, "optional": true },
+        { "id": "first-five-words", "kind": "playtest", "what": "Words on screen in the first minute: at most 40.", "metric": "ftue.wordsMinuteOne", "max": 40, "optional": true },
+        { "id": "first-five-dev-ui", "kind": "playtest", "what": "Developer panels or debug controls visible on the public page. A hard limit: one sighting fails.", "metric": "ftue.devUiVisible", "max": 0, "hard": true, "optional": true, "problem": "quality.first-five-dev-ui" }
+      ]
+    },
+    {
       "id": "sound-design",
       "title": "No silent jump, no clipping mix, no identical sample twice",
       "why": "Celeste and Hades answer every input with a sound within a frame and never repeat the same sample twice; PlayStation's mobile target is -18 LUFS (±2, we allow ±3) with true peak at most -1 dBTP. A silent action, a clipping mix or a looping identical take reads as unfinished.",

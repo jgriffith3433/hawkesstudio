@@ -34,7 +34,8 @@ import { syncRepos, syncRepo, repoMap, betaFolders, isServer, builtFromGitHub, B
 import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria, sweepFor, type Sweep } from './acceptance.ts';
-import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
+import { isFirstFive, enrichFtue, firstFiveParams } from './ftue.ts';
+import { isPhone, runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from './betaqueue.ts';
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
@@ -271,6 +272,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(run) as any).c;
   db.prepare(`UPDATE runs SET status = ?, finished = ?, cost = ? WHERE id = ?`).run(endStatus({ ...runCounts(run), failed: 0 }, runCancelled(run)), Date.now(), cost, run);
   kickFollowups();
+  // The first five minutes (ftue.ts): played when a game's week is up, as a run of their own.
+  if (isServer() && !runCancelled(run)) void import('./ftue.ts').then((m) => m.afterRun(run)).catch(() => {});
   // The critic (critic.ts): when it is due for a game of this run; it adds its step and writes the report again.
   if (isServer() && !runCancelled(run)) await import('./critic.ts').then((m) => m.afterRun(run)).catch(() => {});
   const report = writeReport(run);
@@ -717,7 +720,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     const deps: string[] = [];
     try {
       if (t.where === 'live') {
-        url = p.live;
+        url = t.url ?? p.live;
         // A library whose "live" is its GitHub page has nothing to play there: its beta demo is the product (config.ts saveProduct).
         const demo = isRepoPage(p.live) ? await cloudBetaUrl(p) : null;
         if (demo) url = demo;
@@ -764,11 +767,14 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     }
     // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
     const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(playOptions(t) ? { options: playOptions(t) } : {}) };
+    // The first five minutes (ftue.ts): the public page as a stranger meets it, with nothing set up and nothing signed in.
+    const firstFive = isFirstFive(t.scenario);
+    if (firstFive) Object.assign(params, firstFiveParams(url, isPhone(t) ? 'phone' : 'desktop'));
     if (t.mode === 'site') params.maxPages = 40;
-    if (p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
-    Object.assign(params, playtestExtras(p.id, name, t));
+    if (!firstFive && p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
+    Object.assign(params, firstFive ? (({ baseline }) => (baseline ? { baseline } : {}))(playtestExtras(p.id, name, t) as any) : playtestExtras(p.id, name, t));
     // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
-    if (t.where === 'local' && (p.testSignIn?.url || (await import('./playtest-signin.ts')).isStudioProject(p.id)) && !prior) {
+    if (!firstFive && t.where === 'local' && (p.testSignIn?.url || (await import('./playtest-signin.ts')).isStudioProject(p.id)) && !prior) {
       try {
         const signedIn = await (await import('./playtest-signin.ts')).testSignIn(p);
         params.cookies = [...((params.cookies as unknown[]) ?? []), ...signedIn];
@@ -858,6 +864,8 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   } finally {
     free();
   }
+  // A first-five play: the numbers, the ftue.* metrics and the developer-UI problems go on the result (ftue.ts).
+  if (job.status === 'done' && isFirstFive(t.scenario)) job.result = enrichFtue(job.result ?? {}, t.scenario, isPhone(t) ? 'phone' : 'desktop');
   const r = job.result ?? {};
   const ok = job.status === 'done';
   // Nothing to playtest (J, 2026-11-08): a page that never exposed the playtest hook, with no open finding behind it (a
@@ -877,7 +885,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   updateStep(s, {
     status: ok ? 'done' : 'failed', job: job.id,
     detail: ok ? `${r.outcome} in ${playTime(r.seconds ?? 0)}${at ? ` (from "${at}")` : ''} · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}${slow ? ` · ⚠ ${slow}` : ''}` : `failed: ${job.error ?? job.detail} (opened ${url})`,
-    data: ok ? { ...playtestData(job, url), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
+    data: ok ? { ...playtestData(job, url), ...(r.ftue ? { ftue: r.ftue } : {}), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
     finished: true,
   });
   if (!ok && /^stuck:/.test(String(job.error ?? ''))) fileStuck(run, p, name, job);
@@ -1356,7 +1364,9 @@ export function closeRun(id: string, label: string) {
   const status = endStatus(n, runCancelled(id));
   db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(status, runCancelDetail(id, `${label}${n.failed ? ' failed' : status === 'done' ? '' : ` ${status}`}`), Date.now(), cost, id);
   kickFollowups();
-  // The critic judges the game when any run of it ends and its week is up, and on a milestone's beta run (critic.ts).
+  // The first five minutes are played when a game's week is up (ftue.ts); the critic judges the game when any run of it
+  // ends and its week is up, and on a milestone's beta run (critic.ts).
+  if (isServer() && status !== 'cancelled') void import('./ftue.ts').then((m) => m.afterRun(id)).catch(() => {});
   if (isServer() && status !== 'cancelled') void import('./critic.ts').then((m) => m.afterRun(id)).catch(() => {});
   // A one-off playtest or a beta run ended: its review may have left the project fix-first or broken (verdictwork.ts).
   if (isServer() && status !== 'cancelled') void import('./verdictwork.ts').then((m) => m.actOnRun(id)).catch((e) => console.warn(`[studio] verdicts after ${id}: ${e.message ?? e}`));
