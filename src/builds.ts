@@ -514,13 +514,19 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       yieldedBy = newer;
       console.log(`[builds] ${p.id} ${b.id}: ${sha.slice(0, 7)} gives way: ${yielded}`);
       if (job) void import('./cancel.ts').then((m) => m.cancelJob(job, 'Studio', yielded)).catch((e) => console.warn(`[builds] ${p.id}: giving way to ${newer.slice(0, 7)}: ${e?.message ?? e}`));
+      // Still waiting for its product's Unity slot (no Gen job yet): it leaves that wait now.
+      else void import('./unityslot.ts').then((m) => m.nudgeUnitySlot(p.id));
     });
     // The run cancelled: the wait ends at once and the Gen job is cancelled (cancel.ts haltOf). The step carries the Gen
     // job, so cancelling the run cancels it in Gen too (2026-11-09: a cancel found no job on the step and the build kept going).
     const { haltOf } = await import('./cancel.ts');
     const started = (db.prepare('SELECT started FROM builds WHERE id = ?').get(row) as { started: number } | undefined)?.started;
+    // A build a person asked for (or a build-* tag, the go-live release) waits in its product's one Unity slot like any
+    // other, but no automatic request replaces it there (unityslot.ts).
+    const cause = (await import('./unitybuild-policy.ts')).causeOf(o);
+    const priority = cause === 'person' || cause === 'tag' || cause === 'release' ? 'person' as const : 'auto' as const;
     if (o.resume?.job) updateStep(step, { job: o.resume.job });
-    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, started, halt: () => yielded ?? haltOf(run)(), onSubmit: (id) => { db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row); updateStep(step, { job: id }); }, onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
+    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, started, priority, halt: () => yielded ?? haltOf(run)(), onSubmit: (id) => { db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row); updateStep(step, { job: id }); }, onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say, hold)
       : b.tool === 'firebase' ? await viaFirebase(p, b, slug, sha, ref, token, gh, say, hold)
       : await viaStudio(p, b, slug, sha, token, gh, say, hold);
@@ -978,14 +984,14 @@ export async function replaceQueuedGen(n: { project: string; slug: string; ref: 
 const mins = (ms: number) => Math.round(ms / 60_000);
 
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
-async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; row?: string; onSubmit?: (id: string) => void; onDone?: () => void; halt?: () => string | null; started?: number } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
+async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; row?: string; onSubmit?: (id: string) => void; onDone?: () => void; halt?: () => string | null; started?: number; priority?: 'person' | 'auto' } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
   // How long this build may take before it counts as stuck: from its own history (slowLimitMs). A build resumed after a
   // restart has what is left of it (at least 5 min, so it gets one fresh look).
   const limit = slowLimitMs(p.id, b.id);
-  const submit = (tok: string, r: typeof resume, timeoutMs: number) => genRun('unity.build', p.id, genBuildParams(b, slug, sha, ref, tok, resume.row), (j) => { const w = genStepWords(j, resume.row); if (w) say(w); }, timeoutMs, { job: r.job, onSubmit: r.onSubmit, halt: resume.halt });
+  const submit = (tok: string, r: typeof resume, timeoutMs: number) => genRun('unity.build', p.id, genBuildParams(b, slug, sha, ref, tok, resume.row), (j) => { const w = genStepWords(j, resume.row); if (w) say(w); }, timeoutMs, { job: r.job, onSubmit: r.onSubmit, halt: resume.halt, priority: resume.priority });
   // Minted now, as late as there is: a token made at the start of the run could be an hour old by the time Gen reads it.
   // Gen also asks Studio for a new one when the job starts (refresh, genTokenFor), so no build rides on this one.
   const { forgetRepoToken, repoToken } = await import('./ghtoken.ts');
@@ -1019,7 +1025,9 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   let slowRetried = false;
   const stuck = async (j: any, room: number) => {
     const where = j.lastDetail ? `, last at "${String(j.lastDetail).slice(0, 120)}"` : '';
-    if (j.id) { const { cancelJob } = await import('./cancel.ts'); await cancelJob(String(j.id), 'Studio', `stuck: ran ${mins(room)} min, past this build's usual time${where}`).catch(() => {}); }
+    // genRun already cancelled it in Gen when its wait timed out (unityslot.ts: Studio never leaves a unity.build behind);
+    // the reason it was cancelled for is recorded here.
+    if (j.id) { const { noteCancel } = await import('./cancel.ts'); noteCancel(`job:${j.id}`, 'Studio', `stuck: ran ${mins(room)} min, past this build's usual time${where}`); }
     return { ...j, status: 'failed', error: `the build was stuck in Hawkes Gen: it ran ${mins(room)} min, far past this project's usual build time${where}` };
   };
   if (job.timedOut) {

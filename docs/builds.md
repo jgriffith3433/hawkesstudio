@@ -134,6 +134,16 @@ already waiting joins it.
 
 Audit of 2026-11-11 (beta 3cb61ac). "Line" = buildline.ts above. "#373" = the Unity rule above (unitybuild-policy.ts).
 
+Under all of them, every Unity build of any kind (a player build, a package build, a compile check, a retry, a restart's)
+passes one per-product slot (`unityslot.ts`), because every one is a Gen `unity.build` made by `gen.ts genRun`. On
+2026-11-11, 77 Unity builds sat queued in Cloud Run though #373 and the line were live: compile checks went to Gen outside
+both, a wait that timed out left its Gen job running with nobody waiting, and a restart forgot a check's job and submitted
+another. Now a product has at most one `unity.build` outstanding in Gen; the same build (commit, check or player build,
+path) joins it; one other request waits, and a newer one replaces it (it ends superseded), except that no automatic
+request replaces a build a person asked for (or the release, a build-* tag). A wait that stops before its job ends (a
+timeout, a halt, an error) cancels the job, and before each submit Studio asks Gen for the product's queued and running
+`unity.build` jobs: one nobody here follows is adopted when it is the same build, otherwise cancelled. All events, no timer.
+
 | Path | What triggers it | Once per agent run / merge / push? | Covered by |
 |---|---|---|---|
 | Push to beta (`builds.ts onRepoHook`, the repo's hook) | every push to beta, so every merge | per push | Unity: #373 (held unless a milestone is done). Web/npm/firebase: line, so a burst of pushes is one build + the newest |
