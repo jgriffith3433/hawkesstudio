@@ -27,9 +27,9 @@ const scan = await import('../src/quality-scan.ts');
 const game = { id: 'qgame', engine: 'web', kind: undefined } as any;
 const site = { id: 'qsite', engine: 'static', kind: undefined } as any;
 
-test('the rubric has the eight rules, each with checks', () => {
+test('the rubric has the nine rules, each with checks', () => {
   const ids = q.baseRules().map((r) => r.id);
-  assert.deepEqual(ids, ['text-facing', 'no-z-fighting', 'normals-outward', 'ground-contact', 'animation-over-time', 'living-world', 'camera-and-controls', 'sound-design']);
+  assert.deepEqual(ids, ['text-facing', 'no-z-fighting', 'normals-outward', 'ground-contact', 'animation-over-time', 'living-world', 'camera-and-controls', 'first-five-minutes', 'sound-design']);
   for (const r of q.baseRules()) assert.ok(r.checks.length && r.build.length, r.id);
   assert.equal(q.isGame(game), true);
   assert.equal(q.isGame(site), false);

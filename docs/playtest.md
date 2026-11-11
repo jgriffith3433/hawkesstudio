@@ -379,6 +379,32 @@ map with the playtest (`data.explore`) and draws it: `GET /api/playtests/heatmap
 by time spent, amber stuck, red falls). A fall spot fails the quality gate; stuck spots are listed. Run it like any
 scenario: `{ "scenario": "explore", "where": "live" }` in a product's playtests.
 
+## First five minutes
+
+The built-in **`first-five`** scenario (`src/ftue.ts`; J, 2026-11-11: a stranger who opens a game cold is playing within
+20 s and succeeds at something within 60 s) is not a scenario a game lists. Studio asks Hawkes Gen's `playtest.run` for it
+(`scenario: "first-five"`, `fresh: true`, `milestones: true`, 300 s) on the game's public **live** URL (`first-five-hub`
+on hawkesgames.com for a game with `hub: true`): an empty cache, no cookies, no `?playtest` hint, no dev flags, no scenario
+setup. The driver plays 5 minutes through whatever a real player meets (terms, sign-in, menus) using only what is on screen,
+on desktop and at 390x844 with touch (two steps: `first-five@live` and `first-five@live:phone`). It reports, as events:
+
+- `milestone` with detail `gameplay`, `first-input-accepted`, `first-success` or `tutorial-step:<name>` (seconds from the page opening)
+- `tap`: one per tap or click needed to get to play
+- `wall` (`{kind: terms|sign-in|menu|loading|ad|other, label, seconds}`): everything between the stranger and the game, and what it cost
+- `dev-ui` (`{what, shot}`): a developer panel or debug control the public can see, with a screenshot
+- metric `ftue.wordsMinuteOne`: words on screen in the first 60 s
+
+A game that implements the contract can report milestones itself with `t.milestone(name, note)`, `t.tap()`, `t.wall(kind, label, seconds)`
+and `t.devUi(what, shot)` (`hawkes-playtest.js`); the first call of each milestone is kept, timed from the page opening, as the metric
+`milestone.<name>` (a reading: only first-five plays are judged). Studio turns the events into `ftue` on the step (seconds to gameplay,
+first input and first success, taps to play, words in minute one, the walls with their seconds, developer UI, a clip of the recording)
+and the `ftue.*` metrics the rubric's **first-five-minutes** rule checks (`docs/quality.md`): gameplay at most 20 s, first input 30 s,
+first success 60 s, at most 2 taps to play, at most 40 words in minute one, and developer UI visible to the public is a hard fail.
+A milestone never reached counts as the run's length (a miss, never "unmeasured"). The report's "First five minutes" section lists
+both devices; the go-live plan warns with the same numbers (never a blocker: the fix has to be able to ship). It is played weekly for
+every game with a live page when a run of it ends (`ftue.afterRun`) and before each go live (`ftue.beforeGoLive`); the critic's
+"first five minutes" axis reads the numbers.
+
 ## Studio's own dashboard
 
 `dashboard/playtest.js` implements the contract for Studio's dashboard (`product: "hawkesstudio"`). Its `smoke`

@@ -34,6 +34,10 @@
 // Give feel.player and explore: { enter: async (t) => game.startLevel() } (or explore: true when the game is playable
 // on load) and the run gets an "explore" scenario. A game's own "explore" scenario wins.
 //
+// The first five minutes (docs/playtest.md#first-five): t.milestone('gameplay' | 'first-input-accepted' | 'first-success' |
+// 'tutorial-step:<name>') says when a stranger got into the game; Studio's built-in first-five scenario plays the live
+// page cold and reports the same moments, taps, walls and developer UI.
+//
 // The audio probe (hawkes-audio.js, docs/playtest.md#audio) taps WebAudio into a MediaRecorder and pushes sound-start
 // and input events (and AudioContext resume on first tap). `audio: false` turns it off.
 
@@ -82,6 +86,27 @@ export function installPlaytest(opts) {
       run.problems.push({ severity, message: String(message) });
       tracker.event('problem', `${severity}: ${message}`);
     },
+    // The first five minutes (docs/playtest.md#first-five; src/ftue.ts). Milestones are the moments a stranger gets into the
+    // game: 'gameplay', 'first-input-accepted', 'first-success', 'tutorial-step:<name>'. Each is reported once, with the
+    // seconds since the page opened (what a stranger waited), not since the run started.
+    milestone(name, note) {
+      if (!run) return;
+      const key = String(name).trim().toLowerCase();
+      if (!key) return;
+      run.milestones ??= new Set();
+      if (run.milestones.has(key)) return;
+      run.milestones.add(key);
+      const sincePage = round(performance.now() / 1000);
+      run.metrics[`milestone.${key}`] = sincePage; // a reading, not a rubric limit: only the first-five scenario is judged
+      tracker.event('milestone', key);
+      if (note) tracker.log(`milestone ${key} at ${sincePage}s: ${note}`);
+    },
+    /** One tap or click the bot needed to get from the first screen to play (counted up to the 'gameplay' milestone). */
+    tap() { tracker.event('tap'); },
+    /** Something between the stranger and the game: a terms screen, a sign-in, a menu. `seconds` is what it cost. */
+    wall(kind, label, seconds) { tracker.event('wall', JSON.stringify({ kind: String(kind), label: String(label), seconds: Number(seconds) || 0 })); },
+    /** A developer panel or debug control a player can see (what it is, and the screenshot's Gen asset when there is one). */
+    devUi(what, shot) { tracker.event('dev-ui', JSON.stringify({ what: String(what), ...(shot ? { shot: String(shot) } : {}) })); },
     log(line) { if (run) { run.log.push(`${round(now())}s ${line}`); if (run.log.length > 200) run.log.shift(); } },
     finish(outcome = 'done') {
       if (!run || run.done) return;

@@ -83,6 +83,8 @@ export type AppConf = {
 
 /** device "phone": a 390x844 touch phone (the review also judges touch controls, text size and layout). */
 export type Playtest = { scenario?: string; mode?: 'auto' | 'contract' | 'generic' | 'site'; where: 'local' | 'live'; device?: 'desktop' | 'phone'; daily?: boolean; timeout?: number; seed?: number; options?: Record<string, unknown>;
+  /** A page other than the project's own live address (the first-five scenario of a hub game plays hawkesgames.com: ftue.ts). */
+  url?: string;
   /** Where the scenario starts (a named place, chapter or level the game loads: docs/playtest.md); none: from its start. */
   at?: string;
   /** Real players: 2 to 4 browsers on the same ?room=<id> (Gen playtest.run peers), for a multiplayer scenario. */
@@ -96,6 +98,8 @@ export type Product = {
   repo: string;
   /** A game added in J's Studio: its GitHub repo (owner/name); `repo` is then the folder it is cloned into. */
   github?: string;
+  /** A game listed on the hawkesgames.com hub: its first five minutes are played from the hub's page too (ftue.ts). */
+  hub?: boolean;
   site: string;
   live: string;
   /** A customer's game: where its test version plays (its beta), when it has one. Playtests "on beta" play it. */

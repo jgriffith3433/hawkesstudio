@@ -26,6 +26,7 @@ A product is a game when its `kind` is empty or `game` and its engine isn't `sta
 | `animation-over-time` | Animation holds up over time: slope landings settle within 0.3 s, feet don't slide |
 | `living-world` | A full, living world with soul: a world bible, never more than ~10 s with nothing to see, hear or do, story told through gameplay, events, cutscenes, SFX and voice, not text |
 | `camera-and-controls` | The camera never clips or snaps, controls answer in under 100 ms, no frame over 250 ms; jumping and combat games report coyote time, jump buffer and hit-stop; the explore bot never falls out of the world |
+| `first-five-minutes` | A stranger opening the live page cold is playing within 20 s, first input within 30 s, first success within 60 s, at most 2 taps to play, at most 40 words in minute one, no developer or debug UI visible to the public (hard). Measured by the built-in `first-five` scenario on desktop and 390x844 touch (`src/ftue.ts`, docs/playtest.md#first-five-minutes) |
 | `sound-design` | No silent jump or button, mix near -18 LUFS (±3) with true peak ≤ -1 dBTP, no identical sample twice in 60 s, voice ducks music ≥ 6 dB, silence in play ≤ 10 s |
 
 **Hard limits.** A check marked `hard` fails at its first sighting: the camera inside a wall (`camera-clip`), a snap

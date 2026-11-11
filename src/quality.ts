@@ -344,8 +344,24 @@ const LIMIT_FIX: Record<string, string> = {
   'silent-actions': 'Play a one-shot SFX on that action within 150 ms (jump, attack, confirm, UI click).',
   'identical-repeats': 'Use a small sample pool so the same buffer+rate never plays twice within 60 s.',
   'voice-duck': 'When voice plays, duck the music bus by at least 6 dB and restore it after.',
+  'first-five-gameplay': 'Get a stranger into play sooner: no terms, sign-in or menu chain before the game (ask later, when saving), preload what play needs, and start the first weapon, obstacle or goal on its own.',
+  'first-five-input': 'Accept the first input at once: no intro that eats keys or taps, no loading that hides a live game, input bound before the first frame.',
+  'first-five-success': 'Make the first success come inside a minute: a first target that cannot be missed, a first reward that fires on its own.',
+  'first-five-taps': 'At most 2 taps from the first screen to play: fold the menu chain into one Play button, remove modal walls.',
+  'first-five-words': 'Teach by doing, not by paragraphs: cut the first minute to 40 words or fewer.',
+  'first-five-dev-ui': 'Hide developer panels and debug controls behind a flag that is off in the public build (FPS counters, level pickers, cheat menus).',
   'silence-in-play': 'Fill quiet gaps in play with ambient, footsteps or reactive SFX (menus and loading excluded).',
 };
+
+/** A first-five finding's evidence: where the clip is, and what stood in the way (ftue.ts puts both on the result). */
+function firstFiveEvidence(check: string, r: any): string {
+  const f = r?.ftue;
+  if (!f || !check.startsWith('first-five')) return '';
+  const clip = f.clip ? ` Clip: Gen asset ${f.clip.asset}, 0:00 to ${f.clip.to} s.` : '';
+  const walls = f.walls?.length ? ` Walls met: ${f.walls.map((w: any) => `${w.label} (${w.seconds} s)`).join(', ')}.` : '';
+  const dev = check === 'first-five-dev-ui' && f.devUi?.length ? ` Seen: ${f.devUi.map((d: any) => d.what).join('; ')}.` : '';
+  return `${clip}${walls}${dev}`;
+}
 
 /**
  * A played build's broken measured limits (a hitch in play over 250 ms, input latency over 100 ms), one finding each
@@ -361,8 +377,9 @@ export function qualityFindings(p: Pick<Product, 'id' | 'engine' | 'kind'> & { t
     if (!c?.metric || !f.evidence.startsWith(`${c.metric} = `)) return [];
     return [{
       title: `Quality limit broken: ${c.id} (${f.title})`,
-      severity: 'bug', area: c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : (c.rule === 'sound-design' || c.id.startsWith('audio') || ['loudness', 'true-peak', 'silent-actions', 'identical-repeats', 'voice-duck', 'silence-in-play'].includes(c.id) ? 'audio' : 'gameplay'),
-      detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
+      severity: 'bug', area: c.id.startsWith('first-five') ? 'onboarding' : c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : (c.rule === 'sound-design' || c.id.startsWith('audio') || ['loudness', 'true-peak', 'silent-actions', 'identical-repeats', 'voice-duck', 'silence-in-play'].includes(c.id) ? 'audio' : 'gameplay'),
+      detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${firstFiveEvidence(c.id, r)}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
+      shots: c.id === 'first-five-dev-ui' ? (r.ftue?.devUi ?? []).map((d: any) => d.shot).filter(Boolean) : [],
       fix: LIMIT_FIX[c.id] ?? `Bring ${c.metric} inside its limit, then play the scenario again.`,
     }];
   });

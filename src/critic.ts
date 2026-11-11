@@ -17,6 +17,7 @@ import { worldBibleOf } from './fun-review.ts';
 import { paths, getProduct, type Product } from './config.ts';
 import { db, rowToStep, parse } from './db.ts';
 import { knownScenarios } from './scenarios.ts';
+import { latestFtue, ftueLines } from './ftue.ts';
 
 export const DIMENSIONS = [
   'fun', 'feel', 'clarity', 'first five minutes', 'menus and UI', 'sound', 'art cohesion', 'story through play', 'phone', 'reasons to come back',
@@ -162,6 +163,12 @@ type Evidence = { frames: { asset: string; t?: number; scene?: string; reason?: 
 const asImage = (x: string) => (/^(asset|blob):/.test(x) ? x : `asset:${x}`);
 
 /** A short audio timeline for the sound axis (judges can't hear the tape). */
+/** The first-five-minutes axis's evidence: the measured seconds, taps, words and walls of the last cold play (ftue.ts). */
+function ftueBlock(product: string): string {
+  const L = latestFtue(product).flatMap((f) => ftueLines(f));
+  return L.length ? `First five minutes, measured cold on the live page (score "first five minutes" from these numbers first; the limits are 20 s to gameplay, 30 s to first input, 60 s to first success, 2 taps, 40 words):\n${L.join('\n')}\n` : 'No cold first-five-minutes play yet: score "first five minutes" from the frames only and say so.\n';
+}
+
 function audioBlock(ev: Evidence): string {
   const m = { ...ev.metrics, ...ev.phoneMetrics };
   const keys = ['audio.lufsIntegrated', 'audio.truePeakDb', 'audio.longestSilenceS', 'audio.silentActions', 'audio.identicalRepeats60s', 'audio.voiceDuckDb'];
@@ -226,7 +233,7 @@ WORLD BIBLE: ${bible ? `\n${bible}` : 'none yet (say so under story through play
 
 THIS REVIEW PLAYED: ${chosen.scenario ?? 'the run\'s scenarios'}.
 Metrics (desktop): ${JSON.stringify(ev.metrics).slice(0, 1500)}
-${ev.phone || Object.keys(ev.phoneMetrics).length ? `Metrics (phone run): ${JSON.stringify(ev.phoneMetrics).slice(0, 800)}\n` : 'There was no phone run: score "phone" only from what the desktop frames show about touch, and say so.\n'}${audioBlock(ev)}The reviewers' summaries:
+${ev.phone || Object.keys(ev.phoneMetrics).length ? `Metrics (phone run): ${JSON.stringify(ev.phoneMetrics).slice(0, 800)}\n` : 'There was no phone run: score "phone" only from what the desktop frames show about touch, and say so.\n'}${audioBlock(ev)}${ftueBlock(p.id)}The reviewers' summaries:
 ${ev.summaries.join('\n').slice(0, 3000)}
 
 THE ATTACHED FRAMES, in order:

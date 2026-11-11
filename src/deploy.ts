@@ -22,6 +22,7 @@ import { getProduct, StudioError, managedElsewhere, managedNote, type Product } 
 import { git } from './local.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
+import { ftueWarnings, beforeGoLive } from './ftue.ts';
 import { noRuntimeChange } from './playplan.ts';
 import { opLog, registerOp, enqueue, queuePosition, getOp, wakeOps, OpWaits, type Op } from './ops.ts';
 import {
@@ -339,6 +340,8 @@ async function planOf(productId: string, { notesWaitMs = 20_000, io }: { notesWa
     if (!t.verdict) warnings.push(`${t.name} on ${beta?.short} has no review.`);
   }
   { const q = qualityBlockers(tested, beta?.short); blockers.push(...q.blockers); warnings.push(...q.warnings); }
+  // The first five minutes of what is live now (ftue.ts): a warning, never a blocker, so the fix for it can ship.
+  warnings.push(...ftueWarnings(p.id));
 
   // The pre-deploy build lives on beta (beta.ts prepareBeta), so the playtested commit is exactly what ships.
   if (played && p.deploy?.prebuild && !prebuilt(p, played.sha, played.title)) {
@@ -640,6 +643,8 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     }
   }
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
+  // The first five minutes of what is live now are played before this goes live (ftue.ts); it never holds the go live.
+  beforeGoLive(p.id);
   // A person's "Go live anyway" on an Approve card (playtestSkipFor) goes past beta not being playtested and the quality
   // rules its playtests broke (isOverridable), and nothing else.
   // Or the owner skips beta playtests for this project (golive-policy.ts betaPlay) and CI passed on that exact commit.
