@@ -68,7 +68,15 @@ jobs:
             if printf '%s\n' "${pick[@]:-}" | grep -qx "$j"; then
               for e in $(echo "$open" | cut -f1); do
                 sum "    cancel $e"
-                if [ "$APPLY" = true ]; then gcloud run jobs executions cancel "$e" --project "$PROJECT" --region "$REGION" --quiet --async >/dev/null 2>&1 || sum "    (could not cancel $e)"; fi
+                # Cloud Run cancels only an execution that started; one still queued (no start time) refuses :cancel and
+                # has to be deleted (#372). 2026-11-11 05:20: all 77 queued Unity builds in us-west1 answered "could not
+                # cancel" and stayed queued.
+                if [ "$APPLY" = true ]; then
+                  if gcloud run jobs executions cancel "$e" --project "$PROJECT" --region "$REGION" --quiet --async >/dev/null 2>&1; then :
+                  elif [ -z "$(gcloud run jobs executions describe "$e" --project "$PROJECT" --region "$REGION" --format='value(status.startTime)' 2>/dev/null)" ] \
+                    && gcloud run jobs executions delete "$e" --project "$PROJECT" --region "$REGION" --quiet --async >/dev/null 2>&1; then sum "    (queued: deleted $e)"
+                  else sum "    (could not cancel $e)"; fi
+                fi
               done
             fi
           done
