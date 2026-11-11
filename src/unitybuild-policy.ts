@@ -22,6 +22,7 @@
 import { db } from './db.ts';
 import { loadProducts } from './config.ts';
 import * as R from './roadmap.ts';
+import { beginWait, endWait, onDeadline } from './waits.ts';
 
 /** What started a build: a person, a build-* tag, the go-live release, a retry of a build that ran, a milestone's check, or anything else (auto). */
 export type UnityBuildCause = 'person' | 'tag' | 'release' | 'retry' | 'milestone' | 'auto';
@@ -123,8 +124,26 @@ export function unbuiltSince(product: string): number | null {
 /** The verdict for one start of a project's Unity build (builds.ts startBuild, the beta run, a change's verify). */
 export function unityBuildGate(product: string, cause: UnityBuildCause): UnityVerdict {
   if (cause !== 'auto' && cause !== 'milestone') return unityBuildVerdict(cause, { name: product, milestone: null, changes: [], tasks: [] });
-  return unityBuildVerdict(cause, unityWork(product));
+  const work = unityWork(product);
+  const v = unityBuildVerdict(cause, work);
+  recordHold(product, work, v);
+  return v;
 }
+
+/**
+ * The hold is a wait of the shared rule (waits.ts, point unity-hold): while merged work has no build and the verdict holds
+ * it, the wait is recorded with its deadline (UNITY_HOLD_MAX_MS after the oldest merge), so a restart arms it again and
+ * the deadline wakes the PM by itself; once the build may go, or nothing waits for one, the wait ends.
+ */
+export function recordHold(product: string, w: UnityWork, v: UnityVerdict) {
+  if (!v.go && w.unbuiltSince) {
+    beginWait('unity-hold', product, { waitsOn: `a complete milestone with nothing else queued for ${w.name}`, deadlineAt: w.unbuiltSince + UNITY_HOLD_MAX_MS(), since: w.unbuiltSince, product });
+  } else {
+    endWait('unity-hold', product, 'event');
+  }
+}
+// At the deadline the verdict says go (the same rule: unityBuildVerdict) and the PM's next pass starts the one build.
+onDeadline('unity-hold', async () => { try { (await import('./pm.ts')).kick(0); } catch { /* the PM isn't loaded here: its start-up pass asks */ } });
 
 /** Whether a milestone's check may build this project now (pm.ts milestoneCheck asks before it starts the one beta run). */
 export const milestoneBuildDue = (product: string) => unityBuildGate(product, 'auto');

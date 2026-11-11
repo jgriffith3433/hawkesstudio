@@ -27,7 +27,12 @@ export const AGENT_JOB_VCPU = () => Number(process.env.STUDIO_AGENT_JOB_CPU ?? 2
 const WAIT_MIN_MS = () => Number(process.env.STUDIO_CPU_WAIT_MS ?? 60_000);
 const WAIT_MAX_MS = 10 * 60_000;
 /** A start waits at most this long, then goes anyway (Cloud Run queues it; JOB_START_MS still guards it). */
-export const MAX_HOLD_MS = () => Number(process.env.STUDIO_CPU_MAX_HOLD_MS ?? 2 * 3600_000);
+export const MAX_HOLD_MS = () => Math.min(Number(process.env.STUDIO_CPU_MAX_HOLD_MS ?? 2 * 3600_000), 2 * 3600_000);
+/**
+ * Where a turn in the line is recorded as a wait of the shared rule (waits.ts, point cpu-turn): agents.ts connects it. This
+ * file stays free of the database so the gate can be read and tested alone.
+ */
+export const cpuWaits: { begin?: (tag: string, waitsOn: string, since: number, deadlineMs: number) => void; end?: (tag: string, how: 'event' | 'deadline') => void } = {};
 
 /**
  * Spill (2026-11-11 stall review: "no single cause may stop all work"): with the jobs in a region of their own, that
@@ -125,7 +130,12 @@ export function cpuTurn(need = AGENT_JOB_VCPU(), who?: string): Promise<void> {
   const asked = Date.now();
   const tag = who ?? `start-${asked}-${Math.random()}`;
   inLine.set(tag, asked);
-  const mine = line.then(() => admit(need, asked, who)).finally(() => inLine.delete(tag));
+  // The turn is a wait of the shared rule (waits.ts): what it waits on and its deadline, from when the start asked.
+  cpuWaits.begin?.(tag, `room in the region's Cloud Run CPU quota for ${need} vCPU`, asked, MAX_HOLD_MS());
+  const mine = line.then(() => admit(need, asked, who)).finally(() => {
+    inLine.delete(tag);
+    cpuWaits.end?.(tag, Date.now() - asked >= MAX_HOLD_MS() ? 'deadline' : 'event');
+  });
   line = mine.catch(() => {});
   return mine;
 }

@@ -28,6 +28,8 @@ import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY 
 import { isVideoTask } from './videos.ts';
 import { unityBuildOf, buildProof, builtBy, buildFailedIn, includesMerge, missingScenarioSkips } from './betabuild.ts';
 import { heldBuildRun, milestoneBuildDue, unityBuildGate } from './unitybuild-policy.ts';
+import { beginWait, endWait, forgetWait, lateWait, onDeadline, waitOf, waitOverdue } from './waits.ts';
+import { buildOutcome, playOutcome, PLAYED_NOTHING } from './outcomes.ts';
 import * as MB from './milestone-batch.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
@@ -236,6 +238,7 @@ export async function syncTasks() {
   // Walk-away mode: investigations that finished let their held tasks go (judged again, or decided one by one).
   try {
     await releaseInvestigations();
+    await settleRechecks();
   } catch (e: any) {
     console.warn(`[pm] investigations: ${e.message ?? e}`);
   }
@@ -599,13 +602,18 @@ export function buildOf(product: string, r: { id: string; status: string; detail
     .filter((x) => !(x.kind === 'repo' && REF_LOCK.test(String(x.detail ?? ''))));
   let unity = false;
   try { const gp = getProduct(product); unity = Boolean(gp.build) || Boolean(unityBuildOf(gp)); } catch { /* gone from products.json */ }
-  // A Unity project Studio builds from GitHub: only a run that built a commit with the task's merge counts (betabuild.ts).
-  if (proof && !proof.ok) return { ok: false, unproven: true, run: r.id, at: r.finished ?? Date.now(), unity, detail: `not built by beta run ${r.id}: ${proof.why}`.slice(0, 1200) };
   // Failed only in its playtest (a milestone's check): built. Failed with no failed step (the run itself threw): not.
   const steps = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(r.id) as any).n as number;
-  const ok = !failed.length && (r.status === 'done' || steps > 0);
+  // One reading of the run (outcomes.ts): a fixed set, so nothing defaults to "built nothing" or to a failure it didn't have.
+  const outcome = buildOutcome({ runStatus: r.status, failedBuildSteps: failed.length, failedSteps: steps, proof, held: heldRun(r.id) || Boolean(heldBuildRun(r.id, product)), cancelled: buildCancelled(r.id, product) });
+  const at = r.finished ?? Date.now();
+  // A Unity project Studio builds from GitHub: only a run that built a commit with the task's merge counts (betabuild.ts).
+  if (outcome === 'unproven') return { ok: false, unproven: true, run: r.id, at, unity, detail: `not built by beta run ${r.id}: ${proof?.why}`.slice(0, 1200) };
+  // Held, cancelled, superseded, still going or unreadable: no build and no failure (nothing is blamed on the task).
+  if (outcome !== 'built' && outcome !== 'failed') return { ok: false, unproven: true, run: r.id, at, unity, detail: `not built by beta run ${r.id}: the run is ${outcome} (${String(r.detail ?? r.status).slice(0, 200)})`.slice(0, 1200) };
+  const ok = outcome === 'built';
   const why = failed.map((x) => `${x.kind} ${x.name}: ${String(x.detail ?? '').slice(0, 400)}`).join('; ') || String(r.detail ?? 'the beta run failed');
-  return { ok, run: r.id, at: r.finished ?? Date.now(), unity, detail: ok ? `built OK${unity ? ' (the Unity build compiled)' : ''} in beta run ${r.id}` : `beta's build failed (run ${r.id}): ${why}`.slice(0, 1200) };
+  return { ok, run: r.id, at, unity, detail: ok ? `built OK${unity ? ' (the Unity build compiled)' : ''} in beta run ${r.id}` : `beta's build failed (run ${r.id}): ${why}`.slice(0, 1200) };
 }
 
 /**
@@ -617,6 +625,9 @@ export function buildToRead(b: TaskBuild | null | undefined, run: string, produc
   if (b?.run !== run) return true;
   return Boolean(b.unproven && buildFailedIn(run, product));
 }
+
+/** How long after a merge the PM waits for a beta run to build it before it starts beta's own build (beta-build). */
+const BETA_BUILD_AFTER_MS = 20 * 60_000;
 
 /**
  * Beta's build after each merge, on its task ("did it work", J 2026-10-18): the newest beta run of the product that
@@ -663,7 +674,11 @@ export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[
     }
     // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
     const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
-    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !creditsWaitReason() && !betaBuildSpent(product, last.at) && !unityHeld()) {
+    // The wait for beta's own build is a wait of the shared rule (waits.ts, point beta-build): recorded with its deadline
+    // (20 min after the merge, kept in the database so a restart arms it again) and ended by a run that built.
+    if (runs.some((x) => x.started >= last.at)) endWait('beta-build', product, 'event');
+    else beginWait('beta-build', product, { waitsOn: `a beta run that builds "${last.t.title}"`, deadlineAt: last.at + BETA_BUILD_AFTER_MS, since: last.at, product });
+    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > BETA_BUILD_AFTER_MS && pmSettings().enabled && !creditsWaitReason() && !betaBuildSpent(product, last.at) && !unityHeld()) {
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(product, { focus: `Building beta after "${last.t.title}" merged.`, playtest: false });
       logDecision('beta-build', last.t.id, product, `no beta run built "${last.t.title}" after its merge: started ${r.id}`);
@@ -908,7 +923,10 @@ export async function milestoneCheck(id: string, group: string[] = [id]) {
   const going = runs.some((r) => (db.prepare('SELECT status, started FROM runs WHERE id = ?').get(r) as any)?.status === 'running');
   // A check that hangs (a stuck build) doesn't hold J's milestone for ever.
   const at = lastDecision('milestone-check', id);
-  if (going && Date.now() - at < 4 * 3600_000) return;
+  // The check running is a wait too (milestone-recheck, subject <milestone>:play): at most 4 h, then it is played again.
+  if (going) beginWait('milestone-recheck', `${id}:play`, { waitsOn: `the check run ${runs.join(', ')}`, deadlineAt: at + MILESTONE_PLAY_MAX_MS, since: at, product: m.product });
+  else endWait('milestone-recheck', `${id}:play`, 'event');
+  if (going && Date.now() - at < MILESTONE_PLAY_MAX_MS) return;
   const s = pmSettings();
   const tries = milestoneTries(id);
   // A run that broke (stuck at one spot, a missing scenario, beta not built) says nothing about the criteria: it's played
@@ -1014,6 +1032,8 @@ export async function playsFor(tasks: Task[]) {
   return [...plays.values()].filter((p) => p.criteria.length);
 }
 
+/** The longest a milestone's check run may be waited on before the check is played again. */
+const MILESTONE_PLAY_MAX_MS = 4 * 3600_000;
 /** A milestone check waiting after a miss: due once each product's beta built again since (or RECHECK_WAIT_MS passed). */
 const RECHECK_WAIT_MS = 2 * 3600_000;
 const lastDecision = (action: string, subject: string) => listDecisions({ since: 0, action, limit: 10_000 }).find((d) => d.subject === subject)?.at ?? 0;
@@ -1030,11 +1050,17 @@ const rerunsSince = (id: string) => {
 };
 /** How long a milestone waiting for beta's next build (its checks kept breaking, or a scenario was missing) waits at most. */
 const BUILD_WAIT_MS = 6 * 3600_000;
-function recheckDue(id: string, products: string[]) {
+export function recheckDue(id: string, products: string[]) {
   const recheck = lastDecision('milestone-recheck', id), wait = lastDecision('milestone-build-wait', id);
   const at = Math.max(recheck, wait);
-  if (!at || at < lastDecision('milestone-check', id) || Date.now() - at > (wait > recheck ? BUILD_WAIT_MS : RECHECK_WAIT_MS)) return true;
-  return products.every((p) => db.prepare(`SELECT 1 FROM runs WHERE kind = 'beta' AND products LIKE ? AND started > ? AND status IN ('done', 'failed')`).get(`%"${p}"%`, at));
+  const limit = wait > recheck ? BUILD_WAIT_MS : RECHECK_WAIT_MS;
+  if (!at || at < lastDecision('milestone-check', id) || Date.now() - at > limit) { if (at) endWait('milestone-recheck', id, Date.now() - at > limit ? 'deadline' : 'event'); return true; }
+  const built = products.every((p) => db.prepare(`SELECT 1 FROM runs WHERE kind = 'beta' AND products LIKE ? AND started > ? AND status IN ('done', 'failed')`).get(`%"${p}"%`, at));
+  // Waiting for beta's next build is a wait of the shared rule (waits.ts, point milestone-recheck): its deadline is in the
+  // database (a restart arms it again) and wakes the PM, whose next look finds the check due.
+  if (built) endWait('milestone-recheck', id, 'event');
+  else beginWait('milestone-recheck', id, { waitsOn: "beta's next build", deadlineAt: at + limit + 1000, since: at, product: getMilestone(id)?.product ?? null });
+  return built;
 }
 
 /**
@@ -1047,7 +1073,7 @@ export function brokenCheck(run: string, product?: string): string | null {
   if (r.status === 'running') return `run ${run} is still running`;
   const p = product ?? (parse(r.products) ?? [])[0];
   const play = (db.prepare(`SELECT name, status, detail, data FROM steps WHERE run = ? AND product = ? AND kind = 'playtest'`).all(run, p) as any[])
-    .find((x) => x.status === 'failed' || x.status === 'skipped' || x.status === 'cancelled' || /\bstuck\b/i.test(String(x.detail ?? '')) || parse(x.data)?.outcome === 'stuck');
+    .find((x) => PLAYED_NOTHING.includes(playOutcome({ status: x.status, detail: x.detail, outcome: parse(x.data)?.outcome })));
   if (play) return `playtest ${play.name} ${play.status === 'done' ? 'got stuck' : play.status}: ${String(play.detail ?? '').slice(0, 300)}`;
   // Over and not failed counts as done here (buildOf reads any other status as a run that threw).
   // A cancelled build was never built: this run says nothing about beta (and nothing is blamed), the next one builds it.
@@ -1841,8 +1867,10 @@ function announceMilestone(id: string) {
   if (!m) return;
   // Critic gate (critic-gate.ts): a game milestone stays open until a beta critic run scores every touched dimension
   // at or above target. Triggered again when that critic step finishes (critic.afterRun → reachMilestones).
+  let criticNote = '';
   try {
     const c = milestoneCriticStatus(id);
+    if (c.ready && /^the critic didn't agree/.test(c.line)) criticNote = `Critic: ${c.line}.`;
     if (c.waiting) {
       const line = `milestone "${m.title}": ${c.line || 'waiting for the critic'}`;
       if (listDecisions({ since: 0, action: 'milestone-critic', limit: 10_000 }).find((d) => d.subject === id)?.detail !== line.slice(0, 2000)) {
@@ -1865,6 +1893,7 @@ function announceMilestone(id: string) {
       : `Milestone reached: **${m.title}**${m.product ? ` (${name(m.product)})` : ''}. Every task in it is merged and beta built it; ${total ? `beta's playtest met all ${total} of its criteria` : 'it had no criteria to check'}, so it's yours to playtest.`,
     m.goal ? `Goal: ${m.goal}` : '',
     m.test ? `What you said you'd test: ${m.test}` : '',
+    criticNote,
     ...ready.map(readyMarkdown),
     'When you have played it: tap Go live on its card (nothing to type), or tell me what is wrong and I will make it tasks.',
   ].filter(Boolean).join('\n\n---\n\n');
@@ -2055,17 +2084,7 @@ export async function releaseInvestigations() {
     const tasks = inv.tasks.map((id) => getTask(id)).filter((x): x is Task => Boolean(x) && x!.status === 'failed');
     if (c?.status === 'merged') {
       for (const x of tasks) setTask(x.id, { status: 'merged', merged_at: Date.now(), checks: null, note: `judged again on beta after investigation ${inv.change} merged` });
-      const criteria = [...new Set(tasks.flatMap((x) => x.criteria))];
-      let run = '';
-      if (criteria.length && hasBeta(product)) {
-        try {
-          const { startBeta } = await import('./pipeline.ts');
-          // Each task's own scenario, not one default for all their criteria.
-          run = startBeta(product, { focus: focusWithGoals(`Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, tasks), plays: await playsFor(tasks.filter((x) => x.criteria.length)), playtest: true }).id;
-        } catch (e: any) {
-          console.warn(`[pm] re-check after ${inv.change}: ${e.message ?? e}`);
-        }
-      }
+      const run = await startRecheck(product, tasks, inv.change, 0);
       logDecision('recheck', inv.change, product, `investigation ${inv.change} merged: ${tasks.length} held task(s) judged again on beta${run ? ` (run ${run})` : ''}`);
     } else {
       for (const x of tasks) retryOrPark(x, `its investigation ${inv.change} ${c?.status ?? 'is gone'}; on beta it missed: ${String(x.note ?? '').slice(0, 300)}`);
@@ -2073,6 +2092,70 @@ export async function releaseInvestigations() {
     }
   }
   return out;
+}
+
+/**
+ * The re-check of tasks after their investigation merged (wait point investigation-recheck, waits.ts): ONE beta run that
+ * plays each task's own scenario. Before 2026-11-11 the tasks went back to "merged" and the PM forgot the run: one that
+ * was never started (startBeta threw), was held (Unity hold), broke or skipped the scenario judged nothing, and the tasks
+ * stayed merged with no check and nothing waiting to look again (stall-paths.md). Now the re-check is recorded with its
+ * run and a deadline; settleRechecks reads what the run played and plays again (a build asked for, never held) until it
+ * did, at most maxTries times.
+ */
+type Recheck = { run: string; tasks: string[]; at: number; tries: number; change: string };
+const rechecks = (): Record<string, Recheck> => (state() as any).rechecks ?? {};
+const saveRechecks = (v: Record<string, Recheck>) => saveState({ rechecks: v });
+async function startRecheck(product: string, tasks: Task[], change: string, tries: number): Promise<string> {
+  const judged = tasks.filter((x) => x.criteria.length);
+  // Nothing to play (no criteria, or no beta lane here): nothing is waiting for a play either.
+  if (!judged.length || !hasBeta(product)) return '';
+  let run = '';
+  try {
+    const { startBeta } = await import('./pipeline.ts');
+    // Each task's own scenario, not one default for all their criteria. After a re-check that played nothing the build is
+    // asked for (cause person: the Unity hold's rule lets it through): bounded by maxTries, so never a stream of builds.
+    run = startBeta(product, { focus: focusWithGoals(`Re-checking ${judged.length} task(s) after investigation ${change} fixed beta.`, judged), plays: await playsFor(judged), playtest: true, ...(tries ? { cause: 'person' as const } : {}) }).id;
+  } catch (e: any) {
+    console.warn(`[pm] re-check after ${change}: ${e.message ?? e}`);
+  }
+  const all = structuredClone(rechecks());
+  all[product] = { run, tasks: judged.map((x) => x.id), at: Date.now(), tries, change };
+  saveRechecks(all);
+  beginWait('investigation-recheck', product, { waitsOn: run ? `beta run ${run} playing ${judged.length} task(s) after investigation ${change}` : `a beta run for ${judged.length} task(s) after investigation ${change} (none started)`, product, renew: true });
+  return run;
+}
+
+/** Whether the re-check's run played what it was asked to (pure reading of the run: brokenCheck is its one outcome). */
+export const recheckPlayed = (run: string, product: string): string | null => (run ? brokenCheck(run, product) : 'no run was started');
+
+/**
+ * Re-checks that are over, one way or another: every task judged (or the run played and judged what it could) ends the
+ * wait; a run that played nothing, none started, or the deadline passing plays again, up to maxTries; after that the
+ * tasks whose scenario the build lacks go back to their agents to register it (not a try) and the rest stay merged for
+ * the milestone's check, said in the PM log. Never a question for J.
+ */
+export async function settleRechecks() {
+  const all = structuredClone(rechecks());
+  for (const [product, r] of Object.entries(all)) {
+    const tasks = r.tasks.map((id) => getTask(id)).filter((x): x is Task => Boolean(x));
+    const open = tasks.filter((x) => x.status === 'merged');
+    const finish = (how: 'event' | 'deadline' | 'cancelled') => { delete all[product]; saveRechecks(all); endWait('investigation-recheck', product, how); };
+    if (!open.length) { finish('event'); continue; }
+    const over = waitOverdue('investigation-recheck', product) || lateWait('investigation-recheck', product);
+    const running = r.run && (db.prepare('SELECT status FROM runs WHERE id = ?').get(r.run) as any)?.status === 'running';
+    if (running && !over) continue;
+    const why = over && running ? `its run ${r.run} didn't end in time` : recheckPlayed(r.run, product);
+    if (!why) { finish('event'); continue; } // played: whatever it judged is checkOnBeta's (unclear is not a miss)
+    const s = pmSettings();
+    if (r.tries < s.maxTries && s.enabled) {
+      const run = await startRecheck(product, open, r.change, r.tries + 1);
+      logDecision('recheck', r.change, product, `the re-check of ${open.length} task(s) after ${r.change} played nothing (${why}): played again${run ? ` as ${run}` : ''} (${r.tries + 1} of ${s.maxTries}, not a try of the tasks)`.slice(0, 1500));
+      continue;
+    }
+    finish(over ? 'deadline' : 'event');
+    const sent = await sendMissingScenarios([r.run].filter(Boolean), open).catch(() => [] as string[]);
+    logDecision('recheck', r.change, product, `the re-check after ${r.change} played nothing ${r.tries + 1} times (${why}): ${sent.length ? `sent ${sent.map((x) => `"${x}"`).join(', ')} back to register their scenario (not a try); ` : ''}the other task(s) stay merged for the milestone's check`.slice(0, 1500));
+  }
 }
 
 /** The text checkOnBeta asked J with before walk-away mode ("... is merged into beta but misses criteria there ..."). */
@@ -3604,3 +3687,7 @@ export async function repairHarnessFailures() {
   return out;
 }
 
+
+// The fallbacks of the waits the PM records (waits.ts): a deadline passing is the PM's next pass, which reads each wait's
+// own state and carries on in its lesser way (a beta build of its own, a check that plays again, a re-check that plays).
+for (const point of ['beta-build', 'milestone-recheck', 'investigation-recheck']) onDeadline(point, () => kick(0));

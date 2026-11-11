@@ -34,7 +34,7 @@
 // Runs on the server (STUDIO_SERVER=1, repos cloned by repos.ts, GITHUB_TOKEN from /run/hawkes/github.env).
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
-import { cpuWaiting } from './cpuroom.ts';
+import { cpuWaiting, cpuWaits } from './cpuroom.ts';
 import { buildCheckBrief } from './buildfix.ts';
 import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
 import { unityBuildVerdict } from './unitybuild-policy.ts';
@@ -115,6 +115,9 @@ import { refreshFromTask } from './queue-follow.ts';
 import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './inflight.ts';
 import { noteRail, betaPart } from './change-rail.ts';
 import { noteTiming, timingOf } from './change-timing.ts';
+import { beginWait, endWait, endWaitsWhere, forgetWait, forgetWaitsWhere, lateWait, within, onDeadline, waitOverdue } from './waits.ts';
+import { deadlineOf } from './waitpoints.ts';
+import { passState } from './outcomes.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -2305,10 +2308,12 @@ function resumeAllowed(c: Change, free: () => Harness | null = freeHarness) {
   // the cap are for resuming on the provider that just stopped it.
   if (h && h.kind !== 'revive' && isHarness(h.on)) {
     const other = free();
-    if (other && other !== h.on) return true;
+    if (other && other !== h.on) { endWait('harness-cap', c.id, 'event', `${other} answers`); return true; }
   }
   const g = resumeGate(h);
-  if (g.go) return true;
+  if (g.go) { endWait('harness-cap', c.id, 'event'); return true; }
+  // The cap is a wait of the shared rule (waits.ts): recorded with its end, so a restart arms it again.
+  if (g.capped) beginWait('harness-cap', c.id, { waitsOn: `the hour letting one more harness stop in (${RESUME_CAP} in the last hour)`, deadlineAt: Date.now() + g.waitMs, product: c.product, renew: true });
   // One timer for the earliest wake, not one per parked change per pass (2026-11-10: ~200 parked changes each set a
   // timer on every pass; they all came due together and ran thousands of pumps back to back, blocking the event loop
   // for 224 s, so Cloud Run refused claude.ai's token refreshes and Studio's connector was signed out).
@@ -2442,6 +2447,8 @@ function freeHarness(): Harness | null {
  * bursts; each pass reads every queued change, so passes must never pile up (2026-11-10: a 224 s event-loop block).
  */
 let pumping: Promise<void> | null = null;
+/** Changes that may start beside the full slots once their wait in the queue passed its deadline (queue-slot). */
+const OVERFLOW_SLOTS = 1;
 const PUMP_RETRY_MS = () => Number(process.env.STUDIO_PUMP_RETRY_MS) > 0 ? Number(process.env.STUDIO_PUMP_RETRY_MS) : 60_000;
 /** Tests: a pass in place of the real one. */
 export const pumpHooks: { pass?: () => Promise<void> } = {};
@@ -2517,6 +2524,8 @@ async function pumpPass() {
   // A change checks its task as it is about to start (queue-follow.ts): a rewritten task gives it the new request, a gone
   // one closes it.
   const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce) && refreshFromTask(c.id) && duplicateHold(c.id));
+  // The waits of changes that left the queue (started, closed) end here; the ones in it are recorded below (waits.ts).
+  forgetWaitsWhere('queue-slot', (id) => getChange(id)?.status !== 'queued');
   // Each change's shape (its task, earlier changes and files: git) once per pass, however many candidates it sits beside.
   const shapes = new Map<string, WorkShape>();
   const shape = (c: Change) => shapes.get(c.id) ?? (shapes.set(c.id, shapeOf(c)), shapes.get(c.id)!);
@@ -2552,6 +2561,25 @@ async function pumpPass() {
     const detail = queuedDetail(c.detail ?? '', before, perProductLimit(c.product, s));
     if (detail !== (c.detail ?? '')) update(c.id, { detail });
     ahead.set(c.product, [...before, c.id]);
+  }
+  // queue-slot (waits.ts): a queued change waits for a slot with an end. One that has waited past its deadline takes ONE
+  // overflow slot beside the full ones, still never beside a change it collides with (limit, fit), and the memory and disk
+  // gates below still apply: slow work beats no work, and a full queue can never hold a change for ever.
+  const overflow: string[] = [];
+  if (s.maxConcurrent > 0 && slotHolders() + picks.length - ownPicks.length >= s.maxConcurrent && slotHolders() < s.maxConcurrent + OVERFLOW_SLOTS) {
+    const late = queued.filter((c) => !own(c) && !picks.includes(c.id) && (waitOverdue('queue-slot', c.id) || lateWait('queue-slot', c.id)));
+    const lane = (c: Change) => (isVideoTask(c.task) ? `video:${c.id}` : c.product);
+    for (const id of pickQueued(late.map((c) => ({ id: c.id, product: lane(c) })), [...busy, ...picks.map((x) => lane(getChange(x)!))], OVERFLOW_SLOTS - Math.max(0, slotHolders() - s.maxConcurrent), { limit, fit })) {
+      picks.push(id);
+      overflow.push(id);
+      forgetWait('queue-slot', id);
+      addLog(id, `waited past ${Math.round(deadlineOf('queue-slot') / 3600_000 * 10) / 10} h in the queue: it takes one overflow slot beside the full ones`);
+    }
+  }
+  // Every change still queued is waiting for a slot: recorded with when it ends (the idempotent begin keeps its first start).
+  for (const c of queued) {
+    if (picks.includes(c.id)) forgetWait('queue-slot', c.id);
+    else if (!lateWait('queue-slot', c.id)) beginWait('queue-slot', c.id, { waitsOn: String(c.detail ?? 'a free agent slot').slice(0, 200), product: c.product });
   }
   // Memory is the floor under maxConcurrent (memgate.ts): while too little is free, nothing new starts beside running work.
   // With nothing running in this process one always starts, whatever memory reads: refusing then waits for work to end
@@ -5065,27 +5093,33 @@ export const checkoutsUnderWay = () => checkoutsActive;
  * checkout behind it (stall-paths.md, Nov 11). At the limit the turn passes on; the slow checkout carries on outside it.
  */
 export const CHECKOUT_TURN_MS = () => Math.max(1000, Number(process.env.STUDIO_CHECKOUT_TURN_MS) || 30 * 60_000);
+let checkoutTurnSeq = 0;
 export async function checkoutSlot<T>(fn: () => Promise<T>, o: { turnMs?: number; onLong?: () => void } = {}): Promise<T> {
   while (checkoutsActive >= checkoutLimit()) await new Promise<void>((r) => checkoutWaiters.push(r));
   checkoutsActive++;
   let held = true;
-  const free = () => {
+  // The turn is a wait of the shared rule (waits.ts): it records what it holds the line for and its deadline.
+  const turn = `turn-${++checkoutTurnSeq}`;
+  const turnMs = within('checkout-turn', o.turnMs ?? CHECKOUT_TURN_MS());
+  beginWait('checkout-turn', turn, { waitsOn: 'the checkout in its turn finishing', deadlineMs: turnMs });
+  const free = (how: 'event' | 'deadline') => {
     if (!held) return;
     held = false;
+    endWait('checkout-turn', turn, how);
     checkoutsActive--;
     checkoutWaiters.shift()?.();
   };
   const timer = setTimeout(() => {
-    console.warn(`[agents] a checkout held its turn for ${Math.round((o.turnMs ?? CHECKOUT_TURN_MS()) / 60_000)} min: the next one goes ahead`);
+    console.warn(`[agents] a checkout held its turn for ${Math.round(turnMs / 60_000)} min: the next one goes ahead`);
     o.onLong?.();
-    free();
-  }, o.turnMs ?? CHECKOUT_TURN_MS());
+    free('deadline');
+  }, turnMs);
   timer.unref?.();
   try {
     return await fn();
   } finally {
     clearTimeout(timer);
-    free();
+    free('event');
   }
 }
 
@@ -5264,13 +5298,15 @@ export function checkStuck(now = Date.now()): StuckAction[] {
       out.push({ id: r.id, step: '?', was: 'orphan', idleMin: Math.round(idle / 60_000), did: 'requeued' });
       continue;
     }
-    if (here ? idle < stallMs(ph.step) : idle < ORPHAN_MS()) continue;
-    // Waiting its turn to start, or for memory beside running work: that ends when the work beside it ends (or is taken over here).
-    if (here && (remaking.has(r.id) || waitingStart.has(r.id))) continue;
-    // Its Cloud Run job is in line for CPU room (cpuroom.ts): the line ends it, at most MAX_HOLD_MS after it asked.
-    if (here && ph.step === 'agent' && ph.proc?.rec?.unit && cpuWaiting(ph.proc.rec.unit)) continue;
-    const elsewhere = workingElsewhere(r.id, ph, now);
-    if (elsewhere) continue;
+    // One reading of what the change is doing (outcomes.ts passState): only a pass that is hung or orphaned is taken over;
+    // moving, waiting its turn or for CPU room (each ends by its own wait: waits.ts) and work elsewhere are left alone.
+    const state = passState({
+      here, idleMs: idle, stallMs: stallMs(ph.step), orphanMs: ORPHAN_MS(), step: ph.step,
+      waitingToStart: remaking.has(r.id) || waitingStart.has(r.id),
+      waitingForRoom: Boolean(ph.proc?.rec?.unit && cpuWaiting(ph.proc.rec.unit)),
+      elsewhere: (here ? idle >= stallMs(ph.step) : idle >= ORPHAN_MS()) && Boolean(workingElsewhere(r.id, ph, now)),
+    });
+    if (state !== 'hung' && state !== 'orphaned') continue;
     const was: StuckAction['was'] = here ? 'stalled' : 'orphan';
     const mins = Math.round(idle / 60_000);
     if (here) abandonPass(r.id);
@@ -5439,10 +5475,15 @@ export async function pollGenWaits(look: GenLook = {}) {
     // Gen's events are wanted while a change is parked (genevents.ts opens its stream only while something waits).
     if (parked.length) genEvents.hold('parked-changes');
     else genEvents.release('parked-changes');
+    // Changes no longer parked on Gen (closed, failed, moved on): their waits end.
+    endWaitsWhere('gen-wait', (id) => !parked.some((c) => c.id === id));
     for (const c of parked) {
       const ph = phaseOf(c.id);
       const w = ph?.gen;
       if (!ph || !w) continue;
+      // The wait on Gen is a wait of the shared rule (waits.ts): its end is recorded, so a restart arms it again and the
+      // deadline wakes this look by itself (no interval has to find it).
+      beginWait('gen-wait', c.id, { waitsOn: `Gen jobs ${w.jobs.filter((j) => !genJobDone(j)).map((j) => j.id).join(', ') || '(done)'}`, deadlineAt: w.since + genWaitEndMs(), since: w.since, product: c.product });
       const ended = look.jobs ? w.jobs.filter((j) => !genJobDone(j) && look.jobs!.has(j.id)) : [];
       const tellDue = !w.told && Date.now() - w.since > genWaitMs();
       const over = Date.now() - w.since > genWaitEndMs();
@@ -5472,6 +5513,7 @@ export async function pollGenWaits(look: GenLook = {}) {
         if (late.length) addLog(c.id, `waited ${Math.round(genWaitEndMs() / 3600_000)} h on Gen: ${late.map((j) => j.id).join(', ')} timed out; the agent goes on without them`);
       }
       if (w.jobs.every(genJobDone)) {
+        endWait('gen-wait', c.id, over ? 'deadline' : 'event');
         const prompt = genDonePrompt(w);
         update(c.id, {
           status: 'queued', detail: `its Gen jobs finished (${w.jobs.map((j) => j.status).join(', ')}); the agent continues`,
@@ -5523,6 +5565,13 @@ setInterval(() => void pollGenWaits(), genPollMs()).unref();
 setTimeout(() => void pump(), 5000).unref();
 // A hold lifted or a stand-in took over: parked and queued changes start now, not at the next minute.
 onHoldLifted(() => void pump());
+// The CPU turn (cpuroom.ts, point cpu-turn) is recorded as a wait of the shared rule from here: the gate itself stays free of the database.
+cpuWaits.begin = (tag, waitsOn, since, deadlineMs) => void beginWait('cpu-turn', tag, { waitsOn, since, deadlineMs });
+cpuWaits.end = (tag, how) => void endWait('cpu-turn', tag, how);
+// The fallbacks of the waits recorded here (waits.ts): a deadline passing wakes the part that carries on in its lesser way.
+onDeadline('queue-slot', () => void pump()); // the pass gives the overdue change its overflow slot
+onDeadline('harness-cap', () => void pump()); // the hour is up: the change goes again
+onDeadline('gen-wait', () => void pollGenWaits({ force: true })); // the jobs still unfinished are timed out, the agent goes on
 // No interval re-runs the queue (J, 2026-11-11: no watchdog, the parts catch themselves). Every wait has its own exit:
 // a slot or a product's place frees when a pass lands (claim) or a change's status moves (update); memory when a pass
 // lets go of it (dropFlight); disk room when a pass ends, a worktree is removed (cleanup) or a sweep frees room, with the

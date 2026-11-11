@@ -1468,6 +1468,13 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   // Tasks the task bar parked on an empty shaper answer go back to planned, once, at start-up (taskbar.ts).
   void import('./taskbar.ts').then((T) => { const n = T.recheckEmptyParks(); if (n.length) console.log(`[taskbar] ${n.length} task(s) parked on an empty shaper answer are planned again`); }).catch((e) => console.warn(`[taskbar] re-check: ${e.message ?? e}`));
   const changes = resumeChanges();
+  // Every wait Studio recorded (waits.ts, docs/stall-paths.md) is armed again from the database: the ones whose deadline
+  // came while Studio was down (a crash, a failed deploy, Cloud Run stopped it) end now and carry on in their lesser way.
+  // After the modules that register the fallbacks are loaded.
+  void Promise.all([import('./ops.ts'), import('./critic-gate.ts'), import('./unitybuild-policy.ts'), import('./pace.ts'), import('./pm.ts')])
+    .then(() => import('./waits.ts')).then((W) => W.rearmWaits())
+    .then((r) => { if (r.overdue || r.pending) console.log(`[waits] armed again after the start: ${r.pending} pending, ${r.overdue} past their deadline while Studio was away`); })
+    .catch((e) => console.warn(`[waits] arming the waits again: ${e?.message ?? e}`));
   // Changes that say they're being worked on with nothing behind them are carried on by themselves (agents.ts checkStuck).
   startStuckWatch();
   // Playtests refused with 429 carry on with their backoff; runs and changes the restarts stopped start again once Studio

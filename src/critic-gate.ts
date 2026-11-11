@@ -13,6 +13,8 @@ import { db, rowToStep, parse } from './db.ts';
 import { CRITIC_DIMENSIONS, targetFor, releaseFloorOf, getProduct, type Product } from './config.ts';
 import { isGame } from './quality.ts';
 import type { CriticScore } from './critic.ts';
+import { beginWait, endWait, lateWait, onDeadline, waitOf, waitOverdue } from './waits.ts';
+import { deadlineOf } from './waitpoints.ts';
 
 /** Drop of this many points (or more) against live holds go-live. */
 export const REGRESSION_DROP = 2;
@@ -262,7 +264,40 @@ export function milestoneCriticStatus(milestoneId: string): MilestoneCritic {
   try { p = getProduct(product); } catch { return { ready: true, waiting: false, line: '', scores: [] }; }
   if (!isGame(p)) return { ready: true, waiting: false, line: '', scores: [] };
   const runs = (parse(m.checks) as string[] | null) ?? [];
-  const critic = criticOfRuns(product, runs);
   const targets = Object.fromEntries(dimensions.map((d) => [d, targetFor(p, d)]));
-  return milestoneCriticGate({ dimensions, critic, targets });
+  // The wait for the critic is a wait of the shared rule (waits.ts, point milestone-critic). It began the first time the
+  // milestone waited for it and ends at its deadline; past it the milestone goes on without the critic's word.
+  const late = lateWait('milestone-critic', milestoneId) || waitOverdue('milestone-critic', milestoneId);
+  // The critic's word: the check runs' own, or a newer one on any beta run of the game since the wait began. Before
+  // 2026-11-11 only the check runs counted, and they are frozen once the check ended: a critic that ran after the fixes
+  // (or never ran in them) could never open the gate (stall-paths.md).
+  const began = waitOf('milestone-critic', milestoneId)?.started ?? firstRunStart(runs) ?? Date.now();
+  const critic = newest(criticOfRuns(product, runs), criticOfBeta(product, began));
+  const gate = milestoneCriticGate({ dimensions, critic, targets });
+  if (!gate.waiting) { endWait('milestone-critic', milestoneId, 'event'); return gate; }
+  if (late) {
+    endWait('milestone-critic', milestoneId, 'deadline');
+    const bits = gate.scores.map((s) => `${s.dimension} ${s.score ?? 'not scored'}/${s.target}`).join(', ');
+    return { ready: true, waiting: false, line: `the critic didn't agree within ${Math.round(deadlineOf('milestone-critic') / 3600_000)} h (${bits}): reached without it; scores under target are critic tasks already`.slice(0, 400), scores: gate.scores };
+  }
+  beginWait('milestone-critic', milestoneId, { waitsOn: 'a beta critic run that scores every touched dimension at its target', product, since: waitOf('milestone-critic', milestoneId)?.started });
+  return gate;
 }
+
+/** The newest judged critic step of any beta run of the game that started at or after `since` (not only a milestone's frozen check runs). */
+export function criticOfBeta(product: string, since: number): CriticSnap | null {
+  const steps = (db.prepare(`SELECT s.* FROM steps s JOIN runs r ON r.id = s.run WHERE s.product = ? AND s.kind = 'critic' AND s.status = 'done' AND r.kind = 'beta' AND s.started >= ? ORDER BY s.started DESC LIMIT 20`).all(product, since) as any[]).map(rowToStep);
+  for (const s of steps) {
+    const snap = snapOf(s.data, null, s.started);
+    if (snap) return snap;
+  }
+  return null;
+}
+const newest = (a: CriticSnap | null, b: CriticSnap | null) => (a && b ? ((b.at ?? 0) > (a.at ?? 0) ? b : a) : a ?? b);
+const firstRunStart = (runs: string[]): number | null => {
+  if (!runs.length) return null;
+  const r = db.prepare(`SELECT MIN(started) AS t FROM runs WHERE id IN (${runs.map(() => '?').join(',')})`).get(...runs) as { t: number | null };
+  return r.t;
+};
+// At the deadline the milestone is looked at again: the gate above reads the wait as late and lets it through.
+onDeadline('milestone-critic', async () => { try { await (await import('./pm.ts')).reachMilestones(); } catch (e: any) { console.warn(`[studio] milestone critic deadline: ${e?.message ?? e}`); } });

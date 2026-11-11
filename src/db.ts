@@ -29,7 +29,7 @@ db.exec(`
 // Writes, reported (J, 2026-11-02: no polling): every insert/update/delete statement that ran tells the listeners which
 // table it wrote, so the push stream (stream.ts) learns that something moved without looking at the database on a timer.
 // Tables that change all the time without anything a page shows are left out.
-const NOISY = new Set(['resource_samples', 'access_log', 'signin_log', 'sessions', 'migrations', 'llm_fallbacks', 'pace_state', 'pace_days', 'gen_charges', 'cancellations', 'run_plan']);
+const NOISY = new Set(['resource_samples', 'access_log', 'signin_log', 'sessions', 'migrations', 'llm_fallbacks', 'pace_state', 'pace_days', 'gen_charges', 'cancellations', 'run_plan', 'waits']);
 const writeListeners = new Set<(table: string) => void>();
 /** fn(table) after a statement wrote a table (not the noisy ones). Returns stop(). */
 export function onDbWrite(fn: (table: string) => void) {
