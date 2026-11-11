@@ -166,7 +166,7 @@ export function startRun(kind: string, options: RunOptions = {}) {
   // name, and out of daily runs even then.
   const products = (options.products?.length ? options.products.map((p) => getProduct(p)).filter((p) => kind !== 'daily' || !managedElsewhere(p)) : loadProducts().filter((p) => !managedElsewhere(p))).map((p) => p.id);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', 'starting', J(products), J(options), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', 'starting', J(products), J(withRev(options)), Date.now());
   tagRun(id, options.origin);
   if (skipForCredits(id, products[0] ?? null)) return { id, done: Promise.resolve() };
   const done = (async () => {
@@ -1462,7 +1462,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
   // milestone's build. No run is made: the caller hears why.
   if (kind === 'playtest') throw new StudioError(`${p.name} isn't played on its own: ${PLAY_RULE}.`, 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(withRev(opts)), Date.now());
   tagRun(id, opts.origin);
   if (kind !== 'test' && skipForCredits(id, p.id)) return { id, done: Promise.resolve() };
   return { id, done: partialBody(id, kind, p, opts) };
@@ -1601,7 +1601,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), ...(o.sweep ? { sweep: o.sweep } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}), ...(o.play ? { play: o.play } : {}) }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J(withRev({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), ...(o.sweep ? { sweep: o.sweep } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}), ...(o.cause ? { cause: o.cause } : {}), ...(o.play ? { play: o.play } : {}) })), Date.now());
   tagRun(id, o.origin);
   // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
   if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) {
@@ -1868,7 +1868,7 @@ export function startAssets(productId: string, { only, force = false, origin }: 
   if (!st.manifest) throw new Error(`${p.name} has no hawkes.assets.json`);
   const todo = st.assets.filter((a) => (only?.length ? only.includes(a.id) : force || a.status !== 'current')).map((a) => ({ id: a.id, status: a.status }));
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'assets', 'running', `assets ${p.id}: ${todo.length}`, J([p.id]), J({ only, force, todo }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'assets', 'running', `assets ${p.id}: ${todo.length}`, J([p.id]), J(withRev({ only, force, todo })), Date.now());
   tagRun(id, origin);
   return { id, todo: todo.map((a) => a.id), done: assetsBody(id, p, todo, { only, force }) };
 }
@@ -1940,6 +1940,17 @@ export function stopResumedRun(run: string, why: string, cancel: (job: string) =
   return Promise.all(jobs.map((j) => cancel(j).catch((e: any) => console.warn(`[studio] ${run}: couldn't cancel Gen job ${j}: ${String(e?.message ?? e).slice(0, 200)}`))));
 }
 
+/** A new run's options with the revision of Studio it starts on (rolledOut). */
+export const withRev = <T extends object>(o: T): T => (process.env.K_REVISION ? { ...o, rev: process.env.K_REVISION } : o);
+
+/**
+ * Whether this start is a new revision of Studio (a deploy) since the run last ran: `rev` is the revision the run was on
+ * (Cloud Run's K_REVISION), unknown for runs from before it was kept. Exported for the tests.
+ */
+export function rolledOut(rev: unknown, now: string | undefined = process.env.K_REVISION): boolean {
+  return typeof rev === 'string' && Boolean(rev) && Boolean(now) && rev !== now;
+}
+
 export function resumeRuns() {
   const out: string[] = [];
   for (const r of db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]) {
@@ -1952,9 +1963,11 @@ export function resumeRuns() {
       continue;
     }
     // A run that keeps coming back after restarts may be what ends Studio (a clone filling the disk, 2026-10-29): the
-    // fourth resume within 30 minutes stops it instead. Deploy restarts are far apart and resume as before.
+    // fourth resume within 30 minutes stops it instead. A restart onto a new revision is a deploy rolling the cell, not a
+    // crash: it isn't counted (2026-11-11: Studio went live every ~9 minutes and runs were stopped as "what crashed it").
     const recent = ((options.resumes ?? []) as number[]).filter((t) => Date.now() - t < 30 * 60_000);
-    const inGen = r.kind === 'build' && Array.isArray(options.builds) && waitingInGen(r.id);
+    // Not counted either: a restart while the run only waits on Gen (waitingInGen), or a deploy's (rolledOut).
+    const inGen = (r.kind === 'build' && Array.isArray(options.builds) && waitingInGen(r.id)) || rolledOut(options.rev);
     if (!inGen && recent.length >= 3) {
       const why = `stopped: Studio restarted ${recent.length + 1} times in 30 minutes while this run was going, so it isn't resumed again (it may be what crashed it)`;
       stopResumedRun(r.id, why);
@@ -1972,7 +1985,9 @@ export function resumeRuns() {
       stopResumedRun(r.id, why);
       continue;
     }
-    if (!inGen) db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()], ...(key ? { restarts: loop } : {}) }), r.id);
+    const rev = process.env.K_REVISION ?? options.rev;
+    if (!inGen) db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()], ...(key ? { restarts: loop } : {}), ...(rev ? { rev } : {}) }), r.id);
+    else if (rev && rev !== options.rev) db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, rev }), r.id);
     let body: (() => Promise<unknown>) | null = null;
     try {
       if (r.kind === 'daily' || r.kind === 'manual') body = () => runAll(r.id, products, options).catch((e: any) => {

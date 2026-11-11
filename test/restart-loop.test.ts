@@ -10,7 +10,7 @@ import path from 'node:path';
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-restart-loop-'));
 const { resumeChanges, getChange, RESTART_LOOP, autoFixBlock, restartCount, passInternals } = await import('../src/agents.ts');
 const { db } = await import('../src/db.ts');
-const { resumeRuns, runRestarts } = await import('../src/pipeline.ts');
+const { resumeRuns, runRestarts, rolledOut } = await import('../src/pipeline.ts');
 await import('../src/builds.ts'); // its table, which a stopped run's builds are failed in
 
 function seed(id: string, phase: Record<string, unknown>) {
@@ -151,4 +151,40 @@ test('restartCount: local agents never get the progress exemption; slow restarts
   assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 10 }, cloudPhase(900), now).n, 1);
   assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 900 }, cloudPhase(900), now).n, 3);
   assert.equal(restartCount({ step: 'agent', n: 2, at: now - 3 * 3600_000, offset: 10 }, cloudPhase(900), now).n, 1);
+});
+
+// 2026-11-11: Studio went live every ~9 minutes, and each go live restarted it onto a new revision; runs were stopped after
+// 4 such restarts as "what crashed it". A restart onto a new revision (a deploy) isn't a crash and isn't counted.
+test('a run whose restarts were deploys onto new revisions keeps resuming; the same revision still counts', () => {
+  const was = process.env.K_REVISION;
+  try {
+    const now = Date.now();
+    const seed = (id: string, rev: string) => {
+      db.prepare(`INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, 'live', 'running', 'x', '["nope"]', ?, ?)`)
+        .run(id, JSON.stringify({ rev, resumes: [now - 20 * 60_000, now - 12 * 60_000, now - 4 * 60_000], restarts: { step: 'nope/build/web', n: RESTART_LOOP, at: now - 4 * 60_000 } }), now - 25 * 60_000);
+      db.prepare(`INSERT INTO steps (id, run, product, kind, name, status, detail, started) VALUES (?, ?, 'nope', 'build', 'web', 'running', 'building', ?)`).run(`s_${id}`, id, now - 5 * 60_000);
+    };
+    process.env.K_REVISION = 'studio-00181-hx5';
+    seed('r_deployed', 'studio-00180-bsg');
+    seed('r_crashed', 'studio-00181-hx5');
+    // A go live run with no commit has no body to resume: it ends 'interrupted', which shows it got past the restart limits.
+    resumeRuns();
+    const deployed = db.prepare(`SELECT status, detail FROM runs WHERE id = 'r_deployed'`).get() as { status: string; detail: string };
+    assert.equal(deployed.status, 'interrupted', `got past the restart limits (${deployed.detail})`);
+    const opts = JSON.parse((db.prepare(`SELECT options FROM runs WHERE id = 'r_deployed'`).get() as { options: string }).options);
+    assert.equal(opts.rev, 'studio-00181-hx5', 'now on the new revision');
+    assert.equal(opts.resumes.length, 3, 'the deploy restart is not counted');
+    const crashed = db.prepare(`SELECT status, detail FROM runs WHERE id = 'r_crashed'`).get() as { status: string; detail: string };
+    assert.equal(crashed.status, 'failed');
+    assert.match(crashed.detail, /restarted 4 times in 30 minutes/);
+  } finally {
+    if (was === undefined) delete process.env.K_REVISION; else process.env.K_REVISION = was;
+  }
+});
+
+test('rolledOut: only a known, different revision is a deploy', () => {
+  assert.equal(rolledOut('a', 'b'), true);
+  assert.equal(rolledOut('a', 'a'), false);
+  assert.equal(rolledOut(undefined, 'b'), false);
+  assert.equal(rolledOut('a', undefined), false);
 });
