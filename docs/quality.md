@@ -138,3 +138,16 @@ it most. It runs when any run of the game ends (`closeRun`, the daily run's end:
 7 days, and on every milestone beta run, as a `critic` step on that run; report.ts and the report page render it (a list,
 not a table, readable at 390 px). Each weekly run reviews the scenario reviewed longest ago (`pickScenario`). No frames, or
 fewer than ten scores, is **unjudged**: no scores, never a pass.
+
+## Characters, level metrics and feel (design skills)
+
+Every game job's brief has a "Skills to load" section (`skillsBrief`, `JOB_BRIEFS[kind].skills` in `src/agents.ts`): fix loads
+level-design and game-feel; feature, content and the **new-game** kind (a game's first version) load story-through-play,
+level-design and game-feel (new-game adds game-quality); polish loads game-feel. The skills are in `.claude/skills/` with
+copies in `customer-plugin/skills/`.
+
+The pre-PR scan (`src/quality-scan.ts`) checks `docs/world-bible.md`'s `## Characters` section (every `### <Name>` needs Want, Arc,
+Moment, Personality (three words), Voice (a Gen voice id) and Animations (idle, walk, talk)) and `docs/metrics.json`
+(`jumpHeight`, `jumpDistance`, `runSpeed`, `corridorWidths` as numbers; `feel.coyoteMs` and `feel.jumpBufferMs` at least 80,
+`feel.hitStopMs` at least 40). By hand: `npm run worldbible -- docs/world-bible.md docs/metrics.json` exits 1 on a problem.
+A content change that adds a character ships its voice line and idle, walk and talk clips within the GPU auto-approve.

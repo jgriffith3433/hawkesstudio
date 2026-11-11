@@ -1207,15 +1207,30 @@ export function roleOf(c: { infra?: boolean; request?: string | null; findings?:
  * content and polish work). polish: the weekly polish pass, or findings that are all polish; fix: playtest findings;
  * content: the content role's work; feature: any other request or task.
  */
-export type JobKind = 'fix' | 'feature' | 'content' | 'polish';
+export type JobKind = 'fix' | 'feature' | 'content' | 'polish' | 'new-game';
+/** A request to make a game's first version (repokit.ts firstVersionBrief) or a new game from scratch. */
+const NEW_GAME = /\b(first playable version|new game|from scratch|game pitch)\b/i;
 export function jobKind(c: Parameters<typeof roleOf>[0] & { started_by?: string | null }, findings: { severity?: string }[] = []): JobKind {
   if (c.started_by === POLISH_BY || (!c.request && findings.length > 0 && findings.every((f) => f.severity === 'polish'))) return 'polish';
   if (!c.request) return 'fix';
+  if (NEW_GAME.test(`${c.title ?? ''} ${c.request}`)) return 'new-game';
   return roleOf(c) === 'content' ? 'content' : 'feature';
 }
 
 /** Each kind's opening line, its rules, how to start, what to keep to, and its commit message prefix. */
-export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) => string; rules: string; look: string; keep: string; prefix: string }> = {
+/**
+ * The design skills a game job loads (.claude/skills and customer-plugin/skills): story-through-play (characters with a
+ * want, an arc, a voice and animations), level-design (docs/metrics.json numbers) and game-feel (coyote time, jump buffer
+ * and hit-stop floors). Listed in the brief's "Skills to load" section.
+ */
+export const DESIGN_SKILLS = {
+  'story-through-play': 'every named character has a want, an arc, the gameplay moment that shows it, three personality words, a Gen voice id and an idle, walk and talk animation set; story told by events and voice, not text',
+  'level-design': 'build gaps, ledges and corridors from the measured numbers in docs/metrics.json (jump height and distance, run speed, corridor widths)',
+  'game-feel': 'coyote time and jump buffer of at least 80 ms, hit-stop of at least 40 ms, a short screen shake',
+} as const;
+export type DesignSkill = keyof typeof DESIGN_SKILLS;
+
+export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) => string; rules: string; look: string; keep: string; prefix: string; skills: DesignSkill[] }> = {
   fix: {
     intro: (name, about) => `You are fixing a problem Hawkes Studio's automated playtest found in ${name} (${about}).`,
     rules: `- Find the root cause and fix it where it starts. Prove it: the replay place or the scenario that hit it before now
@@ -1227,6 +1242,7 @@ export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) 
     look: 'Look at the screenshots to see the problem. Find the cause in the code or data; prefer the smallest correct fix.',
     keep: 'Keep to this finding. Don\'t refactor unrelated code',
     prefix: 'Fix',
+    skills: ['level-design', 'game-feel'],
   },
   feature: {
     intro: (name, about) => `You are building something new in ${name} (${about}).`,
@@ -1238,6 +1254,7 @@ export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) 
     look: 'Read the story doc, the world bible and the code it touches. Plan it, then build it.',
     keep: 'Keep to this request. Don\'t refactor unrelated code',
     prefix: 'Add',
+    skills: ['story-through-play', 'level-design', 'game-feel'],
   },
   content: {
     intro: (name, about) => `You are making content for ${name} (${about}): story, places, characters, dialogue or art.`,
@@ -1250,6 +1267,7 @@ export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) 
     look: 'Read the story doc and the world bible, then the scenes and data this touches. Plan what goes where, then make it.',
     keep: 'Keep to this request. Don\'t refactor unrelated code',
     prefix: 'Content',
+    skills: ['story-through-play', 'level-design', 'game-feel'],
   },
   polish: {
     intro: (name, about) => `This is ${name}'s polish pass (${about}): the items below are the worst on its polish list, by how much they bother a player.`,
@@ -1261,8 +1279,31 @@ export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) 
     look: 'Look at each item\'s screenshots and replay place to see it the way a player does. Find where it comes from.',
     keep: 'Keep to these items. Don\'t refactor unrelated code',
     prefix: 'Polish',
+    skills: ['game-feel'],
+  },
+  'new-game': {
+    intro: (name, about) => `You are making the first version of ${name} (${about}): a new game, built as a vertical slice of a planned world.`,
+    rules: `- Plan before code: docs/world-bible.md first (every section, Characters included), and docs/metrics.json with the
+  measured jump height and distance, run speed and corridor widths of the player character you build.
+- Its first minute has a character the player meets: a want, an arc, a voice (Hawkes Gen voice id) and idle, walk and
+  talk animations, shown by what happens in play, not by text.
+- Feel defaults from the start: coyote time and jump buffer of at least 80 ms, hit-stop of at least 40 ms, a short shake.
+- Build to the full quality bar the first time: no placeholder art, grey boxes, stub content or "TODO" UI, and one solid
+  core loop beats a big broken one. A playtest scenario plays it through real input.`,
+    look: 'Read the pitch, the starter and the game-quality skill. Write the world bible and metrics first, commit them, then build the slice.',
+    keep: 'Keep to this game\'s first version. Don\'t refactor unrelated code',
+    prefix: 'New game',
+    skills: ['story-through-play', 'level-design', 'game-feel'],
   },
 };
+
+/** The brief's "Skills to load" section for a game's job: the design skills of its kind, by name (the plugin's namespace in a customer's Studio). */
+export function skillsBrief(kind: JobKind, plugin = 'hawkes') {
+  const skills = JOB_BRIEFS[kind].skills;
+  if (!skills.length) return '';
+  const extra = kind === 'new-game' ? ['game-quality'] : [];
+  return `\n## Skills to load (${kind})\n\nLoad these skills (the Skill tool) before you plan or build; they are this studio's craft for ${kind} work:\n${skills.map((k) => `- \`${plugin}:${k}\`: ${DESIGN_SKILLS[k]}`).join('\n')}${extra.map((k) => `\n- \`${plugin}:${k}\`: the quality rules, the world bible template and the playtest probes`).join('')}\n`;
+}
 
 // ------------------------------------------------------------------ routing (routing.ts)
 
@@ -1448,7 +1489,7 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
   const startedBy = (db.prepare('SELECT started_by FROM changes WHERE id = ?').get(c.id) as any)?.started_by ?? null;
   const kind = jobKind({ ...c, started_by: startedBy }, findings);
   const job = JOB_BRIEFS[kind];
-  const brief = `# ${({ fix: 'Fix', feature: 'Work', content: 'Content', polish: 'Polish pass' } as const)[kind]} for ${p.name}
+  const brief = `# ${({ fix: 'Fix', feature: 'Work', content: 'Content', polish: 'Polish pass', 'new-game': 'New game' } as const)[kind]} for ${p.name}
 
 ${job.intro(p.name, p.about)}
 ${sub ? `The project lives in \`${sub}/\` inside this repository.` : ''}
@@ -1510,7 +1551,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 ## This kind of work (${kind})
 
 ${job.rules}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${quality}${reach}${players}${mem.text ? `\n${mem.text}` : ''}
+${onSite || !isGame(p) ? '' : skillsBrief(kind, pluginName())}${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${quality}${reach}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.

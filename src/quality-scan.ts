@@ -10,7 +10,11 @@
 // - C# (.cs): a near clip set under 0.05; text turned with LookAt(camera) and never turned round (text-lookat-camera).
 // - Web code (.js, .ts, .mjs, .jsx, .tsx): a Babylon minZ or three.js near under 0.05 (near-clip).
 // - glTF and GLB models: faces mostly pointing inward (model-inside-out), a node with a mirroring scale (mesh-mirrored).
-// - docs/world-bible.md: every section present (world-bible).
+// - docs/world-bible.md: every section present (world-bible), and every named character in its Characters section with a
+//   want, an arc, the gameplay moment that shows it, three personality words, a Gen voice id and an idle, walk and talk
+//   animation set (characters).
+// - docs/metrics.json: the level-design numbers (jump height and distance, run speed, corridor widths) and the game-feel
+//   defaults (coyote time and jump buffer at least 80 ms, hit-stop at least 40 ms) (level-metrics).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,6 +30,7 @@ const MAX_FILES = 300;
 const MAX_BYTES = 60 * 1024 * 1024;
 const SCANNED = /\.(unity|prefab|cs|js|mjs|ts|jsx|tsx|glb|gltf)$/i;
 const BIBLE = /(^|\/)docs\/world-bible\.md$/i;
+const METRICS = /(^|\/)docs\/metrics\.json$/i;
 /** Never game code: build output, packages, generated folders. */
 const SKIP = /(^|\/)(node_modules|Library|Temp|dist|play|build|Builds|\.hawkes)\/|(^|\/)Game\/v[^/]*\/|\.min\.js$|\.d\.ts$/;
 
@@ -305,11 +310,90 @@ export function scanGltf(file: string, buf: Buffer, sibling?: (uri: string) => B
 
 // ------------------------------------------------------------------ the world bible
 
-export const BIBLE_SECTIONS = ['Areas', 'Landmarks', 'Who lives here', 'What happens', 'Story beats'];
+export const BIBLE_SECTIONS = ['Areas', 'Landmarks', 'Who lives here', 'Characters', 'What happens', 'Story beats'];
+
+/** What each named character in the Characters section must have (the story-through-play skill has the template). */
+export const CHARACTER_FIELDS: { key: string; label: string; re: RegExp }[] = [
+  { key: 'want', label: 'a want', re: /^want$/i },
+  { key: 'arc', label: 'an arc', re: /^arc$/i },
+  { key: 'moment', label: 'the gameplay moment that shows it', re: /^(gameplay )?moment$/i },
+  { key: 'words', label: 'three personality words', re: /^personality( words)?$/i },
+  { key: 'voice', label: 'a Gen voice id', re: /^voice( id)?$/i },
+  { key: 'animations', label: 'an animation set (idle, walk, talk)', re: /^animations?( set)?$/i },
+];
+const EMPTY_VALUE = /^(tbd|todo|none|n\/a|na|\?+|-+|\.\.\.|<[^>]*>)$/i;
+
+/** The Characters section: one entry per heading a level below it, each a list of "Field: value" lines. */
+export function scanCharacters(file: string, text: string): ScanIssue[] {
+  const lines = text.split('\n');
+  const at = lines.findIndex((l) => /^#{1,4}\s+characters\b/i.test(l));
+  if (at < 0) return []; // a missing section is the sections check's
+  const level = /^#+/.exec(lines[at])![0].length;
+  const body: string[] = [];
+  for (let i = at + 1; i < lines.length; i++) {
+    const h = /^(#+)\s/.exec(lines[i]);
+    if (h && h[1].length <= level) break;
+    body.push(lines[i]);
+  }
+  const entries: { name: string; lines: string[] }[] = [];
+  for (const l of body) {
+    const h = /^(#+)\s+(.+?)\s*$/.exec(l);
+    if (h && h[1].length === level + 1) entries.push({ name: h[2], lines: [] });
+    else entries.at(-1)?.lines.push(l);
+  }
+  if (!entries.length) {
+    return /^\s*(none|no named characters)\b/im.test(body.join('\n')) ? [] : [issue('characters', file, 'Characters', 'the Characters section names no character: add one "### <Name>" entry per named character (want, arc, moment, personality, voice, animations), or say "None" and why')];
+  }
+  const out: ScanIssue[] = [];
+  for (const e of entries) {
+    const vals = new Map<string, string>();
+    for (const l of e.lines) {
+      const m = /^\s*(?:[-*]\s+)?\**([A-Za-z][A-Za-z ]*?)\**\s*[:\u2013\u2014-]\s*\**\s*(.+?)\s*$/.exec(l);
+      if (!m) continue;
+      const f = CHARACTER_FIELDS.find((x) => x.re.test(m[1].trim()));
+      if (f && !vals.has(f.key)) vals.set(f.key, m[2].replace(/\*+$/, '').trim());
+    }
+    const lacking: string[] = [];
+    for (const f of CHARACTER_FIELDS) {
+      const v = vals.get(f.key);
+      if (!v || EMPTY_VALUE.test(v)) { lacking.push(f.label); continue; }
+      if (f.key === 'animations') {
+        const miss = ['idle', 'walk', 'talk'].filter((a) => !new RegExp(`\\b${a}`, 'i').test(v));
+        if (miss.length) lacking.push(`animations ${miss.join(', ')} (idle, walk and talk at least)`);
+      }
+      if (f.key === 'words' && v.split(/[,/;]|\band\b/i).map((w) => w.trim()).filter(Boolean).length < 3) lacking.push('three personality words');
+    }
+    if (lacking.length) out.push(issue('characters', file, e.name, `${e.name} lacks ${lacking.join('; ')}: every named character needs all of them in the Characters section (the story-through-play skill has the template)`));
+  }
+  return out;
+}
+
 export function scanWorldBible(file: string, text: string): ScanIssue[] {
   const heads = (text.match(/^#{1,4}\s+.+$/gm) ?? []).map((h) => h.replace(/^#+\s+/, '').toLowerCase());
   const missing = BIBLE_SECTIONS.filter((s) => !heads.some((h) => h.includes(s.toLowerCase())));
-  return missing.length ? [issue('world-bible', file, 'sections', `missing ${missing.map((m) => `"${m}"`).join(', ')}: the world bible needs every section (the game-quality skill has the template)`)] : [];
+  const out = missing.length ? [issue('world-bible', file, 'sections', `missing ${missing.map((m) => `"${m}"`).join(', ')}: the world bible needs every section (the game-quality skill has the template)`)] : [];
+  return [...out, ...scanCharacters(file, text)];
+}
+
+// ------------------------------------------------------------------ docs/metrics.json (level design and game feel)
+
+/** The game-feel floors (the rubric's coyote-time, jump-buffer and hit-stop checks). */
+export const FEEL_MIN = { coyoteMs: 80, jumpBufferMs: 80, hitStopMs: 40 } as const;
+const positive = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+export function scanMetrics(file: string, text: string): ScanIssue[] {
+  let j: any;
+  try { j = JSON.parse(text); } catch { return [issue('level-metrics', file, 'json', 'docs/metrics.json is not valid JSON')]; }
+  const bad: string[] = [];
+  for (const k of ['jumpHeight', 'jumpDistance', 'runSpeed']) if (!positive(j?.[k])) bad.push(`${k} (a number above 0)`);
+  const cw = j?.corridorWidths;
+  const widths = Array.isArray(cw) ? cw : cw && typeof cw === 'object' ? Object.values(cw) : [];
+  if (!widths.length || !widths.every(positive)) bad.push('corridorWidths (numbers above 0)');
+  for (const [k, min] of Object.entries(FEEL_MIN)) {
+    const v = j?.feel?.[k];
+    if (typeof v !== 'number' || !Number.isFinite(v)) bad.push(`feel.${k} (a number, at least ${min})`);
+    else if (v < min) bad.push(`feel.${k} is ${v} (at least ${min})`);
+  }
+  return bad.length ? [issue('level-metrics', file, 'metrics', `docs/metrics.json needs: ${bad.join('; ')} (the level-design and game-feel skills have the template)`)] : [];
 }
 
 // ------------------------------------------------------------------ one file, a change
@@ -317,6 +401,7 @@ export function scanWorldBible(file: string, text: string): ScanIssue[] {
 /** What one file breaks, read from its bytes. */
 export function scanFile(file: string, buf: Buffer, sibling?: (uri: string) => Buffer | null): ScanIssue[] {
   if (BIBLE.test(file)) return scanWorldBible(file, buf.toString('utf8'));
+  if (METRICS.test(file)) return scanMetrics(file, buf.toString('utf8'));
   if (/\.(unity|prefab)$/i.test(file)) {
     const text = buf.toString('utf8');
     return text.startsWith('%YAML') || text.includes('--- !u!') ? scanUnityYaml(file, text) : []; // a binary-serialized scene isn't read
@@ -339,7 +424,7 @@ function gitBuf(dir: string, args: string[]): Buffer | null {
  */
 export function qualityScan(worktree: string, baseRef: string): QualityScan {
   const names = gitBuf(worktree, ['diff', '--name-only', '--diff-filter=AMR', `${baseRef}...HEAD`])?.toString('utf8').split('\n').map((s) => s.trim()).filter(Boolean) ?? [];
-  const files = names.filter((f) => (SCANNED.test(f) || BIBLE.test(f)) && !SKIP.test(f)).slice(0, MAX_FILES);
+  const files = names.filter((f) => (SCANNED.test(f) || BIBLE.test(f) || METRICS.test(f)) && !SKIP.test(f)).slice(0, MAX_FILES);
   const issues: ScanIssue[] = [];
   const known: ScanIssue[] = [];
   for (const f of files) {
