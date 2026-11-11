@@ -264,15 +264,17 @@ const focusFor = (short: string) => `${BEFORE_GO_LIVE} ${short} once, covering e
  * which takes beta live if the play passed. Its review also judges the criteria of every merged task not verified yet
  * (pipeline.ts betaBody, acceptance.ts sweepFor): no play of its own for them. `start` is for the tests.
  */
-export async function playBeforeGoLive(productId: string, short: string, why: string, start?: (product: string, o: Record<string, unknown>) => { id: string }): Promise<{ started?: string; playing?: string; played?: string; error?: string }> {
+export async function playBeforeGoLive(productId: string, short: string, why: string, start?: (product: string, o: Record<string, unknown>) => { id: string }, cause?: 'person'): Promise<{ started?: string; playing?: string; played?: string; error?: string }> {
   const runs = db.prepare(`SELECT id, status, options FROM runs WHERE kind = 'beta' AND options LIKE ? AND products LIKE ? ORDER BY started DESC LIMIT 20`).all(`%${BEFORE_GO_LIVE}%`, `%"${productId}"%`) as any[];
   const playing = runs.find((r) => r.status === 'running');
   if (playing) return { playing: playing.id };
-  const done = runs.find((r) => String(r.options ?? '').includes(`${BEFORE_GO_LIVE} ${short} `));
+  // A person asking to go live isn't answered by an earlier play whose Unity build was held: that one played nothing.
+  const heldBuildRun = cause ? (await import('./unitybuild-policy.ts')).heldBuildRun : () => null;
+  const done = runs.find((r) => String(r.options ?? '').includes(`${BEFORE_GO_LIVE} ${short} `) && !heldBuildRun(r.id, productId));
   if (done) return { played: done.id };
   try {
     const go = start ?? (await import('./pipeline.ts')).startBeta;
-    const r = go(productId, { focus: focusFor(short), playtest: true, reverify: true });
+    const r = go(productId, { focus: focusFor(short), playtest: true, reverify: true, ...(cause ? { cause } : {}) });
     console.log(`[golive] ${productId}: playing beta ${short} once before going live (${why}): ${r.id}`);
     return { started: r.id };
   } catch (e: any) {

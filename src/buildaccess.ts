@@ -123,7 +123,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS build_retry (
 const timers = new Map<string, NodeJS.Timeout>();
 /** Replaced by the tests (nothing really builds). */
 export const hooks: { start: (product: string, o: { build: string; ref?: string; sha?: string; retry: number }) => Promise<unknown>; notify: (title: string, body: string, url: string) => Promise<unknown> } = {
-  start: async (product, o) => (await import('./builds.ts')).startBuild(product, { build: o.build, ref: o.ref, sha: o.sha, retry: o.retry }),
+  start: async (product, o) => (await import('./builds.ts')).startBuild(product, { build: o.build, ref: o.ref, sha: o.sha, retry: o.retry, cause: 'retry' }),
   notify: async (title, body, url) => { const { notify, PUBLIC_URL } = await import('./notify.ts'); return notify(title, body, { url: `${PUBLIC_URL}/${url.replace(/^\//, '')}`, priority: 4, tags: ['key'] }); },
 };
 

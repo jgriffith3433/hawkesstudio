@@ -125,10 +125,13 @@ async function startAgain(r: any): Promise<string | null> {
     // A project's builds that failed because Studio kept restarting: built again once.
     const B = await import('./builds.ts');
     let id: string | null = null;
-    for (const b of options.builds as string[]) id = (await B.startBuild(product, { build: b, ref: options.ref, retry: 3, origin }))?.id ?? id;
+    // Started again for what started it before (unitybuild-policy.ts): a person's build still builds; an automatic Unity
+    // build asks the rule again.
+    const cause = (await import('./unitybuild-policy.ts')).causeOf(options);
+    for (const b of options.builds as string[]) id = (await B.startBuild(product, { build: b, ref: options.ref, retry: 3, origin, cause }))?.id ?? id;
     return id;
   }
-  if (r.kind === 'beta') return P.startBeta(product, { focus: options.focus, criteria: options.criteria, scenario: options.scenario, options: options.options, playtest: options.playtest, plays: options.plays, origin }).id;
+  if (r.kind === 'beta') return P.startBeta(product, { focus: options.focus, criteria: options.criteria, scenario: options.scenario, options: options.options, playtest: options.playtest, plays: options.plays, origin, ...(options.cause ? { cause: options.cause } : {}) }).id;
   if (['build', 'playtest', 'test'].includes(r.kind)) return P.startPartial(r.kind, product, { ...(options as any), origin, resumes: undefined, restarts: undefined, revived: undefined }).id;
   return null; // the daily run: tomorrow's covers it
 }

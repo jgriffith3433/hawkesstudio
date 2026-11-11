@@ -32,13 +32,18 @@ export function publishedBuild(product: string, build: string): Row | null {
   return (db.prepare("SELECT id, version, status, sha, run, started, detail, build FROM builds WHERE product = ? AND build = ? AND status = 'ready' AND change IS NULL ORDER BY started DESC, version DESC LIMIT 1").get(product, build) as Row | undefined) ?? null;
 }
 
-export type Ensured = { ok: boolean; how: 'already built' | 'built' | 'waited for a build' | 'failed'; sha: string; version: number | null; run: string | null; detail: string };
+export type Ensured = { ok: boolean; how: 'already built' | 'built' | 'waited for a build' | 'failed' | 'held'; sha: string; version: number | null; run: string | null; detail: string };
 
 export type EnsureDeps = {
   /** Beta's head on GitHub. */
   head: () => Promise<string | null>;
   /** Starts the cloud build of that commit (builds.ts startBuild); its `done` may include the build's own playtest. */
   start: (sha: string) => Promise<{ id: string; done: Promise<unknown> } | null>;
+  /**
+   * Asked only when a build would have to start (beta's head is neither published nor building): why it is held, or null
+   * to build (unitybuild-policy.ts: a Unity build waits for a milestone's end with nothing else queued).
+   */
+  hold?: () => string | null;
   /** The deadline for the whole wait. */
   maxMs?: number;
   /** Test seam: how a listener hears of a write. */
@@ -48,8 +53,8 @@ export type EnsureDeps = {
 
 /**
  * Makes sure beta's head is built and published before anything plays it. Already published: nothing to do. Building
- * already (a push's run, the nightly sync): waits for that one, no second Unity build. Else starts it and waits for it.
- * Never throws: `ok: false` says why.
+ * already (a push's run, the nightly sync): waits for that one, no second Unity build. Held (d.hold): nothing starts.
+ * Else starts it and waits for it. Never throws: `ok: false` says why.
  */
 export async function ensureBetaBuild(product: string, build: string, d: EnsureDeps): Promise<Ensured> {
   const say = d.say ?? (() => {});
@@ -65,6 +70,9 @@ export async function ensureBetaBuild(product: string, build: string, d: EnsureD
   let started: { id: string; done: Promise<unknown> } | null = null;
   if (first.state === 'building') { how = 'waited for a build'; say(`beta ${short} is building already (run ${first.row!.run}): waiting for it`); }
   else {
+    // Held: nothing is built, and nothing plays the build from before (it may predate the merges this run is about).
+    const held = d.hold?.() ?? null;
+    if (held) return { ok: false, how: 'held', sha, version: null, run: null, detail: held };
     try { started = await d.start(sha); } catch (e: any) { return fail(sha, `couldn't start the build of beta ${short}: ${String(e?.message ?? e).slice(0, 300)}`); }
     say(`building beta ${short} in the cloud${started ? ` (run ${started.id})` : ''}`);
   }

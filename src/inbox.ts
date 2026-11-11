@@ -499,7 +499,8 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
 /** A transient build failure Studio builds again itself instead of filing (the card is answered "Build again" by it). */
 async function rebuildForCause(product: string, f: { id: string; build: string; reason: string }, cause: ReturnType<typeof causeOf> & {}) {
   try {
-    const r = await (await import('./builds.ts')).startBuild(product, { build: f.build });
+    // The same build again after an infrastructure failure, not a new one: a retry (unitybuild-policy.ts).
+    const r = await (await import('./builds.ts')).startBuild(product, { build: f.build, cause: 'retry' });
     ack(`build:${f.id}`, SELF_BY, `Build again (${cause.label})`, null, `Build ${f.build} of ${product}`);
     logCause(cause, { product, kind: 'rebuilt', ref: f.id, subject: `${product}/${f.build}`, detail: `built again (${r?.id ?? 'no run'}): ${f.reason}`, dedup: `rebuilt:${f.id}` });
     return true;
@@ -737,7 +738,8 @@ async function answerOne(id: string, answer: string, by: string, opts: { confirm
     const row = db.prepare('SELECT product, build FROM builds WHERE id = ?').get(bm[1]) as any;
     if (!row) throw new StudioError(`No build ${bm[1]}`, 404);
     if (/^\s*build again/i.test(text)) {
-      const r = await (await import('./builds.ts')).startBuild(row.product, { build: row.build });
+      // The owner's "Build again": a person asked, so a Unity build runs too (unitybuild-policy.ts).
+      const r = await (await import('./builds.ts')).startBuild(row.product, { build: row.build, cause: 'person' });
       ack(id, by, text, null, `Build ${row.build} of ${row.product}`);
       return { answered: id, by, run: r?.id ?? null };
     }

@@ -631,7 +631,8 @@ const server = http.createServer(async (req, res) => {
       const { startBeta } = await import('./pipeline.ts');
       // Asking for a beta run is asking for its playtest too (after merges, beta isn't played unless the setting says so).
       // It builds at once (no quiet time for more pushes), though a newer beta run still supersedes it while it waits.
-      return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus, origin, playtest: b.playtest !== false, quiet: 0 }).id });
+      // A person asked (the Beta button, Talk, the CLI): its Unity build runs whatever is queued (unitybuild-policy.ts).
+      return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus, origin, playtest: b.playtest !== false, quiet: 0, cause: 'person' }).id });
     }
 
     // Developing on beta (dev.ts): <sub>.hawkesgen.ai/dev/, the beta working copy and its dev server.
@@ -1176,7 +1177,7 @@ const server = http.createServer(async (req, res) => {
       const B = await import('./builds.ts');
       if (!b.change && (p as any).github && B.buildsOf(p).length && (await import('./previews-cloud.ts')).remoteSites()) {
         const { originOf } = await import('./followup.ts');
-        const r = await B.startBuild(p.id, { origin: originOf(req) });
+        const r = await B.startBuild(p.id, { origin: originOf(req), cause: 'person' });
         return send(res, 200, { ok: true, building: p.id, run: r?.id ?? null, builds: r?.builds ?? [], url: previewUrl(p.id), note: 'a build run: it shows in Activity, and Talk hears when it is done' });
       }
       void buildPreview(m[1], { change: b.change ? String(b.change) : undefined });
