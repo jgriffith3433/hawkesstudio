@@ -1194,8 +1194,14 @@ export const talkInfo = () => {
   };
 };
 
-// A conversation interrupted by a restart isn't thinking any more, unless its answer runs outside Studio (resumeTalk).
-db.prepare(`UPDATE conversations SET status = 'idle' WHERE status = 'thinking' AND proc IS NULL`).run();
+/**
+ * A conversation interrupted by a restart isn't thinking any more, unless its answer runs outside Studio (resumeTalk).
+ * Its question keeps no answer, so the dashboard offers Retry for it ("Studio restarted while answering", talk-resume.js).
+ */
+export function resetInterruptedTurns() {
+  return db.prepare(`UPDATE conversations SET status = 'idle' WHERE status = 'thinking' AND proc IS NULL`).run().changes;
+}
+resetInterruptedTurns();
 // Results posted before a restart that Claude hadn't answered yet still get their turn.
 for (const r of db.prepare('SELECT id FROM conversations WHERE updated > ?').all(Date.now() - 6 * 3600_000) as { id: string }[]) {
   const c = getConversation(r.id);
