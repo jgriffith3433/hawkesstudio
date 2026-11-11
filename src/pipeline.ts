@@ -25,6 +25,8 @@ import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './b
 import { feelFindings, feelSensorFindings } from './feel.ts';
 import { audioFindings, audioTimelineSummary, enrichAudio, loudnessFromAsset } from './audio.ts';
 import { enrichUi, uiFindings, uiSummary } from './ui.ts';
+import { enrichStory, storyFindings } from './story.ts';
+import { storyMap, storyMapLine } from './storymap.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { isGame, effectiveBar, qualityFindings } from './quality.ts';
 import { funReview } from './fun-review.ts';
@@ -337,6 +339,21 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
       const r = await runCheck(c.dir, c.cmd);
       updateStep(s, { status: r.ok ? 'done' : 'failed', detail: r.ok ? `passed in ${r.seconds} s` : `failed (exit ${r.code}) after ${r.seconds} s`, data: r, finished: true });
     }
+  }
+
+  // The story-map check (storymap.ts): on every run that builds or plays, never on a timer. Per story: endings, the share of
+  // pages with a real choice, forks that rejoin within a page, timeouts that default to a death; each problem a finding naming its page.
+  try {
+    const sm = storyMap(p.repo, p.storyMap);
+    if (sm.stories.length) {
+      const s = startStep(run, p.id, 'story-map', 'stories');
+      if (!finishedBefore(s)) {
+        if (sm.findings.length) absorb(p.id, run, 'story-map', sm.findings, { mode: 'full' });
+        updateStep(s, { status: 'done', detail: sm.stories.map((x) => storyMapLine(x.report)).join(' · ').slice(0, 600), data: { stories: sm.stories.map((x) => x.report), findings: sm.findings.map((f) => f.title) }, finished: true });
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[studio] story map skipped (${p.id}): ${e?.message ?? e}`);
   }
 
   // Generated assets the project's manifest lists: report what's missing or out of date (making them costs money,
@@ -960,7 +977,9 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     updateStep(s, { detail: `played in software (${r.fps?.average ?? '?'} fps)${r.softwareBecause ? `: ${String(r.softwareBecause).slice(0, 120)}` : ''}; reviewed anyway, it is not GPU-bound` });
   }
   // Audio layer: event timeline metrics always; ebur128 loudness when the recording has a Gen video asset.
-  const audioResult = enrichUi(await withAudio(r, job).catch(() => enrichAudio(r)));
+  // Story layer: the story kit's events become measured quality.textOnlyBeats and quality.maxQuietSeconds (story.ts).
+  const withUi = enrichUi(await withAudio(r, job).catch(() => enrichAudio(r)));
+  const audioResult = enrichStory(withUi, withUi?.audio);
   if (audioResult?.metrics) {
     try {
       const cur = (db.prepare(`SELECT data FROM steps WHERE id = ?`).get(s) as any)?.data;
@@ -1011,6 +1030,7 @@ function fileFeel(run: string, p: Product, name: string, scenario: string, r: an
       ...feelSensorFindings(r, { scenario }),
       ...feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined }),
       ...audioFindings(r, { scenario }),
+      ...storyFindings(r, { scenario }),
       ...uiFindings(r, { scenario }),
       // Phone load budget: over 20 MB / 20 s names the five largest pre-gameplay assets; fps p5 under 30 names the dip time.
       ...phonePerfFindings(r, { scenario }),

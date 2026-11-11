@@ -43,3 +43,11 @@ third-party error (payment_issue, 401, 402) means stop and write `.hawkes/stuck.
 
 Start with the world bible (Characters included) and the one character the first minute needs: a want the player can help
 or hinder through the core loop, voiced and animated before the slice is called done.
+
+## The story kit (measured, not self-reported)
+
+Use `clients/web/hawkes-story.js` (Unity `HawkesStory`) for barks, cutscenes and choices: beats are data in `beats.json`, barks have
+requirements, priority, cooldown and memory, cutscenes are skippable with voice, captions and music ducking, and the kit's story
+events are what Studio reads for `quality.textOnlyBeats` and `quality.maxQuietSeconds` (don't set those metrics by hand: a measured
+reading overrides yours). Studio's story-map check reads the same data on every build: endings, real-choice share, forks that rejoin
+within a page, timeouts that default to a death. Details: docs/playtest.md#story-kit.
