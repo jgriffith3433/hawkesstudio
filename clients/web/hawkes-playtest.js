@@ -33,15 +33,19 @@
 // The explore bot (hawkes-explore.js, docs/playtest.md#explore) hugs walls, jumps edges and maps stuck and fall spots.
 // Give feel.player and explore: { enter: async (t) => game.startLevel() } (or explore: true when the game is playable
 // on load) and the run gets an "explore" scenario. A game's own "explore" scenario wins.
+//
+// The audio probe (hawkes-audio.js, docs/playtest.md#audio) taps WebAudio into a MediaRecorder and pushes sound-start
+// and input events (and AudioContext resume on first tap). `audio: false` turns it off.
 
 import { installPerfMonitor, discoverBabylonScene } from './hawkes-perf.js';
 import { startBabylonFeel, startFrameFeel, parseSpot, pushToRunner } from './hawkes-feel.js';
+import { startAudioProbe } from './hawkes-audio.js';
 import { runExplore, createExploreMap, EXPLORE_DEFAULTS } from './hawkes-explore.js';
 
 export const CONTRACT_VERSION = 1;
 
 export function installPlaytest(opts) {
-  const { product, isReady = () => true, start, stop, input, stallSeconds = 60, feel: feelOpts, explore: exploreOpts } = opts;
+  const { product, isReady = () => true, start, stop, input, stallSeconds = 60, feel: feelOpts, explore: exploreOpts, audio: audioOpts } = opts;
   if (!product || !Array.isArray(opts.scenarios) || typeof start !== 'function') {
     throw new Error('installPlaytest needs product, scenarios and start');
   }
@@ -55,6 +59,7 @@ export function installPlaytest(opts) {
 
   let run = null; // the current run
   let sensor = null; // the feel sensor of the current run
+  let audio = null; // the audio probe of the current run
   const fps = makeFpsMeter();
 
   const now = () => (run ? (performance.now() - run.t0) / 1000 : 0);
@@ -85,6 +90,7 @@ export function installPlaytest(opts) {
       run.seconds = now();
       tracker.event('finish', outcome);
       stopFeel();
+      stopAudio();
     },
     get seed() { return run?.options.seed ?? 0; },
     get speed() { return run?.options.speed ?? 1; },
@@ -171,11 +177,53 @@ export function installPlaytest(opts) {
       return feelOpts === false ? {} : { 'feel.samples': 0 };
     } catch { return {}; }
   }
+  function audioMetrics() {
+    try {
+      if (run?.audioMetrics) return run.audioMetrics;
+      if (audio) return audio.metrics?.() ?? {};
+      return audioOpts === false ? {} : {};
+    } catch { return {}; }
+  }
   let feelTimer = null;
   function stopFeel() {
     if (feelTimer) { clearTimeout(feelTimer); feelTimer = null; }
     try { if (sensor && run) { run.feelFinal = sensor.flags(); run.feelMetrics = sensor.metrics?.() ?? null; } sensor?.stop(); } catch {}
     sensor = null;
+  }
+  function startAudio(r) {
+    stopAudio();
+    if (audioOpts === false) return;
+    const o = audioOpts && typeof audioOpts === 'object' ? audioOpts : {};
+    try {
+      audio = startAudioProbe({
+        ...o,
+        scene: () => r.state.scene,
+        emit: (ev) => {
+          if (r !== run) return;
+          r.audio = r.audio || [];
+          r.audio.push(ev);
+          if (ev.type === 'sound-start' || ev.type === 'input' || ev.type === 'audiocontext-resume') {
+            tracker.event(ev.type, JSON.stringify(ev));
+          } else if (ev.type === 'audio-sensor') {
+            tracker.event('audio-sensor', JSON.stringify(ev));
+          }
+        },
+      });
+      tracker.event('audio-sensor', JSON.stringify(audio.info?.() ?? { adapter: 'none' }));
+    } catch (e) {
+      audio = null;
+      tracker.log(`audio probe off: ${e?.message ?? e}`);
+    }
+  }
+  function stopAudio() {
+    try {
+      if (audio && run) {
+        run.audioFinal = audio.events?.() ?? run.audio ?? [];
+        run.audioMetrics = audio.metrics?.() ?? null;
+      }
+      audio?.stop();
+    } catch {}
+    audio = null;
   }
 
   async function playExplore(r) {
@@ -211,6 +259,7 @@ export function installPlaytest(opts) {
       const mine = run;
       tracker.event('start', id);
       startFeel(mine);
+      startAudio(mine);
       // A start point (options.at): where the scenario starts; the game loads it in start() (t.at).
       if (mine.options.at != null && mine.options.at !== '') tracker.event('start-at', mine.options.at);
       try {
@@ -247,12 +296,13 @@ export function installPlaytest(opts) {
         scenario: run.id,
         outcome: run.done ? run.state.status : 'stuck',
         seconds: round(run.seconds ?? now()),
-        // The feel sensor's measurements (feel.*) first, so a game's own run.metric('feel.…') wins.
-        metrics: { ...feelMetrics(), ...run.metrics, fpsAverage: fps.average(), fpsWorst: fps.worst() },
+        // Feel then audio measurements first, so a game's own run.metric('feel.…' / 'audio.…') wins.
+        metrics: { ...feelMetrics(), ...audioMetrics(), ...run.metrics, fpsAverage: fps.average(), fpsWorst: fps.worst() },
         events: run.events.slice(),
         problems: run.problems.slice(),
         log: run.log.slice(),
         feel: (run.feelFinal ?? sensor?.flags() ?? run.feel).slice(),
+        audio: (run.audioFinal ?? audio?.events?.() ?? run.audio ?? []).slice(),
         ...(perf ? { perf } : {}),
       };
     },

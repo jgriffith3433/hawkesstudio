@@ -118,6 +118,27 @@
         { "id": "explore-falls", "kind": "playtest", "world": "3d", "what": "The explore bot (hugging walls, jumping edges) never falls through or out of the world. A hard limit: one spot fails.", "metric": "explore.fallSpots", "max": 0, "hard": true, "optional": true },
         { "id": "explore-stuck", "kind": "playtest", "world": "3d", "what": "The explore bot never gets stuck on geometry it can't escape by sliding, jumping or backing out.", "metric": "explore.stuckSpots", "max": 0, "optional": true }
       ]
+    },
+    {
+      "id": "sound-design",
+      "title": "No silent jump, no clipping mix, no identical sample twice",
+      "why": "Celeste and Hades answer every input with a sound within a frame and never repeat the same sample twice; PlayStation's mobile target is -18 LUFS (±2, we allow ±3) with true peak at most -1 dBTP. A silent action, a clipping mix or a looping identical take reads as unfinished.",
+      "build": [
+        "Every player action (jump, attack, confirm, cancel, UI click) plays a one-shot within 150 ms of the input.",
+        "Mix to about -18 LUFS integrated (±3) with true peak at most -1 dBTP; limit masters, don't clip.",
+        "Footsteps and repeated oneshots use a small pool so the same buffer+rate never plays twice within 60 s.",
+        "When voice plays, duck the music bus by at least 6 dB and restore it after.",
+        "In play (not menus or loading) never leave more than 10 s of silence without ambient, footsteps or reactive SFX.",
+        "Web and Unity WebGL: the playtest audio probe (hawkes-audio.js) taps WebAudio; tag sources with __hawkesSampleId / __hawkesBus when the auto id is wrong."
+      ],
+      "checks": [
+        { "id": "loudness", "kind": "playtest", "what": "Integrated loudness near -18 LUFS (±3).", "metric": "audio.lufsIntegrated", "min": -21, "max": -15, "optional": true },
+        { "id": "true-peak", "kind": "playtest", "what": "True peak at most -1 dBTP.", "metric": "audio.truePeakDb", "max": -1, "optional": true },
+        { "id": "silent-actions", "kind": "playtest", "what": "An input with no sound start within 150 ms. A hard limit: one silent action fails.", "metric": "audio.silentActions", "max": 0, "hard": true, "optional": true, "problem": "quality.silent-actions" },
+        { "id": "identical-repeats", "kind": "playtest", "what": "The same sample at the same rate twice within 60 s. A hard limit: one repeat fails.", "metric": "audio.identicalRepeats60s", "max": 0, "hard": true, "optional": true, "problem": "quality.identical-repeats" },
+        { "id": "voice-duck", "kind": "playtest", "what": "Music ducks at least 6 dB under voice.", "metric": "audio.voiceDuckDb", "min": 6, "optional": true },
+        { "id": "silence-in-play", "kind": "playtest", "what": "Longest silence in play at most 10 s (menus and loading excluded).", "metric": "audio.longestSilenceS", "max": 10, "optional": true }
+      ]
     }
   ]
 }

@@ -161,6 +161,15 @@ type Evidence = { frames: { asset: string; t?: number; scene?: string; reason?: 
 
 const asImage = (x: string) => (/^(asset|blob):/.test(x) ? x : `asset:${x}`);
 
+/** A short audio timeline for the sound axis (judges can't hear the tape). */
+function audioBlock(ev: Evidence): string {
+  const m = { ...ev.metrics, ...ev.phoneMetrics };
+  const keys = ['audio.lufsIntegrated', 'audio.truePeakDb', 'audio.longestSilenceS', 'audio.silentActions', 'audio.identicalRepeats60s', 'audio.voiceDuckDb'];
+  if (!keys.some((k) => m[k] != null)) return '';
+  const line = keys.filter((k) => m[k] != null).map((k) => `${k}=${m[k]}`).join(', ');
+  return `Audio (you cannot hear the recording; score "sound" from these readings and the frames' implied moments): ${line}\n`;
+}
+
 /** The frames, metrics and review text of the playtests a run played (its review steps; the phone run's are marked). */
 export function evidenceOf(run: string, product: string, scenario?: string | null): Evidence {
   const steps = (db.prepare(`SELECT * FROM steps WHERE run = ? AND product = ? ORDER BY started`).all(run, product) as any[]).map(rowToStep);
@@ -217,7 +226,7 @@ WORLD BIBLE: ${bible ? `\n${bible}` : 'none yet (say so under story through play
 
 THIS REVIEW PLAYED: ${chosen.scenario ?? 'the run\'s scenarios'}.
 Metrics (desktop): ${JSON.stringify(ev.metrics).slice(0, 1500)}
-${ev.phone || Object.keys(ev.phoneMetrics).length ? `Metrics (phone run): ${JSON.stringify(ev.phoneMetrics).slice(0, 800)}\n` : 'There was no phone run: score "phone" only from what the desktop frames show about touch, and say so.\n'}The reviewers' summaries:
+${ev.phone || Object.keys(ev.phoneMetrics).length ? `Metrics (phone run): ${JSON.stringify(ev.phoneMetrics).slice(0, 800)}\n` : 'There was no phone run: score "phone" only from what the desktop frames show about touch, and say so.\n'}${audioBlock(ev)}The reviewers' summaries:
 ${ev.summaries.join('\n').slice(0, 3000)}
 
 THE ATTACHED FRAMES, in order:

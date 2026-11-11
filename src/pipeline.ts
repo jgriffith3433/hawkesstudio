@@ -23,6 +23,7 @@ import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
 import { feelFindings, feelSensorFindings } from './feel.ts';
+import { audioFindings, audioTimelineSummary, enrichAudio, loudnessFromAsset } from './audio.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { isGame, effectiveBar, qualityFindings } from './quality.ts';
 import { funReview } from './fun-review.ts';
@@ -901,26 +902,65 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     }
     updateStep(s, { detail: `played in software (${r.fps?.average ?? '?'} fps)${r.softwareBecause ? `: ${String(r.softwareBecause).slice(0, 120)}` : ''}; reviewed anyway, it is not GPU-bound` });
   }
-  fileFeel(run, p, name, t.scenario ?? name.replace(/@.*$/, ''), r, mode, playOptions(t)?.at);
+  // Audio layer: event timeline metrics always; ebur128 loudness when the recording has a Gen video asset.
+  const audioResult = await withAudio(r, job).catch(() => enrichAudio(r));
+  if (audioResult?.metrics) {
+    try {
+      const cur = (db.prepare(`SELECT data FROM steps WHERE id = ?`).get(s) as any)?.data;
+      const data = typeof cur === 'string' ? JSON.parse(cur) : (cur ?? {});
+      updateStep(s, { data: { ...data, metrics: { ...(data.metrics ?? {}), ...audioResult.metrics }, audio: audioResult.audio ?? null } });
+    } catch (e: any) {
+      console.warn(`[studio] audio metrics not stored (${p.id} ${name}): ${e.message ?? e}`);
+    }
+  }
+  // Stash the enriched result on the job so the review gets the same audio timeline summary.
+  if (audioResult) job.result = { ...r, ...audioResult, metrics: { ...(r.metrics ?? {}), ...(audioResult.metrics ?? {}) } };
+  fileFeel(run, p, name, t.scenario ?? name.replace(/@.*$/, ''), job.result ?? audioResult ?? r, mode, playOptions(t)?.at);
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria, sweep });
+}
+
+/** Enrich a playtest result with audio.* metrics (events + optional ebur128 on the recording). */
+async function withAudio(r: any, job: any) {
+  const video = r?.video ?? (job?.outputs ?? []).find((x: any) => x.kind === 'video')?.asset ?? null;
+  let enriched = enrichAudio(r);
+  if (video && typeof (gen as any).download === 'function') {
+    try {
+      const loud = await loudnessFromAsset(video, (a, f) => (gen as any).download(a, f));
+      if (loud.lufsIntegrated != null || loud.truePeakDb != null) {
+        enriched = {
+          ...enriched,
+          metrics: {
+            ...enriched.metrics,
+            ...(loud.lufsIntegrated != null ? { 'audio.lufsIntegrated': loud.lufsIntegrated } : {}),
+            ...(loud.truePeakDb != null ? { 'audio.truePeakDb': loud.truePeakDb } : {}),
+          },
+        };
+      }
+    } catch (e: any) {
+      console.warn(`[studio] audio loudness skipped: ${e?.message ?? e}`);
+    }
+  }
+  return enriched;
 }
 
 /**
  * The feel layer's findings (feel.ts): what the game's sensor flagged and the vision pass saw, one finding per kind
- * and scene, each with the places and a replay (scenario + seed + spot) for the fix and its recheck.
+ * and scene, each with the places and a replay (scenario + seed + spot) for the fix and its recheck. Also the audio
+ * layer's silent-action / identical-repeat / loudness findings (audio.ts).
  */
 function fileFeel(run: string, p: Product, name: string, scenario: string, r: any, mode?: string, at?: unknown) {
   try {
     const list = [
       ...feelSensorFindings(r, { scenario }),
       ...feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined }),
+      ...audioFindings(r, { scenario }),
       // A measured limit the play broke (a hitch in play over 250 ms, input latency): a bug the agents fix on beta, so
       // the go-live gate clears by itself (deploy.ts qualityBlockers), never a "fix it" for the owner.
       ...qualityFindings(p, r, scenario),
     ];
     if (!list.length) return;
     const got = absorb(p.id, run, name, list, { mode: 'full' });
-    console.log(`[studio] ${p.id} ${name}: feel ${r.feel?.length ?? 0} flags${r.polish?.score != null ? `, polish ${r.polish.score}/10` : ''} -> ${got.added.length} new, ${got.updated.length} seen again, ${got.ideas.length} ideas`);
+    console.log(`[studio] ${p.id} ${name}: feel ${r.feel?.length ?? 0} flags${r.polish?.score != null ? `, polish ${r.polish.score}/10` : ''} audio silent=${r.metrics?.['audio.silentActions'] ?? '?'} -> ${got.added.length} new, ${got.updated.length} seen again, ${got.ideas.length} ideas`);
   } catch (e: any) {
     console.warn(`[studio] feel findings not filed (${p.id} ${name}): ${e.message ?? e}`);
   }
@@ -1073,10 +1113,13 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   const wasReview = resumedStep(rs);
   if (wasReview && wasReview.status !== 'running') return job;
   const previous = lastStep(p.id, 'review', name, run)?.data ?? null;
+  const audioSummary = isGame(p) ? audioTimelineSummary(r) : '';
   const revParams = reviewParams(p, job.id, reviewMode, {
     ...(focus ? { focus } : {}),
     ...(criteria?.length ? { criteria } : {}),
     ...(previous ? { previous: { summary: previous.summary, verdict: previous.verdict, scores: previous.scores, findings: (previous.findings ?? []).map((f: any) => ({ severity: f.severity, title: f.title })) } } : {}),
+    // Judges can't hear the tape: a short audio timeline (LUFS, silent actions, sound starts).
+    ...(audioSummary ? { audio: audioSummary } : {}),
   });
   // Gen's review, or the same review through Claude Code on the Max plan while Gen's Claude is out of credit (review-cc.ts).
   const rev = await reviewJob(p.id, revParams, () => runGenJob('playtest.review', p.id, revParams, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined, halt: haltOf(run) }));

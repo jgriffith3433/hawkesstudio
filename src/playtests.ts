@@ -316,6 +316,8 @@ export function playtestData(job: any, url: string) {
     // The feel layer's flags and vision hits, for the quality gate on going live (deploy.ts qualityOfPlay).
     feel: Array.isArray(r.feel) ? r.feel.slice(0, 200) : null,
     polishHits: Array.isArray(r.polish?.hits) ? r.polish.hits.slice(0, 60) : null,
+    // The audio probe's timeline (sound starts, inputs, AudioContext resume), for sound-design findings.
+    audio: Array.isArray(r.audio) ? r.audio.slice(0, 500) : null,
     // The explore bot's map (explore.ts): where it went, got stuck and fell out.
     explore: exploreOf(r.events),
     visual: r.visual ? { baseline: r.visual.baseline, pairs: r.visual.pairs?.length ?? 0, big: r.visual.big ?? 0, top: (r.visual.pairs ?? []).filter((x: any) => x.big).slice(0, 4) } : null,

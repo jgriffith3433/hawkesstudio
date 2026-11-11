@@ -26,16 +26,19 @@ A product is a game when its `kind` is empty or `game` and its engine isn't `sta
 | `animation-over-time` | Animation holds up over time: slope landings settle within 0.3 s, feet don't slide |
 | `living-world` | A full, living world with soul: a world bible, never more than ~10 s with nothing to see, hear or do, story told through gameplay, events, cutscenes, SFX and voice, not text |
 | `camera-and-controls` | The camera never clips or snaps, controls answer in under 100 ms, no frame over 250 ms; jumping and combat games report coyote time, jump buffer and hit-stop; the explore bot never falls out of the world |
+| `sound-design` | No silent jump or button, mix near -18 LUFS (±3) with true peak ≤ -1 dBTP, no identical sample twice in 60 s, voice ducks music ≥ 6 dB, silence in play ≤ 10 s |
 
 **Hard limits.** A check marked `hard` fails at its first sighting: the camera inside a wall (`camera-clip`), a snap
-or jump (`camera-snap`), models clipping (`clipping`), and a fall spot the explore bot found (`explore-falls`).
+or jump (`camera-snap`), models clipping (`clipping`), a fall spot the explore bot found (`explore-falls`), a silent
+action (`silent-actions`), and an identical sample repeat (`identical-repeats`).
 
 **Measured limits.** A check with `metric` and `max` / `min` fails when the playtest reading is outside it:
 `feel.inputLatencyMs` (100), `feel.worstHitchMs` and `video.worstHitchMs` (250, the review's motion clips),
 `feel.cameraClipSeconds` (0), `feel.coyoteMs` and `feel.jumpBufferMs` (80), `feel.hitStopMs` (40),
-`explore.fallSpots` and `explore.stuckSpots` (0). `optional` checks only apply to games that report them. Software
-rendering drops the hitch and latency readings. These are starting values: a game tunes its own in products.json
-`tuning`, e.g. `{ "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 120 } }`.
+`explore.fallSpots` and `explore.stuckSpots` (0), `audio.silentActions` / `audio.identicalRepeats60s` (0),
+`audio.lufsIntegrated` (-21..-15), `audio.truePeakDb` (-1), `audio.voiceDuckDb` (6), `audio.longestSilenceS` (10).
+`optional` checks only apply to games that report them. Software rendering drops the hitch and latency readings. These
+are starting values: a game tunes its own in products.json `tuning`, e.g. `{ "feel.inputLatencyMs": { "max": 120 } }`.
 
 **What counts as a hitch** (J's go-lives, 2026-11-09). The hitch limit is for play: a long frame on a loading,
 title or menu screen, or in a scene's first 3 s, is **load stutter**, a warning on the plan and never a fail

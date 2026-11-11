@@ -223,6 +223,8 @@ const FEEL_KINDS: [RegExp, string][] = [
   [/backwards|mirror|text/, 'text-mirrored'],
   [/float|sunk|buried|hover/, 'floating-sunk'],
   [/empty|bare|barren/, 'empty-area'],
+  [/^silent-action/, 'silent-actions'],
+  [/^identical-repeat/, 'identical-repeats'],
 ];
 function feelCheck(kind: string, checks: ReturnType<typeof rubricChecks>) {
   const k = kind.trim().toLowerCase();
@@ -337,6 +339,12 @@ const LIMIT_FIX: Record<string, string> = {
   'camera-clip': 'Keep the camera out of walls: a collision probe or spring arm that pulls it in front of geometry, and fade what still blocks the view.',
   'explore-falls': 'Close the holes the explore bot fell through: collision on every walkable surface, no gaps at seams, a kill floor that respawns.',
   'explore-stuck': 'Smooth the collision where the explore bot got stuck: step offsets, no thin lips or snag edges, slide along walls.',
+  loudness: 'Mix to about -18 LUFS integrated (±3): lower the master or add a limiter, then re-measure.',
+  'true-peak': 'True peak at most -1 dBTP: limit or reduce peaks so the mix never clips.',
+  'silent-actions': 'Play a one-shot SFX on that action within 150 ms (jump, attack, confirm, UI click).',
+  'identical-repeats': 'Use a small sample pool so the same buffer+rate never plays twice within 60 s.',
+  'voice-duck': 'When voice plays, duck the music bus by at least 6 dB and restore it after.',
+  'silence-in-play': 'Fill quiet gaps in play with ambient, footsteps or reactive SFX (menus and loading excluded).',
 };
 
 /**
@@ -353,7 +361,7 @@ export function qualityFindings(p: Pick<Product, 'id' | 'engine' | 'kind'> & { t
     if (!c?.metric || !f.evidence.startsWith(`${c.metric} = `)) return [];
     return [{
       title: `Quality limit broken: ${c.id} (${f.title})`,
-      severity: 'bug', area: c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : 'gameplay',
+      severity: 'bug', area: c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : (c.rule === 'sound-design' || c.id.startsWith('audio') || ['loudness', 'true-peak', 'silent-actions', 'identical-repeats', 'voice-duck', 'silence-in-play'].includes(c.id) ? 'audio' : 'gameplay'),
       detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
       fix: LIMIT_FIX[c.id] ?? `Bring ${c.metric} inside its limit, then play the scenario again.`,
     }];
