@@ -25,3 +25,19 @@ Where things run (J, 2026-10-29: each group on its own 20 vCPUs; Google's quota 
 | us-east4 | live Gen, live Studio, studio-agent, the portal beta's functions |
 | us-central1 | gen-beta, studio-beta, studio-agent-beta, the beta CPU playtest service |
 | us-west1 | Unity builds (`hawkes-unity-build`) |
+
+## Clearing stuck Cloud Run executions (GitHub Actions)
+
+`ops-admin` (`.github/workflows/ops-admin.yml`) has an on-demand action, `clear-stuck-executions`, for when old job
+executions hold the region's CPU. It is never scheduled; run it by hand:
+
+```
+gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=clear-stuck-executions                      (dry run)
+gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=clear-stuck-executions -f apply=true -f older_than=90
+```
+
+- Lists every incomplete `hawkes-unity-build*` and `studio-cell-agent*` execution in `hawkes-staging` `us-east4` with its age in minutes and its vCPU (the job's CPU times its tasks).
+- Unticked `apply` (the default) is a dry run: it cancels nothing and says which it would.
+- With `apply` it cancels only executions older than `older_than` minutes (default 90). One still queued with no start time can't be cancelled, so it is deleted, as `ops-jobs-stop` does.
+- It ends with the vCPU freed: the sum for the executions it cancelled.
+- Same logic as Gen's `tools/clear-stuck-executions.mjs` (dry run by default).
