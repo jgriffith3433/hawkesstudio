@@ -283,7 +283,7 @@ export function cloudRunner(): JobRunner {
     list: async (prefix) => (await (await g()).gcsList(bucket, at(prefix))).map((o) => (P ? o.name.slice(P.length + 1) : o.name)),
     remove: async (key) => (await g()).gcsDelete(bucket, at(key)),
     // In the jobs' own project when there is one (jobsproject.ts: they can't take the server's CPU there), else here.
-    start: async (unit) => (await import('./jobsproject.ts')).startInJobsProject({ region, job }, async (p) => (await g()).runJob({ project: p, region, job }, {
+    start: async (unit) => (await import('./jobsproject.ts')).startInJobsPlace(job, async (p) => (await g()).runJob({ project: p.project, region: p.region, job }, {
       env: { STUDIO_JOB_UNIT: unit, ...(P ? { STUDIO_STATE_PREFIX: P } : {}), ...brokerEnv(unit) },
       timeoutSeconds: Number(process.env.STUDIO_AGENT_JOB_TIMEOUT) || 4 * 3600,
     })),
@@ -490,12 +490,13 @@ export async function cancelStrayExecutions(): Promise<string[]> {
   const J = await import('./jobsproject.ts');
   const region = process.env.STUDIO_GCP_REGION || 'us-east4', job = process.env.STUDIO_AGENT_JOB || 'studio-agent';
   // Both projects while the jobs move (jobsproject.ts): executions started before the move are in the server's.
-  const targets = [...new Set([project, J.jobsProject()])].map((p) => ({ project: p, region, job }));
+  const away = J.jobsPlace();
+  const targets = [{ project, region, job }, ...(J.jobsApart() ? [{ project: away.project, region: away.region, job }] : [])];
   const mine = String(process.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '');
   const g = await import('./gcp.ts');
   const tracked = new Set([...follows.values()].filter((f) => !f.done).map((f) => f.execution).filter(Boolean));
   const cancelled: string[] = [];
-  const open = (await Promise.all(targets.map((t) => g.listOpenExecutions(t).catch((e) => { if (t.project === project) throw e; return []; })))).flat();
+  const open = (await Promise.all(targets.map((t) => g.listOpenExecutions(t).catch((e) => { if (t === targets[0]) throw e; return []; })))).flat();
   for (const e of open) {
     if (tracked.has(e.name) || Date.now() - e.createdAt < 10 * 60_000) continue;
     if (!e.env.STUDIO_JOB_UNIT || String(e.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '') !== mine) continue;

@@ -154,5 +154,7 @@ let cpuAskedAt = 0;
 export async function askCpuForJobs(minutes: number, said?: string | null) {
   if (Date.now() - cpuAskedAt < 60 * 60_000) return null;
   cpuAskedAt = Date.now();
-  return askForQuota([{ kind: 'cpu', region: region(), value: QUOTAS.cpu.target, why: `an agent job waited ${minutes} min and Cloud Run never started it${said ? ` (Cloud Run: ${String(said).slice(0, 140)})` : ''}; the region's CPU quota is shared by agent jobs, builds and Gen` }]);
+  // The jobs' own region (jobsproject.ts: apart from the server's by default): that is the quota they wait on.
+  const where = (await import('./jobsproject.ts')).jobsRegion();
+  return askForQuota([{ kind: 'cpu', region: where, value: QUOTAS.cpu.target, why: `an agent job waited ${minutes} min and Cloud Run never started it${said ? ` (Cloud Run: ${String(said).slice(0, 140)})` : ''}; the region's CPU quota is shared by agent jobs, builds and Gen` }]);
 }

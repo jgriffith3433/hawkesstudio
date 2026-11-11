@@ -284,22 +284,27 @@ from a fake GitHub, the job's build mode) and `test/auth.test.ts` (`/auth/pass`,
   it again). A half-written checkout (a clone or switch cut off: nothing differs from GitHub) is reset with no branch.
   A failed push is in the log and Talk's notice, and the reset still happens. No tar is made anywhere: before, a cell's
   half-written PH Origins checkout (1,256 files, its whole beta tree) became a ~518 MiB tar on `/data` (2026-11-01).
-## The agents' jobs in their own project (2026-11-11)
+## The agents' jobs apart from the server (2026-11-11)
 
-After the outage above, the agents' jobs move out of the server's project, so they can never take its CPU again
-(quotas are per project). `src/jobsproject.ts`:
+After the outage above, the agents' jobs run apart from the server, so they can never take its CPU again. Cloud Run's
+CPU quota is per project and region. A project of their own was the first plan, but Google refused to link its billing
+(the billing account's project limit). So by default they go to another region of the same project, which needs nothing
+from the owner. `src/jobsproject.ts`:
 
-- `STUDIO_JOBS_PROJECT` (any Studio) or `STUDIO_CELLS_JOBS_PROJECT` (the control service, which hands it to every cell
-  on its next update: `cellrun.ts` `withJobsEnv` in `setImage`) names the project. Unset: nothing changes.
-- A job start goes to that project. When the job isn't there yet, Studio copies it from the server's project (same
-  image, account, env, limits; secrets by their full path in the old project; the job's grants too) and runs it. When
-  it can't (no access yet), it runs in the server's project as before and says so once in the log. Work never stops on
-  the move.
-- The control service also makes the cells' agents' job there on every roll (`followAgentJob`), with the cells' grants.
-- `cpuroom.ts` counts that project's jobs, keeps nothing back for the server (`STUDIO_CPU_RESERVE` defaults to 0 when
-  the jobs are apart) and takes that project's quota from `STUDIO_JOBS_CPU_QUOTA`, else what it learns.
-- Stray executions are looked for in both projects while the move settles.
+- `jobsRegion`: `STUDIO_JOBS_REGION` (or `STUDIO_CELLS_JOBS_REGION` on the control service). By default it is `us-east1`,
+  a region where no server of Studio or Gen runs, or `us-east4` for a server that is itself in us-east1. `same` keeps
+  the jobs beside the server.
+- `STUDIO_JOBS_PROJECT` / `STUDIO_CELLS_JOBS_PROJECT` can also name another project.
+- A job start goes to that place. When the job isn't there yet, Studio copies it from beside the server with the same
+  image, account, env, limits, secrets (by full path) and grants, then runs it there. If it can't, for example because
+  of no access, or a network only the server's region has, it runs beside the server as before and says so once in the
+  log. Work never stops on the move.
+- The control service makes the cells' agents' job there on every roll (`followAgentJob`). Cells are told the place when
+  made and on their next update (`withJobsEnv` in `setImage`).
+- `cpuroom.ts` counts that place's jobs and keeps nothing back there, because the server isn't in it. The quota is
+  Google's for that region, or `STUDIO_JOBS_CPU_QUOTA`, or what Studio learns. A job Cloud Run never starts asks for
+  that region's quota on the Approve card.
+- Stray executions are looked for in both places while the move settles.
 
-The one owner step (making the project, billing, grants, the env above):
-`bash tools/studio-cloudrun/jobs-project-setup.sh [project-id]` in Cloud Shell. Gen's Unity build jobs are Gen's to
-move (repo hawkesgen); until then a cell's roll still gives way to them (`yieldJobCpu`).
+Gen's Unity build jobs are Gen's to move (repo hawkesgen). Until then a cell's roll still makes them give way
+(`yieldJobCpu`). `tools/studio-cloudrun/jobs-project-setup.sh` stays for a project of their own, once billing allows one.

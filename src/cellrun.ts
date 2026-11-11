@@ -14,11 +14,15 @@ import crypto from 'node:crypto';
 import { gapi } from './gcp.ts';
 import { StudioError } from './config.ts';
 import { cellKeyEnv } from './cellkeys.ts';
+import { jobsRegion } from './jobsproject.ts';
 
 export type CellsConfig = {
-  project: string; projectNumber: string; region: string; serviceAccount: string; bucket: string; agentJob: string; jobsProject: string;
+  project: string; projectNumber: string; region: string; serviceAccount: string; bucket: string; agentJob: string; jobsProject: string; jobsRegion: string;
   publicUrl: string; controlUrl: string; genUrl: string; genPublicUrl: string; googleClientId: string; lane: 'live' | 'beta'; studioService: string;
 };
+
+/** The cells' jobs' region from the cells' own (jobsproject.ts jobsRegion with the STUDIO_CELLS_ names first). */
+const jobsRegionFor = (env: NodeJS.ProcessEnv) => jobsRegion({ ...env, STUDIO_GCP_REGION: env.STUDIO_CELLS_REGION || env.STUDIO_GCP_REGION || 'us-east4', STUDIO_JOBS_REGION: env.STUDIO_CELLS_JOBS_REGION || env.STUDIO_JOBS_REGION });
 
 export function cellsConfig(env: NodeJS.ProcessEnv = process.env): CellsConfig {
   const lane = env.STUDIO_LANE === 'beta' ? 'beta' : 'live';
@@ -31,6 +35,8 @@ export function cellsConfig(env: NodeJS.ProcessEnv = process.env): CellsConfig {
     agentJob: env.STUDIO_CELLS_AGENT_JOB || 'studio-cell-agent',
     // The agents' job's own project (jobsproject.ts), so jobs can't take a cell's server CPU; the cells' project if unset.
     jobsProject: env.STUDIO_CELLS_JOBS_PROJECT || env.STUDIO_JOBS_PROJECT || env.STUDIO_CELLS_PROJECT || env.STUDIO_GCP_PROJECT || '',
+    // And region: by default another one than the cells' (jobsproject.ts jobsRegion; Cloud Run's CPU quota is per region).
+    jobsRegion: jobsRegionFor(env),
     publicUrl: (env.STUDIO_PUBLIC_URL || (lane === 'beta' ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai')).replace(/\/+$/, ''),
     controlUrl: (env.STUDIO_SERVICE_URL || env.STUDIO_PUBLIC_URL || '').replace(/\/+$/, ''),
     // Gen's own address for server calls (Cloud Run's run.app, not the Cloudflare edge) and its public one for browsers.
@@ -54,11 +60,16 @@ export const serviceName = (org: string, c = cellsConfig()) => `${c.lane === 'be
 export const serviceUrl = (org: string, c = cellsConfig()) => `https://${serviceName(org, c)}-${c.projectNumber}.${c.region}.run.app`;
 const base = (c: CellsConfig) => `https://run.googleapis.com/v2/projects/${c.project}/locations/${c.region}`;
 /** Where the agents' job lives (its own project when there is one). */
-const jobsBase = (c: CellsConfig) => `https://run.googleapis.com/v2/projects/${c.jobsProject || c.project}/locations/${c.region}`;
+const jobsBase = (c: CellsConfig) => `https://run.googleapis.com/v2/projects/${c.jobsProject || c.project}/locations/${c.jobsRegion || c.region}`;
+/** The agents' job lives apart from the cells (another region or project). */
+const jobsAway = (c: CellsConfig) => Boolean((c.jobsProject && c.jobsProject !== c.project) || (c.jobsRegion && c.jobsRegion !== c.region));
 /** A cell's env names the jobs' project only when it differs (unchanged cells otherwise). */
-const jobsEnv = (c: CellsConfig): Record<string, string> => (c.jobsProject && c.jobsProject !== c.project ? { STUDIO_JOBS_PROJECT: c.jobsProject } : {});
+const jobsEnv = (c: CellsConfig): Record<string, string> => ({
+  ...(c.jobsProject && c.jobsProject !== c.project ? { STUDIO_JOBS_PROJECT: c.jobsProject } : {}),
+  ...(c.jobsRegion && c.jobsRegion !== c.region ? { STUDIO_JOBS_REGION: c.jobsRegion } : {}),
+});
 /** A container's env with STUDIO_JOBS_PROJECT made to match the config (a roll brings an older cell onto the move). */
-export const withJobsEnv = (vars: any[] | undefined, c: CellsConfig) => [...(vars ?? []).filter((v: any) => v?.name !== 'STUDIO_JOBS_PROJECT'), ...Object.entries(jobsEnv(c)).map(([name, value]) => ({ name, value }))];
+export const withJobsEnv = (vars: any[] | undefined, c: CellsConfig) => [...(vars ?? []).filter((v: any) => v?.name !== 'STUDIO_JOBS_PROJECT' && v?.name !== 'STUDIO_JOBS_REGION'), ...Object.entries(jobsEnv(c)).map(([name, value]) => ({ name, value }))];
 
 export type Planned = { method: string; url: string; body?: unknown };
 /** Every request a dry run would have made (tests and the dry-run summary read it). */
@@ -330,9 +341,10 @@ export async function followAgentJob(image: string, o: { dry?: boolean; log?: (s
   const url = `${jobsBase(c)}/jobs/${c.agentJob}`;
   if (dryRun(o)) return call('PATCH', url, { template: { template: { containers: [{ image }] } } }, o);
   // The jobs' own project (jobsproject.ts): the job is made there from the one beside the cells, grants and all.
-  if (c.jobsProject && c.jobsProject !== c.project) {
-    await (await import('./jobsproject.ts')).copyJob({ from: c.project, to: c.jobsProject, region: c.region, job: c.agentJob, fromNumber: c.projectNumber })
-      .catch((e: any) => (o.log ?? console.log)(`${c.agentJob} not made in ${c.jobsProject} yet: ${e?.message ?? e}`));
+  if (jobsAway(c)) {
+    const to = { project: c.jobsProject || c.project, region: c.jobsRegion || c.region };
+    await (await import('./jobsproject.ts')).copyJob({ from: { project: c.project, region: c.region }, to, job: c.agentJob, fromNumber: c.projectNumber })
+      .catch((e: any) => (o.log ?? console.log)(`${c.agentJob} not made in ${to.project}/${to.region} yet: ${e?.message ?? e}`));
   }
   const j = await gapi(url, { missingOk: true });
   if (!j) return { job: c.agentJob, skipped: 'no such job' };
