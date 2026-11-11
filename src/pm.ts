@@ -912,11 +912,18 @@ export async function milestoneCheck(id: string, group: string[] = [id]) {
   const s = pmSettings();
   const tries = milestoneTries(id);
   // A run that broke (stuck at one spot, a missing scenario, beta not built) says nothing about the criteria: it's played
-  // again, never counted as missed (J, 2026-10-19).
-  const broken = tries < s.maxTries && s.enabled ? runs.map((r) => brokenCheck(r)).find(Boolean) : null;
+  // again, never counted as missed (J, 2026-10-19), and never a try. Played again at most maxTries times on one build;
+  // then it waits for beta's next build (at most BUILD_WAIT_MS), so a check that keeps breaking neither burns plays nor
+  // reaches J as misses.
+  const broken = s.enabled ? runs.map((r) => brokenCheck(r)).find(Boolean) : null;
   if (broken) {
     setMilestoneChecks(id, []);
-    logDecision('milestone-rerun', id, m.product, `milestone "${m.title}": its beta check broke (${broken}), so its criteria aren't counted as missed: playing it again (${tries + 1} of ${s.maxTries})`.slice(0, 1500));
+    const reruns = rerunsSince(id);
+    if (reruns < s.maxTries) {
+      logDecision('milestone-rerun', id, m.product, `milestone "${m.title}": its beta check broke (${broken}), so its criteria aren't counted as missed: playing it again (${reruns + 1} of ${s.maxTries} on this build, not a try)`.slice(0, 1500));
+      return;
+    }
+    logDecision('milestone-build-wait', id, m.product, `milestone "${m.title}": its beta check broke ${reruns + 1} times in a row (last: ${broken}); not a try and not played again on this build: checked again after beta's next build`.slice(0, 1500));
     return;
   }
   // A run whose scenarios were skipped as "no scenario" (the build played predates them) checked nothing: it is not a
@@ -927,7 +934,7 @@ export async function milestoneCheck(id: string, group: string[] = [id]) {
     // A fresh build of beta's head without the scenario: no later build brings it, so the task that names it registers
     // it (2026-11-11: The Place Department's milestone played, skipped "bot-animation", and was checked again and again).
     const sent = await sendMissingScenarios(runs, tasks);
-    logDecision('milestone-recheck', id, m.product, `milestone "${m.title}" not checked: the build played has no scenario ${unchecked.join(', ')}, so those runs don't count as a check; ${sent.length ? `sent ${sent.map((x) => `"${x}"`).join(', ')} back to register it (not a try); ` : ''}it is checked again after beta's next build`.slice(0, 1500));
+    logDecision('milestone-build-wait', id, m.product, `milestone "${m.title}" not checked (not a try): the build played has no scenario ${unchecked.join(', ')}, so those runs don't count as a check; ${sent.length ? `sent ${sent.map((x) => `"${x}"`).join(', ')} back to register it (not a try); ` : ''}it is checked again after beta's next build`.slice(0, 1500));
     return;
   }
   // Its tasks judged from those runs first (checkOnBeta: a "no" goes to decideMiss in walk-away mode), then J hears, but
@@ -1010,11 +1017,23 @@ export async function playsFor(tasks: Task[]) {
 /** A milestone check waiting after a miss: due once each product's beta built again since (or RECHECK_WAIT_MS passed). */
 const RECHECK_WAIT_MS = 2 * 3600_000;
 const lastDecision = (action: string, subject: string) => listDecisions({ since: 0, action, limit: 10_000 }).find((d) => d.subject === subject)?.at ?? 0;
-/** A milestone's checks played again so far (broken runs and misses). */
-const milestoneTries = (id: string) => ['milestone-rerun', 'milestone-recheck'].reduce((n, a) => n + listDecisions({ since: 0, action: a, limit: 10_000 }).filter((d) => d.subject === id).length, 0);
+/**
+ * A milestone's tries: checks that played and found criteria not met. A check that broke, or played a build without the
+ * scenario, judged nothing and is no try: before 2026-11-11 both counted, so a milestone whose checks broke three times
+ * ran out of tries and J got "misses left after its tries" for criteria nobody had seen (stall-paths.md).
+ */
+const milestoneTries = (id: string) => listDecisions({ since: 0, action: 'milestone-recheck', limit: 10_000 }).filter((d) => d.subject === id).length;
+/** Checks that broke and were played again since the last real check or wait for a build. */
+const rerunsSince = (id: string) => {
+  const since = Math.max(lastDecision('milestone-recheck', id), lastDecision('milestone-build-wait', id));
+  return listDecisions({ since: since + 1, action: 'milestone-rerun', limit: 10_000 }).filter((d) => d.subject === id).length;
+};
+/** How long a milestone waiting for beta's next build (its checks kept breaking, or a scenario was missing) waits at most. */
+const BUILD_WAIT_MS = 6 * 3600_000;
 function recheckDue(id: string, products: string[]) {
-  const at = lastDecision('milestone-recheck', id);
-  if (!at || at < lastDecision('milestone-check', id) || Date.now() - at > RECHECK_WAIT_MS) return true;
+  const recheck = lastDecision('milestone-recheck', id), wait = lastDecision('milestone-build-wait', id);
+  const at = Math.max(recheck, wait);
+  if (!at || at < lastDecision('milestone-check', id) || Date.now() - at > (wait > recheck ? BUILD_WAIT_MS : RECHECK_WAIT_MS)) return true;
   return products.every((p) => db.prepare(`SELECT 1 FROM runs WHERE kind = 'beta' AND products LIKE ? AND started > ? AND status IN ('done', 'failed')`).get(`%"${p}"%`, at));
 }
 

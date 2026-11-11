@@ -21,7 +21,7 @@ fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
 fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'notify.json'), JSON.stringify({ enabled: false, topic: 'test' }));
 fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
-const ids = ['rdslot', 'rdstatus', 'rdbuild', 'rdmile', 'rdunclear', 'rdbroken', 'rdreach'];
+const ids = ['rdslot', 'rdstatus', 'rdbuild', 'rdmile', 'rdunclear', 'rdbroken', 'rdreach', 'rdkeepbreak'];
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({
   repos: Object.fromEntries(ids.map((id) => [id, `x/${id}`])),
   products: ids.map((id) => ({
@@ -347,4 +347,38 @@ test('a milestone check that broke (a missing scenario, stuck, beta not built) i
   finish(r2);
   assert.match(pm.brokenCheck(r2)!, /stuck at one spot/);
   assert.equal(await milestoneCard(ms.id), undefined);
+});
+
+test('a milestone check that keeps breaking is no try: after its plays on one build it waits for the next build, and J hears nothing', async () => {
+  const { ms, tasks, run: r1 } = await checkedMilestone('rdkeepbreak', [['the vault opens']]);
+  let r = r1;
+  // Three checks on the same build break (no GPU, say): each is played again, none is a try.
+  for (let i = 0; i < 3; i++) {
+    step(r, 'rdkeepbreak', 'playtest', 'skipped', {}, 'skipped: no GPU free');
+    finish(r);
+    await pm.milestoneCheck(ms.id);
+    assert.equal(rm.listDecisions({ action: 'milestone-rerun' }).filter((d) => d.subject === ms.id).length, i + 1);
+    await pm.milestoneCheck(ms.id);
+    const next = JSON.parse(rm.getMilestone(ms.id)!.checks!)[0];
+    assert.ok(next && next !== r, `played again (${i + 1})`);
+    r = next;
+  }
+  // The fourth break on this build: no more plays until beta builds again, and nothing counted as a miss.
+  step(r, 'rdkeepbreak', 'playtest', 'skipped', {}, 'skipped: no GPU free');
+  finish(r);
+  await pm.milestoneCheck(ms.id);
+  assert.ok(rm.listDecisions({ action: 'milestone-build-wait' }).some((d) => d.subject === ms.id), 'waits for the next build');
+  assert.equal(rm.listDecisions({ action: 'milestone-recheck' }).filter((d) => d.subject === ms.id).length, 0, 'no try spent');
+  await pm.milestoneCheck(ms.id);
+  assert.deepEqual(JSON.parse(rm.getMilestone(ms.id)!.checks!), [], 'nothing played before beta built again');
+  assert.equal(rm.getMilestone(ms.id)!.status, 'open');
+  assert.ok(!rm.listDecisions({ action: 'milestone' }).some((d) => d.subject === ms.id), 'J was not told of misses nobody saw');
+  assert.equal(await milestoneCard(ms.id), undefined);
+  assert.equal(rm.getTask(tasks[0].id)!.status, 'merged');
+  // Beta builds again: checked again, with fresh plays.
+  run('rdkeepbreak', 'done', Date.now() + 1);
+  await pm.milestoneCheck(ms.id);
+  const after = JSON.parse(rm.getMilestone(ms.id)!.checks!)[0];
+  assert.ok(after && after !== r, 'checked again after the build');
+  rm.updateMilestone(ms.id, { status: 'dropped' });
 });

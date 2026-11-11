@@ -5059,14 +5059,33 @@ export async function diskRoomForCheckouts(id: string, active = checkoutsActive,
   });
 }
 export const checkoutsUnderWay = () => checkoutsActive;
-export async function checkoutSlot<T>(fn: () => Promise<T>): Promise<T> {
+/**
+ * How long one checkout may hold its turn. Each git step has its own 10 min limit, but a checkout is many steps (a clone,
+ * beta, a fetch, the worktree, an install) and the turn had no end of its own: one that hung held every other change's
+ * checkout behind it (stall-paths.md, Nov 11). At the limit the turn passes on; the slow checkout carries on outside it.
+ */
+export const CHECKOUT_TURN_MS = () => Math.max(1000, Number(process.env.STUDIO_CHECKOUT_TURN_MS) || 30 * 60_000);
+export async function checkoutSlot<T>(fn: () => Promise<T>, o: { turnMs?: number; onLong?: () => void } = {}): Promise<T> {
   while (checkoutsActive >= checkoutLimit()) await new Promise<void>((r) => checkoutWaiters.push(r));
   checkoutsActive++;
+  let held = true;
+  const free = () => {
+    if (!held) return;
+    held = false;
+    checkoutsActive--;
+    checkoutWaiters.shift()?.();
+  };
+  const timer = setTimeout(() => {
+    console.warn(`[agents] a checkout held its turn for ${Math.round((o.turnMs ?? CHECKOUT_TURN_MS()) / 60_000)} min: the next one goes ahead`);
+    o.onLong?.();
+    free();
+  }, o.turnMs ?? CHECKOUT_TURN_MS());
+  timer.unref?.();
   try {
     return await fn();
   } finally {
-    checkoutsActive--;
-    checkoutWaiters.shift()?.();
+    clearTimeout(timer);
+    free();
   }
 }
 
@@ -5295,7 +5314,7 @@ export const passInternals = {
   claim, abandonPass, offMachine, isRunning: (id: string) => running.has(id), inFlight: () => inFlight,
   setRunPass: (f: typeof work | null) => { runPass = f ?? work; }, running: () => [...running],
   waitForJobRoom: (id: string, ph: Phase, why: string) => waitForJobRoom(id, ph, why),
-  diskWait: () => diskWait, waitForDisk: (id: string, why: string) => waitForDisk(id, why), checkoutSlot: <T>(fn: () => Promise<T>) => checkoutSlot(fn),
+  diskWait: () => diskWait, waitForDisk: (id: string, why: string) => waitForDisk(id, why), checkoutSlot: <T>(fn: () => Promise<T>, o?: { turnMs?: number; onLong?: () => void }) => checkoutSlot(fn, o),
   asPass: <T>(id: string, fn: () => T) => passCtx.run({ id, gen: passGen(id) }, fn),
 };
 
