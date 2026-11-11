@@ -924,6 +924,14 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   } finally {
     free();
   }
+  // The page was Studio's sign-in card or Google's: the game was never reached, whatever Gen's outcome says (done, blocked or failed). Checked first, before the first-five numbers, the persona's findings and the review, so a wall play produces none of them (authwall.ts).
+  const wall = job.result ? (await import('./authwall.ts')).authWallOf(job.result) : null;
+  if (wall) {
+    job.result = (await import('./authwall.ts')).failedByAuthWall(job.result, wall);
+    console.warn(`[studio] ${p.id} ${name} (${run}): ${wall.message}`);
+    updateStep(s, { status: 'failed', job: job.id, detail: `failed: ${wall.message} (opened ${url})`, data: { ...playtestData(job, url), error: wall.message, authWall: wall.kind, played }, finished: true });
+    return job;
+  }
   // A first-five play: the numbers, the ftue.* metrics and the developer-UI problems go on the result (ftue.ts).
   if (job.status === 'done' && isFirstFive(t.scenario)) job.result = enrichFtue(job.result ?? {}, t.scenario, isPhone(t) ? 'phone' : 'desktop');
   // The persona's timeline, its cost on the step (the run line) and a finding per lost stretch (persona.ts).
@@ -931,14 +939,6 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   if (persona) { try { filePersonaFindings(p.id, persona, run, name); } catch (e: any) { console.warn(`[studio] persona findings for ${p.id}: ${e.message ?? e}`); } }
   // Phone load budget (phoneperf.ts): MB before gameplay, seconds to gameplay, fps p5 under 4x CPU + Slow 4G.
   if (job.status === 'done' && isPhone(t)) job.result = enrichPhonePerf(job.result ?? {}, 'phone');
-  // The page was Studio's sign-in card or Google's: the game was never reached, whatever Gen's outcome says (authwall.ts).
-  const wall = job.status === 'done' ? (await import('./authwall.ts')).authWallOf(job.result) : null;
-  if (wall) {
-    job.result = (await import('./authwall.ts')).failedByAuthWall(job.result, wall);
-    console.warn(`[studio] ${p.id} ${name} (${run}): ${wall.message}`);
-    updateStep(s, { status: 'failed', job: job.id, detail: `failed: ${wall.message} (opened ${url})`, data: { ...playtestData(job, url), error: wall.message, authWall: wall.kind, played }, finished: true });
-    return job;
-  }
   const r = job.result ?? {};
   const ok = job.status === 'done';
   // Nothing to playtest (J, 2026-11-08): a page that never exposed the playtest hook, with no open finding behind it (a

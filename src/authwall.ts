@@ -1,7 +1,7 @@
 // An auth wall (J, 2026-11-11, finding f_b3bf8e33e26c): a playtest of a gated beta site that landed on Studio's own sign-in
 // card, or went on to accounts.google.com, never reached the game. Gen called such a run "done, 0 problems". Studio reads the
 // result (the page's final address, its navigations, the text it saw) and ends the run failed with an "auth wall" problem.
-// Only a *navigation* to Google counts: a game's own Google button loads accounts.google.com frames and requests all the time.
+// Any outcome counts (done, blocked, failed): a blocked play on the card is the usual one. Only a *navigation* to Google counts: a game's own Google button loads accounts.google.com frames and requests all the time.
 
 /** The words on Studio's sign-in card (auth-pages.ts signinPage). */
 export const STUDIO_SIGNIN_TEXT = /Hawkes Studio, Gen and the beta sites/i;
@@ -30,7 +30,7 @@ export function authWallOf(r: any): AuthWall | null {
   const google = places.find((u) => { const h = hostOf(u); return !!h && GOOGLE_HOST.test(h); });
   if (google) return { kind: 'google', shot, message: `auth wall: the page went to Google's sign-in (${hostOf(google)}) instead of the game` };
   // What the page said: its title, its text, the walls and notes the bot kept.
-  const said = [r.title, r.pageTitle, r.text, r.pageText, r.bodyText, ...events.filter((e) => /wall|note|text|dev-ui/i.test(String(e?.type ?? ''))).map((e) => asText(e.detail)), ...(Array.isArray(r.problems) ? r.problems.map((p: any) => p?.message) : [])];
+  const said = [r.title, r.pageTitle, r.text, r.pageText, r.bodyText, ...events.map((e) => asText(e?.detail ?? e?.text ?? e?.note)), r.stuck, r.note, r.reason, r.detail, r.summary, r.error, r.blocked, r.message, ...(Array.isArray(r.problems) ? r.problems.map((p: any) => p?.message) : [])];
   if (said.some((x) => typeof x === 'string' && STUDIO_SIGNIN_TEXT.test(x))) {
     return { kind: 'studio-signin', shot, message: `auth wall: the page is Studio's sign-in card ("Hawkes Studio, Gen and the beta sites"), not the game` };
   }
