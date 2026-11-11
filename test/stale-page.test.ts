@@ -71,8 +71,9 @@ test('a new beta build keeps the previous build published, cleaned after a day',
   assert.equal(fs.readFileSync(path.join(published, 'Game', 'v54', 'YoobaLand', 'StreamingAssets', 'aa', 'WebGL', 'loading_scene_scenes_all_a7df.bundle'), 'utf8'), 'bundle of v54');
   const oldPage = fs.readFileSync(path.join(published, 'Game', 'v54', 'index.html'), 'utf8');
   assert.equal(oldPage.split('data-hawkes-report').length - 1, 1, 'the kept page keeps its one report button (its own build in it)');
-  assert.match(oldPage, /&quot;version&quot;:&quot;54&quot;|"version":"54"/);
-  assert.match(fs.readFileSync(path.join(published, 'index.html'), 'utf8'), /"version":"55"/, 'new pages know their build');
+  const { pageInfoOf } = await import('../src/servedpage.ts');
+  assert.equal(pageInfoOf(oldPage)?.version, '54');
+  assert.equal(pageInfoOf(fs.readFileSync(path.join(published, 'index.html'), 'utf8'))?.version, '55', 'new pages know their build');
   assert.deepEqual(previews.betaNow('ylgame'), { sha: 'bbbbbbb', version: '55', at: previews.betaNow('ylgame')!.at });
 
   await land(56, 'ccccccc3');

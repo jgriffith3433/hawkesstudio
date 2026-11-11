@@ -120,11 +120,14 @@ Write a short title (under 50 characters) and 1-5 notes, one sentence each, in t
 Never copy or quote the developers' notes, never name an issue, a version or a number like #12, and never use
 development words (fix, bug, pull request, PR, commit, changelog, agent, beta, merge, devtools, playtest).
 Leave out tooling, pipelines and internals. If nothing in it is visible to the public, write one note: "${FALLBACK.notes[0]}"`;
+  // The deadline holds the process while it waits (an unref'd one let a go live run from a script, and the tests, exit
+  // mid-wait with the release half written) and is cleared the moment the writer answers.
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
     const out = await Promise.race([
       ask(prompt, timeoutMs),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), timeoutMs + 5000).unref()),
-    ]) as any;
+      new Promise((_, rej) => { deadline = setTimeout(() => rej(new Error('timed out')), timeoutMs + 5000); }),
+    ]).finally(() => clearTimeout(deadline)) as any;
     const notes = [...new Set((Array.isArray(out?.notes) ? out.notes : []).map((n: any) => String(n).trim()).filter((n: string) => n && n.length <= 200 && !leak(n, titles, p)))].slice(0, 5) as string[];
     const title = String(out?.title ?? '').trim().slice(0, 80);
     if (notes.length) return { title: title && !leak(title, titles, p) ? title : FALLBACK.title, notes, source: 'gen' };

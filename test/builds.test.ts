@@ -150,7 +150,7 @@ test("a published build's widget root is the project's site, where /dev/__studio
   assert.equal(B.widgetRoot('https://sites.hawkesgen.ai/o/acme-1a2b/site/'), '/o/acme-1a2b/site');
   assert.equal(B.widgetRoot('https://x.hawkesgen.ai/'), '');
   const built = (await page('/o/acme-1a2b/site/b/web/1/')).body;
-  const info = JSON.parse(/data-hawkes='([^']*)'/.exec(built)![1].replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&amp;/g, '&'));
+  const info = (await import('../src/servedpage.ts')).pageInfoOf(built)!;
   assert.equal(info.root, '/o/acme-1a2b/site', 'not the build folder /b/web/1');
   const r = await W.handle(new Request(`https://sites.hawkesgen.ai${info.root}/dev/__studio/build`, { headers: { cookie: `hawkes_opass=${pass}` } }), env);
   assert.equal(r.status, 200);

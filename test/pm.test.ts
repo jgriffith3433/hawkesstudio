@@ -28,6 +28,7 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 const rm = await import('../src/roadmap.ts');
 const { gate, allMet } = await import('../src/acceptance.ts');
 const pm = await import('../src/pm.ts');
+await import('../src/agents.ts'); // the changes table: a task's wait reason counts the agents' changes (pm.ts capacity)
 /** pm.tick() once the loop's own pass (1 s after startPm) is done: a tick meanwhile does nothing, and a slow CI machine got there. */
 const tick = async () => { while (pm.pmTicking()) await new Promise((r) => setTimeout(r, 20)); await pm.tick(); };
 const { db, J } = await import('../src/db.ts');

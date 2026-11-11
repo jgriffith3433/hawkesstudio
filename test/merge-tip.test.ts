@@ -53,7 +53,7 @@ test('a head that moved after verification is refused', async () => {
   pr = { state: 'open', merged: false, head: { sha: 'c'.repeat(40) } };
   const id = change('ready', { sha: VERIFIED, verdict: 'ship' });
   await assert.rejects(approve(id, { confirm: `MERGE ${id}` }), /moved after verification/);
-  assert.ok(!calls.some((c) => c.method === 'PUT'), 'no merge was attempted');
+  assert.ok(!calls.some((c) => c.method === 'PUT'), 'no merge was attempted, and the unverified head was not updated from beta either');
 });
 
 test('a change an agent is still working on is refused', async () => {
@@ -66,7 +66,7 @@ test('the merge names the verified commit, so GitHub refuses if the head moves m
   pr = { state: 'open', merged: false, head: { sha: VERIFIED } };
   const id = change('ready', { sha: VERIFIED, verdict: 'ship', video: 'a_123' });
   await assert.rejects(approve(id, { confirm: `MERGE ${id}` }), /stopped by the test/);
-  const put = calls.find((c) => c.method === 'PUT');
+  const put = calls.find((c) => c.method === 'PUT' && c.url.endsWith('/merge'));
   assert.equal(put?.body.sha, VERIFIED);
   assert.equal(put?.body.merge_method, 'squash');
 });

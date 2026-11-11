@@ -104,11 +104,22 @@ export function gitAuthEnv(slug: string | null | undefined): Record<string, stri
   if (!slug || (!customerStudio() && platformRepo(slug) && process.env.GITHUB_TOKEN)) return {};
   const token = repoTokenNow(slug);
   if (!token) return {};
+  // Added after the process's own GIT_CONFIG_* entries (a proxy's CA, a url.insteadOf), never in place of them: entry 0
+  // used to overwrite whatever the process had there and drop the rest.
+  const n = configEntries(process.env);
   return {
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-    GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
+    GIT_CONFIG_COUNT: String(n + 1),
+    [`GIT_CONFIG_KEY_${n}`]: 'http.https://github.com/.extraheader',
+    [`GIT_CONFIG_VALUE_${n}`]: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
   };
+}
+
+/** How many complete GIT_CONFIG_KEY_i / VALUE_i entries an environment has (0 when its count is missing or broken). */
+export function configEntries(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.GIT_CONFIG_COUNT);
+  if (!Number.isInteger(n) || n <= 0) return 0;
+  for (let i = 0; i < n; i++) if (env[`GIT_CONFIG_KEY_${i}`] === undefined || env[`GIT_CONFIG_VALUE_${i}`] === undefined) return 0;
+  return n;
 }
 
 /** Forgets one repo's kept token, so the next repoToken mints a new one (a build's submit, Gen's refresh). */

@@ -2,23 +2,32 @@
 // "played beta d269309" but played a page from before #121: the commit came from the server's beta checkout, the page
 // from the published beta site, which can lag a push).
 //
-// Every beta page Studio publishes carries the commit it was built from (bugreport.ts injectReport: a
-// `data-hawkes='{"sha":"d269309",...}'` attribute on the widget's script). `servedSha` reads it, `servedMismatch`
+// Every beta page Studio publishes carries the commit it was built from (bugreport.ts injectReport: the loader
+// script's page info, `{"sha":"d269309",...}`; before #369 a `data-hawkes` attribute on the widget's script). `servedSha` reads it, `servedMismatch`
 // compares it with the commit the run is about to report, and the playtest step fails with that sentence instead of
 // judging a page that is not the commit. A page that doesn't say (a local dev server, a page not injected) is unknown,
 // never a failure.
 
-/** The commit the published page says it was built from (a short or full sha), or null. */
-export function servedSha(html: string): string | null {
-  const m = /<script[^>]*\bdata-hawkes='([^']*)'/i.exec(html);
-  if (!m) return null;
+/**
+ * What an injected page says about itself (bugreport.ts injectReport): the loader script's second argument since #369
+ * (the widget is made after the page's load event), or the older `data-hawkes='{...}'` attribute on the widget's
+ * script. Null when the page carries neither.
+ */
+export function pageInfoOf(html: string): Record<string, any> | null {
+  const loader = /<script data-hawkes-loader>[\s\S]*?\}\)\(("(?:[^"\\]|\\.)*"),("(?:[^"\\]|\\.)*")\)<\/script>/i.exec(html);
   try {
-    const info = JSON.parse(m[1].replace(/&lt;/g, '<').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
-    const sha = String(info?.sha ?? '').toLowerCase();
-    return /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
+    if (loader) return JSON.parse(JSON.parse(loader[2]));
+    const m = /<script[^>]*\bdata-hawkes='([^']*)'/i.exec(html);
+    return m ? JSON.parse(m[1].replace(/&lt;/g, '<').replace(/&#39;/g, "'").replace(/&amp;/g, '&')) : null;
   } catch {
     return null;
   }
+}
+
+/** The commit the published page says it was built from (a short or full sha), or null. */
+export function servedSha(html: string): string | null {
+  const sha = String(pageInfoOf(html)?.sha ?? '').toLowerCase();
+  return /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
 }
 
 /** Whether two shas (short or full) name the same commit. */

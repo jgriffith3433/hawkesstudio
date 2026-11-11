@@ -266,9 +266,23 @@ test("each repo gets its own token: J's keep his, others the app's, as a one-com
     assert.equal(await T.repoToken('acme/space-game'), 'ghs_install', "the app's installation on acme");
     assert.equal(T.slugOfRoute('/repos/acme/space-game/pulls?state=open'), 'acme/space-game');
     assert.deepEqual(T.gitAuthEnv('jgriffith3433/orbit-run'), {}, "J's repos go through the credential helper as before");
-    const env = T.gitAuthEnv('acme/space-game');
-    assert.equal(env.GIT_CONFIG_KEY_0, 'http.https://github.com/.extraheader');
-    assert.equal(Buffer.from(env.GIT_CONFIG_VALUE_0.replace('Authorization: Basic ', ''), 'base64').toString(), 'x-access-token:ghs_install');
+    const saved = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('GIT_CONFIG_')));
+    for (const k of Object.keys(saved)) delete process.env[k];
+    try {
+      const env = T.gitAuthEnv('acme/space-game');
+      assert.equal(env.GIT_CONFIG_COUNT, '1');
+      assert.equal(env.GIT_CONFIG_KEY_0, 'http.https://github.com/.extraheader');
+      assert.equal(Buffer.from(env.GIT_CONFIG_VALUE_0.replace('Authorization: Basic ', ''), 'base64').toString(), 'x-access-token:ghs_install');
+      // The process's own entries (a proxy's CA, a url.insteadOf) stay: the header is added after them, not over entry 0.
+      Object.assign(process.env, { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'url./x.insteadOf', GIT_CONFIG_VALUE_0: 'https://github.com/a/b', GIT_CONFIG_KEY_1: 'http.sslCAInfo', GIT_CONFIG_VALUE_1: '/ca' });
+      const kept = { ...process.env, ...T.gitAuthEnv('acme/space-game') };
+      assert.deepEqual([kept.GIT_CONFIG_COUNT, kept.GIT_CONFIG_KEY_0, kept.GIT_CONFIG_KEY_1, kept.GIT_CONFIG_KEY_2], ['3', 'url./x.insteadOf', 'http.sslCAInfo', 'http.https://github.com/.extraheader']);
+      process.env.GIT_CONFIG_COUNT = '3'; // a broken count (no entry 2): starts over at 0 rather than leave a gap git refuses
+      assert.equal(T.gitAuthEnv('acme/space-game').GIT_CONFIG_COUNT, '1');
+    } finally {
+      for (const k of Object.keys(process.env)) if (k.startsWith('GIT_CONFIG_')) delete process.env[k];
+      Object.assign(process.env, saved);
+    }
   } finally {
     delete process.env.GITHUB_TOKEN;
     T.forgetRepoTokens();

@@ -169,7 +169,9 @@ test("a cap reached (startFix refuses) files a card instead of throwing", async 
   review('vwgame', 'broken');
   const r = await V.actOnVerdict('vwgame', 'test', deps({ startFix: () => { throw new Error("Today's agent budget is used (1000 fixes, $20.00)."); } }));
   assert.equal(r.action, 'card');
-  assert.match(listQuestions().find((q) => q.subject === 'verdict:vwgame')!.text, /agent budget is used/);
+  // Asked (with walk-away on, the PM may settle it with its recommendation at once: it needn't stay open).
+  assert.match(asked.at(-1)!.text, /agent budget is used/);
+  assert.equal(asked.at(-1)!.subject, 'verdict:vwgame');
 });
 
 test('the switch is a setting: off starts nothing and files nothing', async () => {
