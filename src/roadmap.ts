@@ -184,7 +184,7 @@ const toItem = (r: any): Item => ({ ...r, priority: r.priority ?? 'normal', crit
 const TASK_SELECT = `SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t LEFT JOIN items i ON i.id = t.item`;
 const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, target: r.target ?? null, kind: r.kind ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null, bar: parse(r.bar) ?? null });
 const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
-const productId = (id: string) => {
+export const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
   if (p) return p.id;
   // Studio and Gen themselves, by id or name ("Hawkes Studio").

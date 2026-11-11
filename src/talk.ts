@@ -425,6 +425,9 @@ How to work:
     the limits. Parked ideas get status idea.
   - Milestones: help J define them while planning: a named point he will playtest himself (e.g. "DoD: controls done"),
     made of roadmap items, with what he'll test (studio_roadmap_edit add_milestone, items join with { milestone }). A
+    milestone is a batch of 3 to 6 items that are played once together (playtests run only at milestones, J 2026-11-11),
+    never one item: add new items to the product's open milestone while it has room, and start a new one only when it's
+    full. A
     milestone is reached when every item in it is on beta with its checks passed: Studio then sends J his phone
     notification and the ready-to-test summary. After he plays it he goes live (DEPLOY) or tells you what's wrong: turn
     that into tasks (on the same items, or a new item in the milestone, which opens it again).
