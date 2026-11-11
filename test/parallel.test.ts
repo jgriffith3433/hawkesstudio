@@ -8,7 +8,7 @@ import path from 'node:path';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-parallel-'));
 const { overlapWith, areasOf, filesIn } = await import('../src/parallel.ts');
-const { pickQueued, perProductLimit, agentSettings, noRoomFor, behindDetail } = await import('../src/agents.ts');
+const { pickQueued, perProductLimit, agentSettings, noRoomFor, behindDetail, queuedDetail, SLOT_WAIT } = await import('../src/agents.ts');
 const { saveSettings, costRaising } = await import('../src/settings.ts');
 const { db } = await import('../src/db.ts');
 
@@ -193,4 +193,16 @@ test('noRoomFor: a Unity product\'s second change waits when both would touch a 
   } finally {
     db.prepare(`DELETE FROM changes WHERE id = 'c_00000000uni1'`).run();
   }
+});
+
+test('a queued change whose disk or memory wait ended says what it waits for now (2026-11-11)', () => {
+  const disk = 'queued: waits for disk room (the disk is full (1.87 GB used of 4.00 GB (46.7%; budget 1.72 GB; 0.06 GB of memory free); need 100 MB more))';
+  assert.equal(queuedDetail(disk, [], 2), SLOT_WAIT, 'nothing of its product ahead: it waits for an agent slot, not for disk room');
+  assert.equal(queuedDetail(disk, ['c_a', 'c_b'], 2), 'queued behind c_a', 'its product is full: behind the first of them');
+  assert.equal(queuedDetail('queued: waits for memory to free up (0.3 GB free of 4)', [], 1), SLOT_WAIT);
+  assert.equal(queuedDetail(SLOT_WAIT, ['c_a'], 1), 'queued behind c_a', 'the slot wait follows its product filling');
+  assert.equal(queuedDetail('queued behind c_a', [], 1), 'queued', 'the behind part still clears as before');
+  assert.equal(queuedDetail('queued', [], 1), SLOT_WAIT);
+  assert.equal(queuedDetail('queued: waits for c_x (both change src/a.ts)', [], 1), 'queued: waits for c_x (both change src/a.ts)', 'an overlap wait is fit()s to keep');
+  assert.equal(queuedDetail('queued for another pass', [], 1), 'queued for another pass', 'other details untouched');
 });
