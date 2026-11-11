@@ -8,9 +8,34 @@ window.studioReady = (t, error) => {
   try {
     const sec = document.getElementById(t);
     if (sec) sec.dataset.ready = error ? 'error' : 'ready';
+    clearSkeleton(t);
     dispatchEvent(new CustomEvent('studio-ready', { detail: { tab: t, error: error ? String(error.message ?? error) : undefined } }));
   } catch {}
 };
+// Loading rows shaped like each tab's content (shared .skel-* classes in style.css). A tab's own fetch (or the stream message
+// that redraws it) replaces them; studioReady() removes any left over (an error, an empty answer). No timer anywhere.
+const SKEL_BAR = (w, cls = '') => `<i class="skel-bar ${cls}" style="--w:${w}"></i>`;
+const SKEL_KINDS = {
+  tiles: (n) => `<div class="skel-grid" data-skel>${Array.from({ length: n }, () => `<div class="skel-row tile">${SKEL_BAR('45%')}${SKEL_BAR('80%')}${SKEL_BAR('55%')}</div>`).join('')}</div>`,
+  totals: () => `<div class="skel-grid" data-skel style="grid-template-columns:repeat(3,1fr)">${[0, 1, 2].map(() => `<div class="skel-row slim">${SKEL_BAR('60%')}</div>`).join('')}</div>`,
+  rows: (n) => `<div class="skel-list" data-skel>${Array.from({ length: n }, () => `<div class="skel-row">${SKEL_BAR('40%')}${SKEL_BAR('75%')}${SKEL_BAR('30%', 'btn-s')}</div>`).join('')}</div>`,
+  report: () => `<div class="skel-list" data-skel><div class="skel-row slim">${SKEL_BAR('70%')}</div>${[0, 1].map(() => `<div class="skel-row">${SKEL_BAR('30%')}${SKEL_BAR('85%')}${SKEL_BAR('60%')}</div>`).join('')}</div>`,
+};
+const SKEL_AREAS = {
+  home: [['#homeTotals', 'totals'], ['#homeGames', 'tiles', 3]],
+  roadmap: [['#rmOverview', 'rows', 4]],
+  backlog: [['#blList', 'rows', 4]],
+  report: [['#reportBody', 'report']],
+  changes: [['#chList', 'rows', 4]],
+};
+// Put skeleton rows into a tab's blank loading areas (never over content that is already there).
+function skeleton(t) {
+  for (const [sel, kind, n] of SKEL_AREAS[t] ?? []) {
+    const el = document.querySelector(sel);
+    if (el && !el.firstElementChild) el.innerHTML = SKEL_KINDS[kind](n ?? 3);
+  }
+}
+const clearSkeleton = (t) => { for (const [sel] of SKEL_AREAS[t] ?? []) document.querySelectorAll(`${sel} [data-skel]`).forEach((n) => n.remove()); };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 // Library files through Studio's relay (its own Gen key, ranges for video): Gen's /v1/files answers 401 to a browser.
 const file = (asset) => `/api/gen/v1/files/${asset}`;
@@ -296,6 +321,7 @@ function show(t, sub) {
   }
   document.querySelectorAll('nav button[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === t));
+  skeleton(t); // blank loading areas show rows shaped like the content until the tab's own fetch answers
   // A tab under More: the More button is lit and says which one.
   const under = $(`#moreMenu button[data-tab="${t}"]`);
   $('#moreBtn').classList.toggle('on', Boolean(under));
