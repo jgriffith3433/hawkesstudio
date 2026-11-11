@@ -33,6 +33,13 @@ export function missingScenario(error: unknown): { scenario: string; has: string
   return { scenario: m[1], has };
 }
 
+/** The plain sentence for a game that reported no scenarios at all: its contract isn't ready, nothing was checked. */
+export const contractNotReadyNote = (scenario: string) =>
+  `The game reported no scenarios at all, so "${scenario}" was not played and nothing was checked. Its playtest contract wasn't ready (the page was incomplete or the bot hadn't registered yet), which is not a renamed scenario.`;
+
+/** A real rename or drop: the game listed scenarios and the asked one isn't among them. An empty list never is. */
+export const isRenamedScenario = (has: string[] | null | undefined, scenario: string) => Boolean(has && has.length > 0 && !has.includes(scenario));
+
 /** The scenarios each build was seen to have: `${product}:${build}` → ids. */
 const seen = new Map<string, string[]>();
 /** Keyed by the page too (its address without the query), so a list read at one page never speaks for another. */

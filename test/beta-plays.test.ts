@@ -37,6 +37,30 @@ test("Gen's missing-scenario error gives the name and the game's own list", () =
   assert.equal(missingScenario('timed out after 300 s'), null);
 });
 
+test('an empty scenario list is a contract not ready, never a rename skip; a non-empty list that omits the id still is', async () => {
+  const { isRenamedScenario, contractNotReadyNote } = await import('../src/scenarios.ts');
+  const none = missingScenario('No scenario "placement". This game has: none')!;
+  assert.deepEqual(none.has, []);
+  assert.equal(isRenamedScenario(none.has, none.scenario), false);
+  assert.equal(isRenamedScenario(null, 'placement'), false);
+  assert.equal(isRenamedScenario([], 'placement'), false);
+  assert.match(contractNotReadyNote('placement'), /nothing was checked/);
+  const some = missingScenario('No scenario "placement". This game has: smoke, captions')!;
+  assert.equal(isRenamedScenario(some.has, some.scenario), true);
+  assert.equal(isRenamedScenario(['smoke', 'placement'], 'placement'), false);
+  // an empty list is never remembered, so the pre-check can't skip on it
+  forgetScenarios();
+  noteScenarios('yooba', 'abc', [], 'https://x/');
+  assert.equal(knownScenarios('yooba', 'abc', 'https://x/'), null);
+});
+
+test('skipMissing in pipeline.ts fails, never skips, on an empty list', () => {
+  const src = fs.readFileSync(new URL('../src/pipeline.ts', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('function skipMissing'));
+  assert.ok(fn.indexOf('!has.length') > 0 && fn.indexOf('!has.length') < fn.indexOf("status: 'skipped'"));
+  assert.doesNotMatch(fn.slice(0, fn.indexOf('\n}\n')), /'none'/);
+});
+
 test('a build\'s scenario list is kept per build, so the next playtest of it skips a name it lacks', () => {
   noteScenarios('sickofit', '169', [{ id: 'smoke' }, { id: 'yooba' }, { id: 'music' }]);
   noteScenarios('sickofit', '168', ['smoke', 'level-1']);
