@@ -340,7 +340,7 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
   await reconcileBuilds({ product: p.id }).catch((e) => console.warn(`[builds] ${p.id}: reconciling: ${e?.message ?? e}`));
   const { tagRun } = await import('./followup.ts');
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'build', 'running', `build ${p.id}`, JSON.stringify([p.id]), JSON.stringify({ builds: specs.map((b) => b.id), ref: o.ref, trigger: o.trigger, change: o.change, cause }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'build', 'running', `build ${p.id}`, JSON.stringify([p.id]), JSON.stringify({ builds: specs.map((b) => b.id), ref: o.ref, trigger: o.trigger, change: o.change, cause, ...(process.env.K_REVISION ? { rev: process.env.K_REVISION } : {}) }), Date.now());
   tagRun(id, o.origin);
   // The Unity builds held from this start (a push building its web build too): the run says so on a step of their own.
   if (verdict && !verdict.go) {
