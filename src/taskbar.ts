@@ -13,6 +13,7 @@
 // leaves the task planned (gated again on the next pass); the third failure parks it. No timer: it runs when a task would start.
 
 import crypto from 'node:crypto';
+import { db } from './db.ts';
 import { askClaude } from './llm.ts';
 import { loadProducts, isInfra, type Product } from './config.ts';
 import { modelId } from './roles.ts';
@@ -20,7 +21,7 @@ import { isGame } from './quality.ts';
 import { libraryProject } from './verdictwork.ts';
 import { worldBibleOf } from './fun-review.ts';
 import { repoDirs } from './beta.ts';
-import { AXES, BAR_FIELDS, getItem, getTask, listDecisions, logDecision, setBar, updateTask, type Bar, type Task } from './roadmap.ts';
+import { AXES, BAR_FIELDS, barOf, getItem, getTask, listDecisions, logDecision, setBar, updateTask, type Bar, type Task } from './roadmap.ts';
 
 export { AXES, barOf } from './roadmap.ts';
 export type BarKind = 'game' | 'site' | 'infra';
@@ -42,7 +43,7 @@ const VAGUE = /\b(feels?\s+(?:better|good|nicer|great|right|smoother)|is\s+polis
 /** Something observable or numeric in the criterion: a number, or a measured or seen thing. */
 const MEASURED = /\d|\b(within|at least|at most|no more than|fewer|exactly|per second|never|exists?|contains?|appears?|visible|shows?|plays?|displays?|reaches?|ends?|logs?|retries|returns?|opens?|closes?|spawns?|drops?)\b/i;
 const UNBOUNDED = /^\W*(?:to\s+)?(audit|explore|investigate|consider|improve|look\s+into|survey|research|review|polish|refine)\b/i;
-const HEAD = /^\s*(?:[-*#]+\s*)?(?:player goal|reference|critic axis|phone|outcome|original request)\s*:/i;
+const HEAD = /^\s*(?:(?:[-*#>+]+|\d+[.)])\s*)?[*_`]*\s*(?:player\s+goal|reference|critic\s+axis|phone|outcome|original\s+request)\s*[*_`]*\s*[:：]/i;
 
 /** A criterion that is vague: a vague phrase with nothing observable or numeric beside it. */
 export const vagueCriterion = (k: string) => VAGUE.test(k) && !/\d/.test(k) && !/\b(within|at least|at most|no more than|fewer|exactly|per second)\b/i.test(k);
@@ -142,6 +143,19 @@ const MAX_FAILS = 3;
 const gateOf = (verdict: NonNullable<Bar['gate']>['verdict'], reasons: string[], hash: string): NonNullable<Bar['gate']> => ({ verdict, reasons: reasons.slice(0, 8), at: Date.now(), hash });
 const snapshot = (t: Task) => ({ kind: 'task-bar', task: t.id, request: t.request, criteria: t.criteria, bar: t.bar });
 
+class EmptyShape extends Error {}
+/** Text that says something: not blank, not only quotes, brackets, dashes or "none"/"n/a"/"null". */
+const meaningful = (v: unknown) => { const s = String(v ?? '').replace(/["'`“”‘’()\[\]{}\s.\-–—_*]/g, ''); return !!s && !/^(none|n\/?a|null|undefined|no|empty)$/i.test(s); };
+/** A shaper answer with no goal, outcome, work or criteria and no real reason to refuse: the call failed, it didn't judge. */
+const emptyAnswer = (o: any) => !o || (!meaningful(o.cannot) && !['goal', 'reference', 'outcome', 'work', 'phone'].some((k) => meaningful(o[k])) && !(Array.isArray(o.criteria) && o.criteria.some(meaningful)));
+/** The stored bar, completed from the request's own headings (stored fields win). */
+export function effectiveBar(t: Pick<Task, 'request' | 'bar'>): Bar | null {
+  const read = barOf(t.request);
+  const stored = Object.fromEntries(Object.entries(t.bar ?? {}).filter(([k, v]) => k === 'gate' || (typeof v === 'string' && v.trim())));
+  const out = { ...(read ?? {}), ...stored } as Bar;
+  return Object.keys(out).length ? out : null;
+}
+
 function park(t: Task, reasons: string[]): GateResult {
   const why = reasons.join('; ').slice(0, 600);
   setBar(t.id, { ...(t.bar ?? {}), gate: gateOf('parked', reasons, hashOf(t)) });
@@ -159,10 +173,13 @@ export async function gateTask(task: Task, deps: { ask?: Ask } = {}): Promise<Ga
   const hash = hashOf(t);
   if (t.bar?.gate?.hash === hash) return 'ok';
   const kind = barKindOf(t.product);
-  const c = checkTask(t, kind);
+  // The bar's fields come from the stored bar, else from the headings in the request itself (a task made without them
+  // stored, or edited since): a request that carries the headings passes without a model call.
+  const read = effectiveBar(t);
+  const c = checkTask({ ...t, bar: read }, kind);
   if (c.ok) {
     if (!t.bar?.gate || t.bar.gate.verdict === 'parked') logDecision('task-bar pass', t.id, t.product, `"${t.title}" meets the task bar`);
-    setBar(t.id, { ...(t.bar ?? {}), gate: gateOf(t.bar?.gate?.verdict === 'rewritten' ? 'rewritten' : 'pass', [], hash) });
+    setBar(t.id, { ...read, gate: gateOf(t.bar?.gate?.verdict === 'rewritten' ? 'rewritten' : 'pass', [], hash) });
     return 'ok';
   }
   const reasons = reasonsOf(c);
@@ -193,7 +210,14 @@ If the work itself is an unbounded audit or explore with no measurable end, or y
     const j: any = await (deps.ask ?? askOverride ?? askClaude)({ prompt, schema: SCHEMA, model: modelId('haiku'), maxTokens: 1500, purpose: 'task-bar', product: t.product, timeoutMs: 120_000 });
     if (j?.status !== 'done' || !j.result?.value) throw new Error(String(j?.error ?? j?.detail ?? 'no answer').slice(0, 200));
     out = j.result.value;
+    // An answer with nothing in it (every field empty, or only a "cannot" made of quotes) is a failed call, never a verdict.
+    if (emptyAnswer(out)) throw new EmptyShape('the shaper returned an empty answer');
   } catch (e: any) {
+    if (e instanceof EmptyShape) {
+      // Never parked for it: the task stays planned and is shaped again on the next pass that already runs.
+      console.warn(`[taskbar] ${t.id}: ${e.message}; it stays planned and is checked on the next pass`);
+      return 'wait';
+    }
     const n = (failures.get(key) ?? 0) + 1;
     failures.set(key, n);
     if (n >= MAX_FAILS) return park(t, [`the task bar couldn't check it (${n} tries: ${String(e.message ?? e).slice(0, 120)})`]);
@@ -201,7 +225,7 @@ If the work itself is an unbounded audit or explore with no measurable end, or y
     return 'wait';
   }
   failures.delete(key);
-  if (String(out?.cannot ?? '').trim()) return park(t, [`cannot be shaped: ${String(out.cannot).trim().slice(0, 240)}`, ...reasons]);
+  if (meaningful(out?.cannot)) return park(t, [`cannot be shaped: ${String(out.cannot).trim().slice(0, 240)}`, ...reasons]);
   const shape = Object.fromEntries(BAR_FIELDS.map((k) => [k, String(out?.[k] ?? '').trim()]));
   const criteria = (Array.isArray(out?.criteria) ? out.criteria : []).map((x: unknown) => String(x).trim()).filter(Boolean).slice(0, 8);
   const request = composeRequest(kind, { ...shape, work: String(out?.work ?? '').trim() || workLine(t.request) || t.title }, t.request);
@@ -260,4 +284,31 @@ export function taskBarCounts(productId: string, now = Date.now()): TaskBarCount
 /** Tasks the bar parked that are still ideas, with the reason it gave. */
 export function parkedTasks(tasks: Task[]) {
   return tasks.filter((t) => t.status === 'idea' && t.bar?.gate?.verdict === 'parked').map((t) => ({ id: t.id, title: t.title, reason: String(t.note ?? t.bar?.gate?.reasons.join('; ') ?? '').replace(/^parked by the task bar:\s*/, '') }));
+}
+
+// ------------------------------------------------------------------ the re-check on deploy
+
+/** A park whose "cannot be shaped" reason said nothing (empty, or only quotes): the shaper's call failed, the task was never judged. */
+const EMPTY_PARK = /cannot be shaped:\s*(?:["'`“”‘’]*\s*)(?:[;.]|$)/;
+
+/**
+ * Once at start-up (server.ts): every task the bar parked with an empty "cannot be shaped" is put back to planned, so the
+ * gate judges it again on the next PM pass (headings in the request now count; an empty shaper answer waits instead of parking).
+ * A task that now passes the pure check goes back with its pass recorded. Idempotent; returns the ids restored.
+ */
+export function recheckEmptyParks(): string[] {
+  const rows = db.prepare(`SELECT id FROM tasks WHERE status = 'idea' AND note LIKE 'parked by the task bar:%cannot be shaped:%'`).all() as { id: string }[];
+  const restored: string[] = [];
+  for (const { id } of rows) {
+    const t = getTask(id);
+    if (!t || t.status !== 'idea' || t.bar?.gate?.verdict !== 'parked' || !EMPTY_PARK.test(String(t.note ?? ''))) continue;
+    const read = effectiveBar(t);
+    const ok = checkTask({ ...t, bar: read }, barKindOf(t.product)).ok;
+    // Passing: record the pass for this version. Otherwise drop the old verdict so the gate shapes it again.
+    setBar(id, ok ? { ...read, gate: gateOf('pass', [], hashOf(t)) } : (() => { const { gate: _g, ...rest } = { ...(read ?? {}) } as Bar; return rest; })());
+    updateTask(id, { status: 'planned', note: ok ? 'back to planned: it meets the task bar (re-checked after an empty shaper answer)' : 'back to planned: the task bar parked it on an empty shaper answer and checks it again' });
+    logDecision('task-bar recheck', id, t.product, `"${t.title}" was parked by an empty shaper answer; back to planned${ok ? ' (it meets the bar)' : ' to be shaped again'}`);
+    restored.push(id);
+  }
+  return restored;
 }
