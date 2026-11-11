@@ -189,7 +189,7 @@ after(async () => {
 
 await startStudio();
 
-test('an agent change carries on through restarts: its agent keeps working; a playtest asked for waits for the same build', { timeout: 150_000 }, async () => {
+test('an agent change carries on through restarts: its agent keeps working; a playtest of it alone is refused, before and after', { timeout: 150_000 }, async () => {
   held.add('unity.build');
   const { change } = await api('/api/changes', { product: 'game', request: 'Make the start button bigger' });
   assert.match(change, /^c_/);
@@ -217,44 +217,26 @@ test('an agent change carries on through restarts: its agent keeps working; a pl
   assert.match(c.detail, /not playtested/);
   assert.ok(c.verify.sha, 'the checked commit is on record (approve merges exactly it)');
 
-  // J asks for a playtest: the branch is built (Unity), then played and reviewed.
+  // A playtest of the change on its own is refused (play-policy.ts): its criteria are judged in its milestone's play.
   const asked = await api(`/api/changes/${change}/playtest`, { by: 'J' });
-  assert.equal(asked.status, 'verifying');
-  await until(() => jobsOf('unity.build').length === 1, 30_000, 'the build to be submitted');
-  // Restart while the change waits on its build: the same Gen job is waited for, not a second build.
+  assert.match(String(asked.error), /milestone/);
   await restartStudio();
-  await sleep(2000);
-  assert.equal((await api(`/api/changes/${change}`)).status, 'verifying');
-  assert.equal(jobsOf('unity.build').length, 1, 'not built again');
-  release('unity.build');
-  await ready('the change to be ready after its playtest');
+  await sleep(1000);
+  assert.equal(jobsOf('unity.build').length, 0, 'not built');
+  assert.equal(jobsOf('playtest.run').length, 0, 'not played');
   c = await api(`/api/changes/${change}`);
-  assert.equal(jobsOf('unity.build').length, 1);
-  assert.equal(jobsOf('playtest.run').length, 1, 'one playtest');
-  assert.equal(jobsOf('playtest.review').length, 1, 'one review');
-  assert.equal(c.verify.outcome, 'passed');
-  assert.equal(c.verify.verdict, 'ship');
-  assert.equal(c.cost, 0.25);
-  assert.equal(prs.length, 1);
+  assert.equal(c.status, 'ready');
   assert.equal(git(path.join(tmp, 'game.git'), 'log', '-1', '--format=%s', c.branch), 'Fix: the start button', 'the branch was pushed');
 });
 
-test('a run waiting on its playtest carries on: the same job, its review, no step twice', { timeout: 60_000 }, async () => {
-  held.add('playtest.run');
+test('a one-off playtest is refused, and a restart starts none (play-policy.ts)', { timeout: 60_000 }, async () => {
   const before = jobsOf('playtest.run').length;
-  const { run } = await api('/api/playtest', { product: 'game', scenario: 'smoke', where: 'live' });
-  await until(() => jobsOf('playtest.run').length === before + 1, 20_000, 'the playtest job');
-  await until(async () => (await api(`/api/runs/${run}`)).steps?.some((s: any) => s.kind === 'playtest' && s.job), 20_000, 'the step to record its job');
-
+  const r = await api('/api/playtest', { product: 'game', scenario: 'smoke', where: 'live' });
+  assert.match(String(r.error), /milestone/);
+  assert.equal(r.run, undefined, 'no run is made');
   await restartStudio();
   await sleep(1500);
-  assert.equal((await api(`/api/runs/${run}`)).status, 'running', 'still running, not interrupted');
-  release('playtest.run');
-  await until(async () => (await api(`/api/runs/${run}`)).status !== 'running', 30_000, 'the run to finish');
-  const r = await api(`/api/runs/${run}`);
-  assert.equal(r.status, 'done');
-  assert.equal(jobsOf('playtest.run').length, before + 1, 'played once');
-  assert.deepEqual(r.steps.map((s: any) => `${s.kind}:${s.status}`), ['playtest:done', 'review:done']);
+  assert.equal(jobsOf('playtest.run').length, before, 'nothing played');
 });
 
 test('a Talk answer keeps streaming into its conversation after a restart', { timeout: 60_000 }, async () => {

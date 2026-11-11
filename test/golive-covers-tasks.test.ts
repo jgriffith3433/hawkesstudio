@@ -50,12 +50,16 @@ test("the go-live play carries the criteria of the merged tasks beta's commit co
   // The play starts with exactly that: its options carry the criteria and no plays or scenario.
   const starts: any[] = [];
   const start = (p: string, o: any) => { starts.push(o); return { id: 'r_cov0' }; };
-  const r = await P.playBeforeGoLive('gcover', 'beta123', 'test', start, undefined, async () => covered);
+  // Studio's own go live plays nothing (play-policy.ts); a person's plays once and carries them.
+  assert.ok((await P.playBeforeGoLive('gcover', 'beta123', 'test', start, undefined, async () => covered)).held);
+  assert.equal(starts.length, 0);
+  const r = await P.playBeforeGoLive('gcover', 'beta123', 'test', start, 'person', async () => covered);
   assert.equal(r.started, 'r_cov0');
   assert.deepEqual(starts[0].sweep, covered);
   assert.equal(starts[0].plays, undefined);
   assert.equal(starts[0].scenario, undefined);
   assert.equal(starts[0].playtest, true);
+  assert.equal(starts[0].play, 'golive');
 });
 
 test("a task merged after the played commit isn't judged by that play", async () => {
