@@ -11,6 +11,7 @@ import { PUBLIC_URL } from './notify.ts';
 import { regressions } from './playtests.ts';
 import { playersSection } from './players.ts';
 import { planView, planLine } from './runplan.ts';
+import { criticLines } from './critic-view.ts';
 
 const SEV_ICON: Record<string, string> = { blocker: '🛑', bug: '🐞', polish: '✨', idea: '💡' };
 
@@ -131,7 +132,7 @@ export function reportMarkdown(run: string) {
       return [`${pl.branch}@${pl.sha}`, `${pl.madeFrom ? 'a build made from' : pl.branch} \`${String(pl.sha).slice(0, 7)}\`${pl.title ? ` "${pl.title}"` : ''}${pl.build ? ` (build Game/v${pl.build})` : ''}${pl.dirty ? ` + ${pl.dirty} uncommitted` : ''}`];
     })).values()];
     if (played.length) L.push(`Local playtests played ${played.join(', ')}.`, '');
-    for (const s of x.steps.filter((s) => s.kind !== 'review' && s.kind !== 'players')) {
+    for (const s of x.steps.filter((s) => s.kind !== 'review' && s.kind !== 'players' && s.kind !== 'critic')) {
       L.push(`- ${fmtStep(s)}`);
       if (s.kind === 'playtest' && s.data?.video) L.push(`  - [video](${fileUrl(s.data.video)}) · [playtest](${PUBLIC_URL}/#playtests/${s.id})${s.data?.metrics && Object.keys(s.data.metrics).length ? ` · metrics: ${Object.entries(s.data.metrics).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
       if (s.kind === 'check' && s.status === 'failed') L.push('', '```', String(s.data?.tail ?? '').slice(-1500), '```');
@@ -147,6 +148,8 @@ export function reportMarkdown(run: string) {
         L.push(`- ${SEV_ICON[f.severity] ?? '-'} **${f.title}** (${f.area}). ${f.detail} *Fix:* ${f.fix} ${shots}${inline ? `\n  ${inline}` : ''}`);
       }
     }
+    // The critic's ten scores (critic.ts): a list, not a table, so it reads at 390 px.
+    for (const c of x.steps.filter((s) => s.kind === 'critic' && s.status === 'done')) L.push('', '### Critic', '', ...criticLines(c.data));
     // Real players on the live site (daily runs: pipeline.ts recordPlayers; bots and J's own devices left out).
     const players = x.steps.find((s) => s.kind === 'players');
     if (players) {

@@ -705,12 +705,21 @@ async function loadReport() {
     const reviews = steps.filter((s) => s.kind === 'review' && s.data);
     return `<div class="report-product"><h2>${esc(pid)}</h2>
       ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${slowPill(s)}${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">⤢ bigger</a>` : ''}</div>${s.data?.video ? `<video class="inline-video" controls preload="metadata" playsinline src="${file(s.data.video)}"></video>` : ''}${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
+      ${steps.filter((s) => s.kind === 'critic' && s.data).map(criticHtml).join('')}
       ${reviews.map((rv) => `<div class="review"><h4>${esc(rv.name)} <span class="pill ${rv.data.verdict}">${esc(rv.data.verdict)}</span></h4>
         <div class="scores">${Object.entries(rv.data.scores ?? {}).map(([k, n]) => `<div class="score"><b>${n}</b><span>${k}</span></div>`).join('')}</div>
         <p class="summary">${esc(rv.data.summary)}</p>${rv.data.changes?.length ? `<p class="meta">Since last time: ${rv.data.changes.map(esc).join('; ')}</p>` : ''}
         ${(rv.data.findings ?? []).map(findingHtml).join('')}</div>`).join('')}
     </div>`;
   }).join('');
+}
+// The critic's ten scores (src/critic.ts): a list of cards that wraps, never a table, so it reads at 390 px.
+function criticHtml(st) {
+  const d = st.data;
+  if (d.verdict !== 'judged' || !(d.scores ?? []).length) return `<div class="review critic"><h4>Critic <span class="pill broken">unjudged</span></h4><p class="summary">${esc(d.summary ?? 'The critic did not run.')} No scores are given, and this is not a pass.</p></div>`;
+  return `<div class="review critic"><h4>Critic · ${esc(d.scenario ?? 'the run')}</h4><p class="summary">${esc(d.summary ?? '')}${d.next?.length ? ` <span class="meta">Not reviewed yet: ${d.next.map(esc).join(', ')}</span>` : ''}</p>
+    ${d.scores.map((x) => `<div class="critic-row"><b class="critic-score">${x.score}</b><div><b>${esc(x.dimension)}</b> <span class="meta">vs ${esc(x.reference)}${x.at ? ` · ${esc(x.at)}` : ''}</span>
+      <div>${esc(x.why)}</div><div class="meta"><i>Fix:</i> ${esc(x.fix)}</div>${x.frame && !/\s/.test(x.frame) ? `<img loading="lazy" src="${file(x.frame)}" data-full="${file(x.frame)}">` : ''}</div></div>`).join('')}</div>`;
 }
 $('#reportRun').onchange = () => loadReport().then(() => window.studioReady('report'), (e) => window.studioReady('report', e));
 $('#reportBody').addEventListener('click', (e) => {

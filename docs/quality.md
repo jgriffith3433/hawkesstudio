@@ -120,3 +120,14 @@ the same way (`repokit.ts` firstVersionBrief).
 - **The report button**: a report that starts with `Rule:` becomes a rubric line for that game instead of a bug.
 - `GET /api/quality/rubric?product=` lists the rules and lines; `POST` adds one; `DELETE /api/quality/rubric/<id>`
   removes one (same check). A line can name a playtest code (`problem: quality.<name>`) so it fails the gate too.
+
+## The critic (`src/critic.ts`, `.claude/agents/critic.md`)
+
+Every game is judged weekly the way a demanding first-time player or Steam reviewer would. Ten dimensions (fun, feel,
+clarity, first five minutes, menus and UI, sound, art cohesion, story through play, phone, reasons to come back), each 1-10
+with the reference game compared (the project's `references`, 2-3 games with what each does best; drafted once from the
+pitch by the PM when missing, `.data/critic-references.json`), the frame or clip time behind it and the one fix that moves
+it most. It runs when any run of the game ends (`closeRun`, the daily run's end: never a timer), at most once per game per
+7 days, and on every milestone beta run, as a `critic` step on that run; report.ts and the report page render it (a list,
+not a table, readable at 390 px). Each weekly run reviews the scenario reviewed longest ago (`pickScenario`). No frames, or
+fewer than ten scores, is **unjudged**: no scores, never a pass.

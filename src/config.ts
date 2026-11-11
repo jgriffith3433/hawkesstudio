@@ -165,6 +165,11 @@ export type Product = {
    */
   quality?: string;
   /**
+   * The games this one is measured against, 2-3, each with what it does best (the critic, critic.ts: "Vampire Survivors:
+   * the first weapon fires before you read anything"). None: the PM drafts them once from its pitch.
+   */
+  references?: { game: string; best: string }[];
+  /**
    * A game's own limits for the rubric's measured checks (quality.ts), by metric, when the starting values don't fit it:
    * e.g. { "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 60 } }.
    */
@@ -445,6 +450,8 @@ export type ProductInput = {
   /** Where the build is played: a web address (web builds), or the build source for desktop games. */
   live?: string; beta?: string; build?: { source: 'url' | 'upload' | 'github'; target?: 'web' | 'linux' | 'proton' | 'windows'; exe?: string; repo?: string };
   repo?: string; about?: string; quality?: string; story?: string; contract?: boolean;
+  /** The critic's reference games (Product.references). */
+  references?: { game: string; best: string }[];
   /** where: 'live' plays its live address; 'beta' (or 'local') plays its beta (its published beta site or beta address),
    *  for a project with one. peers: 2 to 4 real players on the same ?room= (a multiplayer scenario). */
   playtests?: { scenario?: string; mode?: 'site'; where: 'live' | 'beta' | 'local'; device?: 'phone'; peers?: number }[];
@@ -642,7 +649,9 @@ export function saveProduct(input: ProductInput): Product {
   if (testSignIn && !/^https:\/\/[^\s]+$/.test(testSignIn)) throw new StudioError('testSignIn.url: an https:// address on its beta', 400);
   const managedBy = input.managedBy ? String(input.managedBy).trim().replace(/\/+$/, '') : '';
   if (managedBy && !/^https:\/\/[\w.-]+(:\d+)?(\/[\w.~-]+)*$/.test(managedBy)) throw new StudioError("managedBy: the other Studio's https:// address (e.g. https://studio.hawkesgen.ai/o/<org>)", 400);
+  const references = (Array.isArray(input.references) ? input.references : []).map((r) => ({ game: String(r?.game ?? '').trim().slice(0, 80), best: String(r?.best ?? '').trim().slice(0, 300) })).filter((r) => r.game).slice(0, 3);
   const product: any = {
+    ...(references.length ? { references } : {}),
     id, name, engine: input.engine, ...(live ? { live } : {}), ...(beta ? { beta } : {}), ...(input.build ? { build: input.build } : {}), ...(builds.length ? { builds } : {}),
     ...(input.repo ? { repo: String(input.repo).slice(0, 200) } : {}),
     ...(kind !== 'game' ? { kind } : {}), ...(versionPath ? { versionPath } : {}), ...(repos.length ? { repos } : {}),
