@@ -149,12 +149,17 @@ export async function askDiskIfMissing(onDisk: boolean) {
   return askForQuota([{ kind: 'disk', region: region(), value: QUOTAS.disk.target, why: 'this Studio runs without its 10 GiB working disk because Google refused it for the project\'s ephemeral disk quota, so its working files fill memory and hold agents back' }]);
 }
 
+/** The region in a Cloud Run execution's name (projects/p/locations/<region>/jobs/j/executions/e), or null. */
+export const executionRegion = (name?: string | null) => /\/locations\/([a-z0-9-]+)\//.exec(String(name ?? ''))?.[1] ?? null;
+
 let cpuAskedAt = 0;
 /** An agent job Cloud Run never started for want of room: ask for more CPU (at most once an hour; the card merges). */
-export async function askCpuForJobs(minutes: number, said?: string | null) {
+export async function askCpuForJobs(minutes: number, said?: string | null, execution?: string | null) {
   if (Date.now() - cpuAskedAt < 60 * 60_000) return null;
   cpuAskedAt = Date.now();
-  // The jobs' own region (jobsproject.ts: apart from the server's by default): that is the quota they wait on.
-  const where = (await import('./jobsproject.ts')).jobsRegion();
+  // The region the job waited in: its execution's own, else where starts land now (jobsproject.ts startPlace). Not the
+  // configured jobs' region: on 2026-11-11 that region refused the jobs, they waited beside the server in us-east4, and
+  // the card asked for us-east1, a region the project can't use.
+  const where = executionRegion(execution) ?? (await import('./jobsproject.ts')).startPlace().region;
   return askForQuota([{ kind: 'cpu', region: where, value: QUOTAS.cpu.target, why: `an agent job waited ${minutes} min and Cloud Run never started it${said ? ` (Cloud Run: ${String(said).slice(0, 140)})` : ''}; the region's CPU quota is shared by agent jobs, builds and Gen` }]);
 }
