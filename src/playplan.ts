@@ -15,12 +15,13 @@
 
 import { db, parse } from './db.ts';
 
-export type Ask = { scenario?: string; options?: Record<string, unknown>; criteria: string[]; carried?: boolean };
+export type Ask = { scenario?: string; options?: Record<string, unknown>; device?: 'desktop' | 'phone'; criteria: string[]; carried?: boolean };
 
 export const CARRY_MAX = () => Number(process.env.STUDIO_BETA_CARRY_MAX ?? 6);
 export const CARRY_BUDGET_S = () => Number(process.env.STUDIO_BETA_CARRY_BUDGET_MIN ?? 20) * 60;
 
-export const askKey = (a: Pick<Ask, 'scenario' | 'options'>) => `${a.scenario ?? ''} ${JSON.stringify(a.options ?? null)}`;
+/** One play: its scenario, options and device (a phone play of a scenario is not its desktop play). */
+export const askKey = (a: Pick<Ask, 'scenario' | 'options' | 'device'>) => `${a.scenario ?? ''} ${JSON.stringify(a.options ?? null)}${a.device === 'phone' ? ' phone' : ''}`;
 
 /** One play per scenario and options, the criteria of the duplicates joined. */
 export function mergeAsks(list: Ask[]): Ask[] {
@@ -106,4 +107,4 @@ export function lastCleanPass(product: string, name: string, before?: number): {
 }
 
 /** A scenario name's short text for notes: "rune-bridges", or the product's default. */
-export const askName = (a: Pick<Ask, 'scenario'>) => a.scenario ?? 'the default scenario';
+export const askName = (a: Pick<Ask, 'scenario' | 'device'>) => `${a.scenario ?? 'the default scenario'}${a.device === 'phone' ? ' (phone)' : ''}`;

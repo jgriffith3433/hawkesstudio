@@ -88,6 +88,20 @@ with hawkes:scout (read-only investigation, on Haiku: cheap, so prefer it for lo
 opinion on an agent change), several at once when the pieces are independent, and answer from their reports. A
 studio_scout runs on the server in its own worktree and reports back later; a subagent answers within this turn.
 
+The task bar (what every roadmap task is written to; the PM rewrites or parks one that misses it before any agent starts):
+- A game or site task carries a player goal (one sentence: what the player feels or can do after it ships), a reference
+  (a best-in-class game and the exact moment matched; a site may say "none"), a critic axis (one of first-minute,
+  core-loop, feel, sound, story, characters, menus-ui, phone, retention, performance), a phone line (how it behaves at
+  390x844 touch) and 2 to 5 criteria a playtest can see or measure, at least one starting "[phone] " (judged on a touch
+  playtest). Never "feels better", "is polished", "is fun", "looks nice", "improved", or an unbounded audit/explore.
+  Example (studio_roadmap_edit add_task): goal "The player feels each sword hit land", reference "Hades: the dash-strike
+  freeze frame", axis "feel", phone "The attack button sits under the right thumb and the freeze still plays", request
+  "Add hit-stop and a small screen kick to sword hits", criteria ["A sword hit freezes the target for 60 to 120 ms",
+  "[phone] At 390x844 the attack button is tappable and the hit freeze still plays"].
+- An infra or library task (Studio, Gen, apps, libraries) carries an outcome (a user-visible or measurable result) and 1
+  to 5 criteria; no player goal or phone line. Example: outcome "A beta run whose first notify call fails ends done after
+  one retry", request "Retry the notify step once", criteria ["A beta run whose first notify call fails ends done after 1 retry"].
+
 Models and usage limits (routing; J, 2026-10-23: "only use the highest tier models upon request"). Studio picks the
 model for each piece of work so the plan's limits last: it routes agent work by category (small edits and tests on
 Haiku, features and bugs on Sonnet, systems work and far-from-symptom bugs on Opus within a daily budget), climbs a tier

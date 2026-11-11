@@ -39,8 +39,10 @@ import {
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
   itemProgress, gpuCleared, setStartWaitHook, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf, waitingOn, STUCK_DEPENDENCY,
-  pmLogVersion,
+  pmLogVersion, setBar,
 } from './roadmap.ts';
+import { gateTask, PHONE, splitPlays, focusWithGoals } from './taskbar.ts';
+import { askKey } from './playplan.ts';
 import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
@@ -365,7 +367,8 @@ async function checkOnBeta(t: Task) {
       const { getChange } = await changes();
       const c = getChange(t.change!);
       const { startBeta } = await import('./pipeline.ts');
-      const r = startBeta(t.product, { focus: `Checking "${t.title}" on beta.`, criteria: t.criteria, scenario: c?.verify?.scenario, options: c?.verify?.options });
+      const split = t.criteria.some((k) => PHONE.test(k));
+      const r = startBeta(t.product, { focus: focusWithGoals(`Checking "${t.title}" on beta.`, [t]), ...(split ? { plays: splitPlays(c?.verify?.scenario, c?.verify?.options, t.criteria), playtest: true } : { criteria: t.criteria, scenario: c?.verify?.scenario, options: c?.verify?.options }) });
       logDecision('beta-check', t.id, t.product, `started beta run ${r.id} to check "${t.title}" against its criteria`);
     }
     if (playsAfterMerges && !t.criteria.length && Date.now() - (t.merged_at ?? 0) > 2 * 3600_000) {
@@ -776,7 +779,7 @@ export async function milestoneCheck(id: string) {
     const { startBeta } = await import('./pipeline.ts');
     for (const product of products) {
       const plays = await playsFor(tasks.filter((x) => x.product === product));
-      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Build it for the milestone.'}`, plays, playtest: plays.length > 0, quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
+      const r = startBeta(product, { focus: focusWithGoals(`Milestone "${m.title}": every task is on beta. ${plays.length ? 'Check each one works and nothing regressed.' : 'Build it for the milestone.'}`, tasks.filter((x) => x.product === product)), plays, playtest: plays.length > 0, quiet: 0, origin: m.origin, ...(unity.includes(product) ? { cause: 'milestone' as const } : {}) });
       runs.push(r.id);
     }
     setMilestoneChecks(id, runs);
@@ -834,13 +837,18 @@ export async function milestoneCheck(id: string) {
  */
 export async function playsFor(tasks: Task[]) {
   const { getChange } = await changes();
-  const plays = new Map<string, { scenario?: string; options?: Record<string, unknown>; criteria: string[] }>();
+  const plays = new Map<string, { scenario?: string; options?: Record<string, unknown>; device?: 'phone'; criteria: string[] }>();
   for (const t of tasks) {
     const v = t.change ? getChange(t.change)?.verify : null;
-    const key = v?.scenario ? `${v.scenario} ${JSON.stringify(v.options ?? null)}` : '';
-    const p = plays.get(key) ?? { ...(v?.scenario ? { scenario: v.scenario, ...(v.options ? { options: v.options } : {}) } : {}), criteria: [] as string[] };
-    for (const k of t.criteria) if (!p.criteria.includes(k)) p.criteria.push(k);
-    plays.set(key, p);
+    // A task's "[phone]" criteria (taskbar.ts) are played apart, at 390x844 touch (same scenario and options); the rest on desktop.
+    for (const phone of [false, true]) {
+      const crit = t.criteria.filter((k) => PHONE.test(k) === phone);
+      if (!crit.length) continue;
+      const key = askKey({ scenario: v?.scenario, options: v?.options, device: phone ? 'phone' : undefined });
+      const p = plays.get(key) ?? { ...(v?.scenario ? { scenario: v.scenario, ...(v.options ? { options: v.options } : {}) } : {}), ...(phone ? { device: 'phone' as const } : {}), criteria: [] as string[] };
+      for (const k of crit) if (!p.criteria.includes(k)) p.criteria.push(k);
+      plays.set(key, p);
+    }
   }
   return [...plays.values()].filter((p) => p.criteria.length);
 }
@@ -1230,6 +1238,13 @@ export async function startWork() {
     if (await slotHeld(t.product, await taskShape(t))) continue;
     // Studio failed to run its last agents for this task: it waits, longer each time (infraHoldOf), not a restart loop.
     if (infraHoldOf(t.id)) continue;
+    // The task bar (taskbar.ts): a task that doesn't meet it is rewritten into the shape or parked, never started as it is.
+    try {
+      if (await gateTask(t) !== 'ok') continue;
+    } catch (e: any) {
+      console.warn(`[pm] task bar on ${t.id}: ${e.message ?? e}`);
+      continue;
+    }
     try {
       out.push(await startTaskChange(t, rescueNote(t.id), `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked${rescueNote(t.id) ? '; with a scout\'s diagnosis' : ''}`));
     } catch (e: any) {
@@ -1860,7 +1875,7 @@ export async function releaseInvestigations() {
         try {
           const { startBeta } = await import('./pipeline.ts');
           // Each task's own scenario, not one default for all their criteria.
-          run = startBeta(product, { focus: `Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, plays: await playsFor(tasks.filter((x) => x.criteria.length)), playtest: true }).id;
+          run = startBeta(product, { focus: focusWithGoals(`Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, tasks), plays: await playsFor(tasks.filter((x) => x.criteria.length)), playtest: true }).id;
         } catch (e: any) {
           console.warn(`[pm] re-check after ${inv.change}: ${e.message ?? e}`);
         }
@@ -2034,6 +2049,13 @@ export async function undoDecision(id: string, by = 'J') {
     }
     for (const x of u.tasks ?? []) if (getTask(x.id)) setTask(x.id, { status: x.status, tries: x.tries, note: x.note, checks: x.checks });
     detail = `${(u.tasks ?? []).length} task(s) back as they were${u.change ? `; closed ${u.change}` : ''}`;
+  } else if (u.kind === 'task-bar') {
+    // A rewrite by the task bar: the request, criteria and bar as they were (judged as passing, so it isn't rewritten again).
+    if (getTask(u.task)) {
+      updateTask(u.task, { request: u.request, criteria: u.criteria });
+      setBar(u.task, u.bar ?? null);
+    }
+    detail = `${u.task} has its original request and criteria back`;
   } else if (u.kind === 'settings') {
     fs.writeFileSync(FILE, JSON.stringify({ ...pmSettings(), ...u.before }, null, 2));
     detail = `settings back: ${JSON.stringify(u.before)}`;
@@ -2201,6 +2223,8 @@ export function fileBlocker(a: { from: string; product: string; target: string; 
     const k = addTask({
       item: it.id, priority: 'high', title: `Fix what blocks ${name(a.product)} (found by ${a.from})`.slice(0, 160),
       request: `${name(a.product)} is blocked by something in ${name(a.target)}: its agent (change ${a.from}) found the fix belongs here and made no commit there. Its words:\n\n${a.text.slice(0, 3000)}\n\nFix it here in ${name(a.target)} (keep the change small) and run the checks. Once this merges, Studio builds ${name(a.product)}'s beta again.`,
+      outcome: `${name(a.product)}'s beta builds again and its waiting tasks start`,
+      criteria: [`${name(a.product)}'s next beta build ends done, not failed`, `${name(a.product)}'s tasks that waited on this one start (their status leaves "planned")`],
     });
     fix = k.id;
     all[fix] = { product: a.product, target: a.target, from: a.from, tasks: [], at: Date.now() };
@@ -2672,7 +2696,8 @@ export function planEmptyItems(now = Date.now()): string[] {
     let merged: any[] = [];
     try { merged = db.prepare(`SELECT id, title FROM changes WHERE status = 'merged' AND (request LIKE ? OR title LIKE ?) ORDER BY created DESC LIMIT 5`).all(`%${it.id}%`, `%${it.id}%`) as any[]; } catch { /* no request column */ }
     const evidence = merged.length ? `\n\nEvidence: ${merged.map((c) => `${c.id} "${String(c.title ?? '').slice(0, 80)}"`).join(', ')} already merged and name this item. Check whether they did it: if every criterion is already met on beta, make no change and say so; else do what is missing.` : '';
-    const t = addTask({ item: it.id, title: it.title, request: `${it.title}\n\n${text}${evidence}`, criteria: it.criteria, priority: null });
+    // The item's goal is the task's player goal (an infra item's, its outcome); the gate (taskbar.ts) writes the rest.
+    const t = addTask({ item: it.id, title: it.title, request: `${it.title}\n\n${text}${evidence}`, criteria: it.criteria, priority: null, ...(it.goal ? (isInfra(it.product) ? { outcome: it.goal } : { goal: it.goal }) : {}) });
     logDecision('plan', t.id, it.product, `"${it.title}" (${it.id}) was planned with no tasks, so nothing could start: Studio made ${t.id} from its goal and ${it.criteria.length} acceptance criteri${it.criteria.length === 1 ? 'on' : 'a'}${merged.length ? `; ${merged.length} merged change(s) already name it, its agent checks them first` : ''}`.slice(0, 1500), { kind: 'tasks', change: null, tasks: [{ id: t.id, status: 'dropped', tries: 0, note: 'dropped: undone', checks: null }] });
     out.push(it.id);
   }

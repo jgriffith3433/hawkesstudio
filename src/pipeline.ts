@@ -1495,7 +1495,7 @@ type BetaOptions = { focus?: string; reverify?: boolean; origin?: string | null;
    */
   cause?: 'person' | 'milestone' };
 /** A reached milestone's check (pm.ts milestoneCheck): one scenario (none: the product's first local one) and the criteria judged on it. */
-export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; criteria: string[] };
+export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; device?: 'desktop' | 'phone'; criteria: string[] };
 
 /**
  * After beta moves (an approved change): the product's beta is brought up to date and played, as a small run in the
@@ -1538,9 +1538,9 @@ async function unchangedPass(p: Product, name: string): Promise<string | null> {
 async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge, cause }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
-    const nameFor = (x: { scenario?: string }) => {
+    const nameFor = (x: { scenario?: string; device?: 'desktop' | 'phone' }) => {
       const pt = x.scenario ? { scenario: resolveScenario(p, x.scenario), where: 'local' as const } : betaPlaytestOf(p);
-      return pt ? nameOf(pt) : null;
+      return pt ? nameOf({ ...pt, ...(x.device === 'phone' ? { device: 'phone' as const } : {}) }) : null;
     };
     if (betaLane()) {
       const asked = plays?.length ? plays.map(nameFor) : playtest ?? betaPlaytestsOn() ? [nameFor({ scenario })] : [];
@@ -1692,7 +1692,9 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       try {
         // Only the scenarios of the tasks it judges (pm.ts playsFor), independent ones in parallel across the playtester's slots.
         await inSlots(plays, BETA_PLAYS_PARALLEL(), async (x, slot) => {
-          const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : betaPlaytestOf(p);
+          const base: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : betaPlaytestOf(p);
+          // A task's "[phone]" criteria play at 390x844 touch (pm.ts playsFor).
+          const pt: Playtest | undefined = base && x.device === 'phone' ? { ...base, device: 'phone' } : base;
           // What this run was asked for goes ahead of what it carried over in Gen's queue (playplan.ts).
           if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild, slot, ...((x as Ask).carried ? { priority: -1 } : {}) });
         }, () => newerBuild() || runCancelled(id));

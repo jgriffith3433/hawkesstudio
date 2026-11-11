@@ -76,6 +76,9 @@ try { db.exec('ALTER TABLE tasks ADD COLUMN target TEXT'); } catch { /* already 
 // What kind of work a task is: null (a change judged on beta) or 'video' (videos.ts: J screens each version, his notes
 // revise it, his approval finishes it).
 try { db.exec('ALTER TABLE tasks ADD COLUMN kind TEXT'); } catch { /* already there */ }
+// The task bar (taskbar.ts): a task's player goal, reference, critic axis, phone line (an infra task's outcome) and the
+// gate's verdict, as JSON; null until it has any.
+try { db.exec('ALTER TABLE tasks ADD COLUMN bar TEXT'); } catch { /* already there */ }
 /** Bumped on every write to pm_log (counts read from it are memoized against it: pm.ts startsToday). */
 export const pmLogVersion = { n: 0 };
 
@@ -132,7 +135,43 @@ export type Task = {
   gpu: TaskGpu | null;
   /** Beta's build after it merged (pm.ts followBuilds): did it build (for Unity: did it compile), in which beta run. */
   build: TaskBuild | null;
+  /** The task bar (taskbar.ts): player goal, reference, critic axis, phone line or outcome, and the gate's verdict; null: none yet. */
+  bar: Bar | null;
 };
+/** The task bar's fields (taskbar.ts) and the gate's last verdict on the task's request and criteria (hash). */
+export type Bar = { goal?: string; reference?: string; axis?: string; phone?: string; outcome?: string;
+  gate?: { verdict: 'pass' | 'rewritten' | 'parked'; reasons: string[]; at: number; hash: string } };
+export const BAR_FIELDS = ['goal', 'reference', 'axis', 'phone', 'outcome'] as const;
+/** The critic dimensions (roadmap item i_8207ab20b8c5): the one a task moves. */
+export const AXES = ['first-minute', 'core-loop', 'feel', 'sound', 'story', 'characters', 'menus-ui', 'phone', 'retention', 'performance'];
+const BAR_HEADS: Record<string, (typeof BAR_FIELDS)[number]> = { 'player goal': 'goal', reference: 'reference', 'critic axis': 'axis', phone: 'phone', outcome: 'outcome' };
+
+/**
+ * A task's bar fields: the ones given, else those written in the request as sections ("Player goal: ...", "Reference: ...",
+ * "Critic axis: ...", "Phone: ...", "Outcome: ..."; a section runs to a blank line or the next heading). Pure.
+ * Returns only the fields found (null when none); an axis outside AXES is kept as written (checkTask flags it).
+ */
+export function barOf(request: string, fields: Partial<Record<(typeof BAR_FIELDS)[number], unknown>> = {}): Bar | null {
+  const out: Bar = {};
+  let cur: (typeof BAR_FIELDS)[number] | null = null;
+  for (const line of String(request ?? '').split('\n')) {
+    const m = line.match(/^\s*(?:[-*#]+\s*)?(player goal|reference|critic axis|phone|outcome)\s*:\s*(.*)$/i);
+    if (m) {
+      cur = BAR_HEADS[m[1].toLowerCase()];
+      if (!out[cur]) out[cur] = m[2].trim();
+      else cur = null;
+    } else if (!line.trim()) cur = null;
+    else if (cur) out[cur] = `${out[cur]} ${line.trim()}`.trim();
+  }
+  for (const k of BAR_FIELDS) {
+    const v = fields[k];
+    if (typeof v === 'string' && v.trim()) out[k] = v.trim();
+  }
+  if (out.axis) out.axis = out.axis.toLowerCase().replace(/[_\s]+/g, '-').replace(/[^a-z-]/g, '') || out.axis;
+  for (const k of BAR_FIELDS) if (!out[k]) delete out[k];
+  return Object.keys(out).length ? out : null;
+}
+
 export type TaskBuild = { ok: boolean; /** The run built nothing that includes the task's merge: not a failure of the task. */ unproven?: boolean; run: string; at: number; detail: string; unity?: boolean };
 export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
 export type Item = {
@@ -143,7 +182,7 @@ export type Item = {
 const toItem = (r: any): Item => ({ ...r, priority: r.priority ?? 'normal', criteria: parse(r.criteria) ?? [] });
 // Task rows are read with their item's priority alongside (TASK_SELECT), for the effective priority.
 const TASK_SELECT = `SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t LEFT JOIN items i ON i.id = t.item`;
-const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, target: r.target ?? null, kind: r.kind ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null });
+const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, target: r.target ?? null, kind: r.kind ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null, bar: parse(r.bar) ?? null });
 const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
 const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
@@ -381,7 +420,7 @@ export function updateItem(id: string, patch: Partial<{ title: string; goal: str
   return getItem(id)!;
 }
 
-export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; priority?: string | null; ord?: number; gpu?: unknown; target?: string | null; kind?: string | null }) {
+export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; priority?: string | null; ord?: number; gpu?: unknown; target?: string | null; kind?: string | null; goal?: string; reference?: string; axis?: string; phone?: string; outcome?: string }) {
   const item = getItem(a.item);
   if (!item) throw new StudioError(`No item ${a.item}`, 404);
   if (!a.request?.trim()) throw new StudioError('A task needs a request (what the agent should do)');
@@ -395,6 +434,8 @@ export function addTask(a: { item: string; title?: string; request: string; crit
   db.prepare('INSERT INTO tasks (id, item, product, title, request, criteria, depends, status, priority, ord, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, priority, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
   if (target) db.prepare('UPDATE tasks SET target = ? WHERE id = ?').run(target, id);
+  const bar = barOf(a.request, a);
+  if (bar) db.prepare('UPDATE tasks SET bar = ? WHERE id = ?').run(J(bar), id);
   if (a.kind) {
     if (!TASK_KINDS.includes(String(a.kind))) throw new StudioError(`kind is ${TASK_KINDS.join(' or ')} (or empty)`);
     db.prepare('UPDATE tasks SET kind = ? WHERE id = ?').run(String(a.kind), id);
@@ -452,7 +493,7 @@ export async function backfillGpu() {
 }
 
 /** Fields Talk and J may set. Status changes the loop makes (working, review, merged, ...) go through setTask. */
-export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; priority: string | null; ord: number; note: string; gpu: unknown; target: string | null }>) {
+export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; priority: string | null; ord: number; note: string; gpu: unknown; target: string | null; goal: string; reference: string; axis: string; phone: string; outcome: string }>) {
   const cur = getTask(id);
   if (!cur) throw new StudioError(`No task ${id}`, 404);
   // working, review, merged, verified and live come from the agents and the checks, never by hand. done: already done
@@ -470,6 +511,13 @@ export function updateTask(id: string, patch: Partial<{ title: string; request: 
     db.prepare('UPDATE tasks SET target = ? WHERE id = ?').run(targetOf(patch.target, cur.product), id);
     delete patch.target;
   }
+  // The bar's fields: those given, else those written in a new request; the gate's verdict stays (it is judged by hash).
+  const given = Object.fromEntries(BAR_FIELDS.map((k) => [k, (patch as any)[k]]).filter(([, v]) => v !== undefined));
+  if (patch.request !== undefined || Object.keys(given).length) {
+    const found = barOf(patch.request ?? '', given);
+    if (found) setBar(id, { ...(cur.bar ?? {}), ...found });
+  }
+  for (const k of BAR_FIELDS) delete (patch as any)[k];
   // Its own priority, or none (null or ''): its item's applies.
   if (patch.priority !== undefined) {
     db.prepare('UPDATE tasks SET priority = ? WHERE id = ?').run(priorityOf(patch.priority, true), id);
@@ -483,6 +531,27 @@ export function updateTask(id: string, patch: Partial<{ title: string; request: 
   // that is gone keeps it from starting (queue-follow.ts; the queue checks again as it starts).
   if (['request', 'criteria', 'title', 'status'].some((k) => k in patch)) refreshTaskChanges(id);
   return t;
+}
+
+/** The player goals (infra: outcomes) of the tasks that own these criteria, for the judge's context (acceptance.ts). */
+export function goalsForCriteria(criteria: string[]): string[] {
+  const out: string[] = [];
+  for (const k of criteria.slice(0, 6)) {
+    const frag = J(k).slice(1, -1).slice(0, 120).replace(/[%_\\]/g, (c) => `\\${c}`);
+    const rows = db.prepare(`SELECT title, bar FROM tasks WHERE bar IS NOT NULL AND criteria LIKE ? ESCAPE '\\' LIMIT 3`).all(`%${frag}%`) as any[];
+    for (const r of rows) {
+      const b = parse(r.bar) as Bar | null;
+      const g = b?.goal ?? b?.outcome;
+      const line = g ? `"${String(r.title).slice(0, 80)}": ${g.slice(0, 240)}` : '';
+      if (line && !out.includes(line)) out.push(line);
+    }
+  }
+  return out.slice(0, 5);
+}
+
+/** Writes a task's bar (taskbar.ts: the gate's verdict too). */
+export function setBar(id: string, bar: Bar | null) {
+  db.prepare('UPDATE tasks SET bar = ? WHERE id = ?').run(bar && Object.keys(bar).length ? J(bar) : null, id);
 }
 
 /** Sets task fields (the loop's own updates too) and keeps its item's status current. */

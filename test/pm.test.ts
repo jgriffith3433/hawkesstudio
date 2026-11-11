@@ -11,6 +11,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-pm-'));
 process.env.STUDIO_DATA = path.join(tmp, 'data');
 process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
 process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
+// The task bar (taskbar.ts) is judged in its own tests below; the older tests here start tasks written in a line.
+process.env.STUDIO_TASK_BAR = 'off';
 fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
   id: 'pmtest', name: 'PM test', framing: 'test', engine: 'static', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/',
@@ -838,4 +840,75 @@ test('a finding marked won\'t fix is never queued: not by startFix, not by auto-
   // Opened again by the owner, it can be queued.
   db.prepare(`UPDATE findings SET status = 'open' WHERE id = 'f_wontfix00001'`).run();
   assert.equal(autoFixBlock('f_wontfix00001'), null);
+});
+
+// ------------------------------------------------------------------ the task bar in startWork
+
+test('the task bar: startWork never starts a parked task, and a task that meets the bar starts as before', async () => {
+  const tb = await import('../src/taskbar.ts');
+  process.env.STUDIO_TASK_BAR = 'on';
+  process.env.STUDIO_PM_TALK = 'off';
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  const before = pm.pmSettings();
+  let asked = 0;
+  tb.setTaskBarAsk(async () => { asked++; return { status: 'done', result: { value: { cannot: 'the work is an open-ended audit with no end to measure', goal: '', reference: '', axis: 'feel', phone: '', outcome: '', work: '', criteria: [] } } } as any; });
+  try {
+    const it = rm.addItem({ product: 'pmninth', title: 'Bar', status: 'planned', ord: 900 });
+    const vague = rm.addTask({ item: it.id, request: 'Audit the menus and make them nicer, looking at everything that could be better across the whole game and its screens and flows today', criteria: ['The menus feel better'] });
+    const good = rm.addTask({ item: it.id, request: 'Add the cart', goal: 'The player sees the price of what they hold', reference: 'Slay the Spire: the card tooltip at the shop', axis: 'menus-ui', phone: 'The cart sits above the thumb reach', criteria: ['The cart shows the price within 1 second of opening', '[phone] At 390x844 the cart price is not cut off'] });
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + pm.capacity().queued + 2, maxStartsPerDay: 1000 });
+    await pm.startWork();
+    assert.equal(rm.getTask(vague.id)!.status, 'idea', 'parked');
+    assert.match(rm.getTask(vague.id)!.note ?? '', /parked by the task bar/);
+    assert.equal(rm.getTask(good.id)!.status, 'working', 'a task that meets the bar starts as before');
+    assert.equal(asked, 1, 'only the vague one was asked');
+    assert.equal(rm.getTask(good.id)!.bar?.gate?.verdict, 'pass');
+    assert.ok(rm.listDecisions({ action: 'task-bar park' }).some((d) => d.subject === vague.id));
+    assert.ok(rm.listDecisions({ action: 'task-bar pass' }).some((d) => d.subject === good.id));
+    await pm.startWork();
+    assert.equal(rm.getTask(vague.id)!.status, 'idea', 'still not started');
+    // The roadmap API's counts.
+    const counts = tb.taskBarCounts('pmninth');
+    assert.equal(counts.last7days.parked, 1);
+    assert.equal(counts.last7days.passed, 1);
+    assert.deepEqual(tb.parkedTasks(rm.listItems({ product: 'pmninth' }).flatMap((i) => i.tasks)).map((t) => t.id), [vague.id]);
+  } finally {
+    tb.setTaskBarAsk(null);
+    process.env.STUDIO_TASK_BAR = 'off';
+    pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
+});
+
+test('playsFor puts a task\'s [phone] criteria in a phone play, and askKey separates devices', async () => {
+  const { askKey } = await import('../src/playplan.ts');
+  assert.notEqual(askKey({ scenario: 'smoke' }), askKey({ scenario: 'smoke', device: 'phone' }));
+  assert.equal(askKey({ scenario: 'smoke', device: 'desktop' }), askKey({ scenario: 'smoke' }));
+  const it = rm.addItem({ product: 'pmeighth', title: 'Phone plays', status: 'idea' });
+  const t = rm.addTask({ item: it.id, request: 'x', criteria: ['The cart opens', '[phone] The cart fits at 390x844'] });
+  const plays = await pm.playsFor([t]);
+  assert.equal(plays.length, 2);
+  assert.deepEqual(plays.find((p) => !p.device)!.criteria, ['The cart opens']);
+  assert.deepEqual(plays.find((p) => p.device === 'phone')!.criteria, ['[phone] The cart fits at 390x844']);
+});
+
+test('the agent\'s brief starts with the player goal, and the roadmap API carries the task bar counts', async () => {
+  const { barBrief } = await import('../src/agents.ts');
+  const it = rm.addItem({ product: 'pmseventh', title: 'Brief', status: 'idea' });
+  const g = rm.addTask({ item: it.id, request: 'Add the cart', goal: 'The player sees the price', reference: 'Slay the Spire: the shop tooltip', axis: 'menus-ui', phone: 'Thumb reach' });
+  const text = barBrief({ task: g.id });
+  assert.match(text, /^## Player goal\n\nThe player sees the price/);
+  assert.match(text, /Reference .*Slay the Spire/);
+  assert.match(text, /Critic axis .*menus-ui/);
+  assert.match(text, /390x844, touch\): Thumb reach/);
+  assert.match(text, /not when the code compiles/);
+  const inf = rm.addItem({ product: 'pminfra', title: 'Infra brief', status: 'idea' });
+  const o = rm.addTask({ item: inf.id, request: 'Retry the notify step\n\nOutcome: a beta run\'s notify step retries and ends done' });
+  assert.match(barBrief({ task: o.id }), /^## Outcome\n\na beta run's notify step retries and ends done/);
+  assert.equal(barBrief({ task: null }), '');
+  const tb = await import('../src/taskbar.ts');
+  const counts = tb.taskBarCounts('pmseventh');
+  assert.deepEqual(Object.keys(counts).sort(), ['last7days', 'parked', 'parkedTasks', 'passed', 'rewritten']);
 });
