@@ -167,6 +167,30 @@ test('2. a task\'s build is ok only when the run built a commit that includes it
   assert.equal(await pm.proofFor('plain', t, r), undefined);
 });
 
+test('2b. a build that broke is a failed build sent back to an agent, never "built nothing" (r_95635a34fb83)', async () => {
+  // Yooba Land, 2026-11-11: the build step failed its size guard; the run was read as having no build step, nobody was
+  // told, and the PM built the same commit again and again while 13 merged tasks waited.
+  const r = run('failed');
+  step(r, 'build', 'web', 'failed', null, 'the build of beta a36c67b failed (web 95): size guard: the lazy region downloads 110.8 MB, over the 90.0 MB guard');
+  const t: any = { id: 'tk2', product: 'sou', change: null };
+  assert.equal(BB.buildFailedIn(r, 'sou'), true);
+  const proof = await pm.proofFor('sou', t, r, { merge: async () => ({ slug: 'x/sou', sha: 'm' }) });
+  assert.equal(proof, undefined, 'no "built nothing" proof for a build that broke');
+  const b = pm.buildOf('sou', { id: r, status: 'failed', finished: Date.now() }, proof);
+  assert.equal(b.ok, false);
+  assert.notEqual(b.unproven, true, 'a broken build is the task\'s failure to fix, not unproven');
+  assert.match(b.detail, /beta's build failed.*size guard/);
+  // A run that really had no build step is still "built nothing".
+  const none = run();
+  step(none, 'playtest', 'smoke@local', 'done');
+  assert.equal(BB.buildFailedIn(none, 'sou'), false);
+  assert.match(pm.buildOf('sou', { id: none, status: 'done', finished: Date.now() }, await pm.proofFor('sou', t, none, { merge: async () => ({ slug: 'x/sou', sha: 'm' }) })).detail, /built nothing/);
+  // A cancelled build is neither (cancel.ts settles it): not a failure.
+  const c = run();
+  step(c, 'build', 'web', 'cancelled');
+  assert.equal(BB.buildFailedIn(c, 'sou'), false);
+});
+
 test('3. a played build is named by the commit it was made from, in the report', () => {
   row({ sha: OLD, status: 'ready', version: 1 });
   row({ sha: HEAD, status: 'ready', version: 2, started: Date.now() + 10 });

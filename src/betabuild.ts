@@ -147,6 +147,16 @@ export function builtBy(run: string, product: string): { sha: string; version: n
 }
 
 /**
+ * Whether a beta run's build step for the product failed: the run tried to build and the build broke (Unity's error, a
+ * size guard). That is a failed build to send back to an agent (pm.ts decideFailedBuild), never "built nothing": run
+ * r_95635a34fb83 (Yooba Land, 2026-11-11) failed its size guard, was read as having no build step, blamed nobody, and
+ * the PM built the same commit again and again while 13 merged tasks waited.
+ */
+export function buildFailedIn(run: string, product: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM steps WHERE run = ? AND product = ? AND kind = 'build' AND status = 'failed' LIMIT 1").get(run, product));
+}
+
+/**
  * Whether a beta run built (or kept) a build that counts as a task's build. A Unity project Studio builds needs a build
  * step with the commit it was made from, and that commit must include the task's merge; the run that only played the last
  * published build is not a build of anything.
