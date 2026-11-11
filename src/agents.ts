@@ -698,7 +698,7 @@ export type Phase = {
   /** Parked by a harness hold (parkForHarness): what stopped it. The next pass resumes it (harnessResume). */
   harness?: { kind: string; line: string; at: number; on: string; /** When each park happened (the last hour's, for the resume cap). */ parks?: number[]; /** Asked J after the cap: no more resumes by itself. */ capped?: boolean };
   /** Restarts that resumed it at this step in a row (resumeChanges): a step that keeps ending Studio isn't resumed again. */
-  restarts?: { step: string; n: number; at: number };
+  restarts?: { step: string; n: number; at: number; /** A Cloud Run agent job's output offset at that restart: progress since is not counted. */ offset?: number };
   /** Times the stuck-work watchdog (checkStuck) took this change over at one step, and when. */
   watch?: { step: string; n: number; at: number };
   /** A change stopped for restarts that was carried on once Studio had stayed up (reviveRestartStopped): not again. */
@@ -5199,6 +5199,21 @@ export function startStuckWatch() {
   stuckTimer.unref();
 }
 
+/**
+ * What a Studio restart adds to a change's restarts-in-a-row at its step. A Cloud Run agent job outlives Studio, so when its
+ * output offset moved since the previous restart it is making progress and the restart isn't counted (n goes back to 1:
+ * the counter exists to catch a step that crashes Studio, J 2026-11-11: c_537e53d5b27d lost 7 minutes of good work). A
+ * step whose output didn't move, and any local agent, counts as before. `why` is the log line.
+ */
+export function restartCount(prev: Phase['restarts'], ph: Pick<Phase, 'step' | 'proc'>, now = Date.now()): { n: number; why: string } {
+  const same = prev?.step === ph.step && now - (prev.at ?? 0) < RESTART_WINDOW_MS;
+  if (!same) return { n: 1, why: 'first restart at this step: 1 of ' + RESTART_LOOP };
+  if (ph.step === 'agent' && ph.proc?.rec.mode === 'cloudrun' && typeof prev!.offset === 'number' && ph.proc.offset > prev!.offset) {
+    return { n: 1, why: `progress since last restart: not counted (its output moved ${prev!.offset} -> ${ph.proc.offset})` };
+  }
+  return { n: prev!.n + 1, why: `no progress: ${prev!.n + 1} of ${RESTART_LOOP}` };
+}
+
 export function resumeChanges() {
   const out: string[] = [];
   for (const c of listChanges({ status: 'working,verifying,revising', limit: 200 })) {
@@ -5212,7 +5227,7 @@ export function resumeChanges() {
     // too big for its memory crashed the customer Studio on every restart, 2026-10-31). It stops, said plainly.
     // Only quick ones count: a crash loop restarts every minute or two; deploys during a long agent pass are far apart.
     const prev = ph.restarts;
-    const n = prev?.step === ph.step && Date.now() - (prev.at ?? 0) < RESTART_WINDOW_MS ? prev.n + 1 : 1;
+    const { n, why } = restartCount(prev, ph);
     if (n > RESTART_LOOP) {
       // Its pull request is already open and the work committed: only the finish was cut off. That is ready, not failed.
       if (carryFinishedToReady(c, ph)) continue;
@@ -5220,7 +5235,8 @@ export function resumeChanges() {
       console.warn(`[studio] ${c.id}: stopped after ${n - 1} restarts in a row at ${ph.step}`);
       continue;
     }
-    ph.restarts = { step: ph.step, n, at: Date.now() };
+    ph.restarts = { step: ph.step, n, at: Date.now(), ...(ph.proc?.rec.mode === 'cloudrun' ? { offset: ph.proc.offset } : {}) };
+    if (ph.step === 'agent') addLog(c.id, `restart: ${why}`);
     update(c.id, { phase: ph });
     // One every RESUME_GAP_MS, not all at once: each picks up with git and file work, which together froze Studio's start.
     const wait = out.length * resumeGapMs();
