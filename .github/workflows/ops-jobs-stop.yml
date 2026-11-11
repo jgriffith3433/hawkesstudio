@@ -1,0 +1,85 @@
+# Stops Cloud Run job executions that are taking the region's CPU, and reads that CPU's quota and use. Plan by default:
+# it lists what it would cancel; tick "apply" to cancel. Only Studio's agent jobs and the Unity build jobs, never a
+# service. Jaycee, 2026-11-11, with Studio down for lack of CPU room in us-east4: "Yes absolutely clear the unity
+# builds", "You do it", "Can't you do it through github actions?"
+#   gh workflow run ops-jobs-stop.yml --repo jgriffith3433/hawkesstudio --ref beta -f jobs=unity-builds -f apply=true
+name: ops-jobs-stop
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: Which job executions (queued and running)
+        type: choice
+        options: [unity-builds, agents, unity-builds-and-agents, none]
+        default: none
+      region:
+        type: choice
+        options: [us-east4, us-central1, us-west1]
+        default: us-east4
+      apply:
+        description: Cancel them (unticked = list only)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-jobs-stop
+  cancel-in-progress: false
+jobs:
+  stop:
+    name: ${{ inputs.jobs }} in ${{ inputs.region }} (${{ inputs.apply && 'apply' || 'plan' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-studio
+          service_account: studio-deployer@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Stop and read
+        env:
+          JOBS: ${{ inputs.jobs }}
+          REGION: ${{ inputs.region }}
+          APPLY: ${{ inputs.apply }}
+          PROJECT: ${{ vars.GCP_PROJECT }}
+        run: |
+          set -uo pipefail
+          sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; echo "$*"; }
+          sum "## ops-jobs-stop: $JOBS in $REGION ($([ "$APPLY" = true ] && echo apply || echo 'plan only'))"
+          all=$(gcloud run jobs list --project "$PROJECT" --region "$REGION" --format='value(metadata.name)')
+          pick=()
+          for j in $all; do
+            case "$JOBS:$j" in
+              unity-builds:hawkes-unity-build*|unity-builds-and-agents:hawkes-unity-build*) pick+=("$j");;
+              agents:studio-cell-agent*|unity-builds-and-agents:studio-cell-agent*) pick+=("$j");;
+            esac
+          done
+          # Open executions (no completion time) of every job, with the CPU each task asks for.
+          used=0
+          for j in $all; do
+            cpu=$(gcloud run jobs describe "$j" --project "$PROJECT" --region "$REGION" --format='value(spec.template.spec.template.spec.containers[0].resources.limits.cpu)')
+            cpu=${cpu%m}; [ -z "$cpu" ] && cpu=1
+            open=$(gcloud run jobs executions list --job "$j" --project "$PROJECT" --region "$REGION" --limit 500 --format='value(metadata.name,status.runningCount,status.completionTime)' 2>/dev/null | awk -F'\t' '$3==""')
+            [ -z "$open" ] && continue
+            n=$(echo "$open" | wc -l); running=$(echo "$open" | awk -F'\t' '{s+=$2} END {print s+0}')
+            used=$(awk -v u="$used" -v r="$running" -v c="$cpu" 'BEGIN { if (c > 64) c = c / 1000; print u + r * c }')
+            sum "- $j: $n open execution(s), $running task(s) running, $cpu vCPU per task"
+            if printf '%s\n' "${pick[@]:-}" | grep -qx "$j"; then
+              for e in $(echo "$open" | cut -f1); do
+                sum "    cancel $e"
+                if [ "$APPLY" = true ]; then gcloud run jobs executions cancel "$e" --project "$PROJECT" --region "$REGION" --quiet --async >/dev/null 2>&1 || sum "    (could not cancel $e)"; fi
+              done
+            fi
+          done
+          sum "- running job tasks use about $used vCPU"
+          sum "### services in $REGION (min instances x CPU)"
+          gcloud run services list --project "$PROJECT" --region "$REGION" --format='value(metadata.name,spec.template.spec.containers[0].resources.limits.cpu,spec.template.metadata.annotations."autoscaling.knative.dev/minScale",spec.template.metadata.annotations."autoscaling.knative.dev/maxScale")' \
+            | while IFS=$'\t' read -r s c mn mx; do sum "- $s: cpu ${c:-?}, min ${mn:-0}, max ${mx:-?}"; done
+          sum "### CPU quota (Total CPU allocation, per project per region)"
+          tok=$(gcloud auth print-access-token)
+          curl -sS -H "Authorization: Bearer $tok" "https://serviceusage.googleapis.com/v1beta1/projects/$PROJECT/services/run.googleapis.com/consumerQuotaMetrics?view=FULL" \
+            | jq -r --arg r "$REGION" '.metrics[]? | select(.metric|test("cpu_allocation")) | .consumerQuotaLimits[]?.quotaBuckets[]? | select(.dimensions.region==$r) | "- \($r): limit \(.effectiveLimit) (milli-vCPU or vCPU per the quota unit)"' 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          curl -sS -H "Authorization: Bearer $tok" "https://cloudquotas.googleapis.com/v1/projects/$PROJECT/locations/global/services/run.googleapis.com/quotaInfos?pageSize=200" \
+            | jq -r --arg r "$REGION" '.quotaInfos[]? | select(.metric|test("cpu")) | "- \(.quotaId): " + ([.dimensionsInfos[]? | select(.dimensions.region==$r) | "\(.details.value)"] | join(","))' 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          sum "(empty quota lines: this account may not read quotas)"
