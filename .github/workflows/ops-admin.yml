@@ -188,7 +188,10 @@ jobs:
             unit=$(jq -r --arg q "$qid" '.[] | select(.quotaId==$q) | .unit // ""' qi.json)
             cur=$(jq -r --arg q "$qid" --arg r "$REGION" '.[] | select(.quotaId==$q) | [.dimensionsInfos[]? | select((.dimensions.region // "")==$r) | .details.value][0] // "?"' qi.json)
             sum "- quota $qid ($unit): $REGION is $cur now"
-            # The unit is milli-vCPU for Cloud Run's CPU allocation; anything else stops here rather than guess.
+            # The unit is milli-vCPU for Cloud Run's CPU allocation; anything else stops here rather than guess. gcloud may
+            # leave the unit out (2026-11-11: blank, with us-east4 at 20000 for its 20 vCPU): then the current value says
+            # which, since no region's CPU quota is over 1000 vCPU.
+            if [ -z "$unit" ] && [[ "$cur" =~ ^[0-9]+$ ]]; then if [ "$cur" -gt 1000 ]; then unit="milli-vCPU (from the current value)"; else unit="vCPU (from the current value)"; fi; sum "- the quota names no unit: taking $unit"; fi
             case "$unit" in *"1000"*|*milli*|*"{milli"*) want=$((VALUE * 1000));; "1"|"{vCPU}"|*cpu*|*CPU*) want=$VALUE;; *) echo "unexpected unit '$unit'"; exit 1;; esac
             sum "- asking for $VALUE vCPU ($want in the quota's unit) in $REGION"
             pref="run-cpu-$REGION"
