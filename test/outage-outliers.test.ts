@@ -70,3 +70,36 @@ test('a write that changes nothing writes nothing (the same status and detail se
   agents.patchChange('c_same00000001', { detail: 'queued: waits for memory to free up' });
   assert.ok((db.prepare('SELECT updated FROM changes WHERE id = ?').get('c_same00000001') as any).updated > 1, 'a real change is written');
 });
+
+// c_b866cdd91dca (Nov 8 04:21): its job saved the branch to GitHub (3effdfd), Studio restarted, and the resumed publish
+// step failed "worktree missing after restart". A resumed later step now makes the worktree again from the saved branch
+// first (worktreeForLaterSteps, 69b9a2b); this replays that case end to end on a local "GitHub".
+test('a resumed publish with its worktree gone makes it again from the branch saved on GitHub', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const g = (cwd: string, ...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...a], { cwd, encoding: 'utf8' }).trim();
+  const origin = path.join(tmp, 'origin-yl.git');
+  g(tmp, 'init', '-q', '--bare', '-b', 'main', origin);
+  const repo = path.join(process.env.STUDIO_PROJECTS!, 'yl');
+  g(tmp, 'clone', '-q', origin, repo);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'base\n');
+  g(repo, 'add', '.'); g(repo, 'commit', '-qm', 'base'); g(repo, 'push', '-q', 'origin', 'HEAD:main'); g(repo, 'push', '-q', 'origin', 'HEAD:beta');
+  // The job's work, saved on GitHub only (the instance that had the worktree is gone).
+  const branch = 'task/b866cdd91dca-climb-kit';
+  const elsewhere = path.join(tmp, 'job-machine');
+  g(tmp, 'clone', '-q', origin, elsewhere);
+  g(elsewhere, 'checkout', '-q', '-b', branch);
+  fs.writeFileSync(path.join(elsewhere, 'recipes.json'), '{"climb": 12}\n');
+  g(elsewhere, 'add', '.'); g(elsewhere, 'commit', '-qm', 'Climb art recipes'); g(elsewhere, 'push', '-q', 'origin', `HEAD:${branch}`);
+  const saved = g(elsewhere, 'rev-parse', 'HEAD');
+  const worktree = path.join(process.env.STUDIO_PROJECTS!, '.work', 'c_b866cdd91dca');
+  db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, phase) VALUES ('c_b866cdd91dca', 'yl', '[]', 'working', '', 'yl', 'x/yl', ?, 'beta', ?, 'Climb kit', '[]', '[]', ?, ?)`)
+    .run(branch, worktree, Date.now(), JSON.stringify({ step: 'publish' }));
+  assert.equal(fs.existsSync(worktree), false, 'gone with the old instance');
+  assert.equal(await agents.remakeWorktree('c_b866cdd91dca'), true);
+  assert.equal(g(worktree, 'rev-parse', 'HEAD'), saved, "made again at the job's saved commit");
+  assert.equal(fs.readFileSync(path.join(worktree, 'recipes.json'), 'utf8'), '{"climb": 12}\n');
+  // And a resumed publish, verify or finish step does that before the step runs.
+  const src = fs.readFileSync('src/agents.ts', 'utf8');
+  const body = src.slice(src.indexOf('async function workPass('));
+  assert.ok(body.indexOf('await worktreeForLaterSteps(id, ph)') < body.indexOf("if (ph.step === 'publish')"));
+});
