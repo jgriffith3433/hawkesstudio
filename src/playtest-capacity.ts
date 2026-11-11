@@ -174,24 +174,69 @@ export async function raiseForRun(plays: number): Promise<number | null> {
   } catch { return null; }
 }
 
+/** Gen's live view of the playtest lanes (one GET, asked on an event or a deadline, never on a timer). null when Gen can't say. */
+async function liveNow(): Promise<any | null> {
+  try { return await capacityApi.request('/playtests/live', { signal: AbortSignal.timeout(TIMEOUT_MS) }); } catch { return null; }
+}
+
+/** Browser tabs Gen runs for the lane (its limit, or the capacity's), 1 when unknown. */
+const tabsOf = (now: any): number => {
+  const n = Number(now?.lanes?.limit ?? now?.capacity?.browsers ?? now?.capacity?.limit);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+};
+
 /**
- * Why a queued playtest is still waiting, in one plain sentence from Gen's live view (tabs in use, how many are ahead).
- * Asked once per change of the job's state (an event), not on a timer. null when Gen can't say.
+ * A queued job's place in Gen's playtest line: 0 is next, n has n ahead of it. null when Gen can't say (not waiting, or
+ * not answering). playtest-finish.ts's stall rule compares it with its last look: a place that dropped is the queue moving.
+ */
+export async function queuePosition(job: string): Promise<number | null> {
+  const now = await liveNow();
+  const i = (now?.waiting ?? []).findIndex((w: any) => w?.job === job);
+  return i < 0 ? null : i;
+}
+
+/**
+ * The play time of a playtest, from recent finished ones (the step's data.runningSince to finish, so the queue isn't
+ * counted): the median of up to 30. null with fewer than 3 to go on.
+ */
+export function typicalPlayMs(): number | null {
+  const rows = db.prepare(`SELECT finished - json_extract(data, '$.runningSince') AS ms FROM steps
+    WHERE kind = 'playtest' AND status = 'done' AND finished IS NOT NULL AND json_extract(data, '$.runningSince') IS NOT NULL
+    ORDER BY finished DESC LIMIT 30`).all() as { ms: number }[];
+  const ms = rows.map((r) => Number(r.ms)).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
+  return ms.length < 3 ? null : ms[Math.floor(ms.length / 2)];
+}
+
+/** "about 12 min to go" for a job with `ahead` places in line on `tabs` browser tabs; '' when there's no history yet. */
+export function expectedWaitText(ahead: number, tabs: number): string {
+  const play = typicalPlayMs();
+  if (!play) return '';
+  const min = Math.max(1, Math.round(((ahead + 1) / Math.max(1, tabs)) * play / 60_000));
+  return `, about ${min} min to go`;
+}
+
+/**
+ * Why a queued playtest is still waiting, in one plain sentence from Gen's live view (tabs in use, how many are ahead,
+ * and roughly how long, from the last finished playtests). Asked once per change of the job's state (an event), not on a
+ * timer. null when Gen can't say.
  */
 export async function waitReason(job: string): Promise<string | null> {
   try {
-    const now = await capacityApi.request('/playtests/live', { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const now = await liveNow();
+    if (!now) return null;
     const waiting: any[] = now?.waiting ?? [];
     const i = waiting.findIndex((w) => w.job === job);
     if (i < 0) return null;
+    const tabs = tabsOf(now);
+    const eta = expectedWaitText(i, tabs);
     // Gen's own reason for this job comes first: it names the lane the job really waits on (a Cloud Run or RunPod
     // lane, a project's share). `lanes` is only Gen's generic playtest lane, which on 2026-11-10 read "1 of 1" while the
     // jobs waited on another lane, so the step named the wrong cause for an hour.
     const own = String(waiting[i]?.detail ?? '').trim();
-    if (/^waiting\b/i.test(own) && own.length > 'waiting'.length + 2) return `${own.replace(/^waiting:?\s*/i, 'waiting for a free browser: ').replace(/\.$/, '')}, ${i} ahead in the queue`;
+    if (/^waiting\b/i.test(own) && own.length > 'waiting'.length + 2) return `${own.replace(/^waiting:?\s*/i, 'waiting for a free browser: ').replace(/\.$/, '')}, ${i} ahead in the queue${eta}`;
     const lanes = now?.lanes, cap = now?.capacity;
     const limit = Number(lanes?.limit ?? cap?.browsers ?? cap?.limit), used = Number(lanes?.used ?? (now?.playing ?? []).length);
-    const tabs = Number.isFinite(limit) && limit > 0 ? `${Math.min(used, limit)} of ${limit} browser tabs are in use` : `${(now?.playing ?? []).length} playtests are playing`;
-    return `waiting for a free browser: ${tabs}, ${i} ahead in the queue`;
+    const tabsText = Number.isFinite(limit) && limit > 0 ? `${Math.min(used, limit)} of ${limit} browser tabs are in use` : `${(now?.playing ?? []).length} playtests are playing`;
+    return `waiting for a free browser: ${tabsText}, ${i} ahead in the queue${eta}`;
   } catch { return null; }
 }

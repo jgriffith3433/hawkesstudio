@@ -878,18 +878,20 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     try {
       const F = await import('./playtest-finish.ts');
       job = await runGenJob('playtest.run', p.id, params, queuedNote(s), {
-        runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
+        runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), queueStallMs: F.PLAYTEST_QUEUE_STALL_MS(), queuePosition: queuePlace, job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
         onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
       });
+      // A tab freed up (this playtest is over): a run still queued for more browsers asks Gen for them again.
+      void raiseAgain(run);
       // Cut off (a provider with no free worker or a full disk, a Gen or beta restart): one more try on the next backend,
       // then it ends with its reason in one sentence, never a hang.
       const cut = F.classifyFailure(job);
       if (cut && !haltOf(run)()) {
         if (cut.provider) { const B = await import('./gpu-breaker.ts'); B.trip(cut.provider); }
-        updateStep(s, { detail: `${F.plainWhy(job, null)} Trying again on the next backend.` });
+        updateStep(s, { detail: `${F.plainWhy(job, null)} ${cut.kind === 'queue' ? 'Trying once more.' : 'Trying again on the next backend.'}` });
         if (cut.kind === 'beta-restart') { try { await (await import('./previews.ts')).betaSettled(p.id); } catch { /* the retry will say */ } }
         const second = await runGenJob('playtest.run', p.id, F.retryParams(params, cut), queuedNote(s), {
-          runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: false,
+          runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), queueStallMs: F.PLAYTEST_QUEUE_STALL_MS(), queuePosition: queuePlace, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: false,
           onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
         });
         if (second.status !== 'done') second.error = F.plainWhy(second, cut);
@@ -1060,6 +1062,19 @@ function fileStuck(run: string, p: Product, name: string, job: any) {
 export function playOptions(t: Pick<Playtest, 'options' | 'at'>): Record<string, unknown> | undefined {
   const at = typeof t.at === 'string' && t.at.trim() ? t.at.trim() : null;
   return at ? { ...(t.options ?? {}), at } : t.options;
+}
+
+/** A queued playtest's place in Gen's line (playtest-capacity.ts), for the queue's stall rule (playtest-finish.ts). */
+const queuePlace = (job: string) => import('./playtest-capacity.ts').then((C) => C.queuePosition(job)).catch(() => null);
+
+/** Playtests of a run still waiting or playing: what Gen's browser tabs must cover. */
+function playtestsLeft(run: string): number {
+  return Number((db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND kind = 'playtest' AND status NOT IN ('done', 'failed', 'skipped', 'cancelled')`).get(run) as any)?.n ?? 0);
+}
+/** A tab freed up: a run that still has playtests queued asks Gen for browsers to cover them (raiseForRun never lowers). */
+async function raiseAgain(run: string) {
+  const left = playtestsLeft(run);
+  if (left > 0) await (await import('./playtest-capacity.ts')).raiseForRun(left).catch(() => null);
 }
 
 /** A playtest job's updates onto its step; while Gen has it queued, the step says why (tabs in use, how many ahead). */
