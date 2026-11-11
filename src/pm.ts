@@ -924,7 +924,10 @@ export async function milestoneCheck(id: string, group: string[] = [id]) {
   const unchecked = runs.flatMap((r) => missingScenarioSkips(r).map((x) => `${x.scenario} (run ${r})`));
   if (unchecked.length) {
     setMilestoneChecks(id, []);
-    logDecision('milestone-recheck', id, m.product, `milestone "${m.title}" not checked: the build played has no scenario ${unchecked.join(', ')}, so those runs don't count as a check; it is checked again after beta's next build`.slice(0, 1500));
+    // A fresh build of beta's head without the scenario: no later build brings it, so the task that names it registers
+    // it (2026-11-11: The Place Department's milestone played, skipped "bot-animation", and was checked again and again).
+    const sent = await sendMissingScenarios(runs, tasks);
+    logDecision('milestone-recheck', id, m.product, `milestone "${m.title}" not checked: the build played has no scenario ${unchecked.join(', ')}, so those runs don't count as a check; ${sent.length ? `sent ${sent.map((x) => `"${x}"`).join(', ')} back to register it (not a try); ` : ''}it is checked again after beta's next build`.slice(0, 1500));
     return;
   }
   // Its tasks judged from those runs first (checkOnBeta: a "no" goes to decideMiss in walk-away mode), then J hears, but
@@ -935,6 +938,49 @@ export async function milestoneCheck(id: string, group: string[] = [id]) {
   setMilestoneChecks(id, []);
   const what = left.map((t) => `"${t.title}" (${t.status}${t.checks?.results?.length ? `: ${t.checks.results.filter((r) => r.met !== 'yes').map((r) => `${r.criterion} ${r.met}`).join('; ')}` : ''})`).join(', ');
   logDecision('milestone-recheck', id, m.product, `milestone "${m.title}" not reached: ${left.length} task(s) not verified on beta (${what}); misses go to their agents, and the milestone is checked again after beta's next build (${tries + 1} of ${s.maxTries})`.slice(0, 1500));
+}
+
+/**
+ * The tasks to send back for a scenario a milestone run skipped as missing (pure: tested): only where the run built or
+ * served beta's head (builtBy: a build that predates the task would bring it next time), each task whose change names
+ * that scenario, once per task and scenario.
+ */
+export function missingScenarioOwners(runs: string[], tasks: Pick<Task, 'id' | 'product'>[], scenarioOf: (t: Pick<Task, 'id' | 'product'>) => string | null | undefined, sentBefore: (task: string, scenario: string) => boolean) {
+  const out: { task: string; scenario: string; run: string; has: string[] }[] = [];
+  for (const r of runs) {
+    for (const x of missingScenarioSkips(r)) {
+      for (const t of tasks) {
+        if (scenarioOf(t) !== x.scenario || !builtBy(r, t.product) || sentBefore(t.id, x.scenario) || out.some((o) => o.task === t.id)) continue;
+        const has = parse((db.prepare(`SELECT data FROM steps WHERE run = ? AND kind = 'playtest' AND name = ?`).get(r, x.name) as any)?.data)?.has ?? [];
+        out.push({ task: t.id, scenario: x.scenario, run: r, has });
+      }
+    }
+  }
+  return out;
+}
+
+async function sendMissingScenarios(runs: string[], tasks: Task[]): Promise<string[]> {
+  if (!pmSettings().enabled) return [];
+  const { getChange } = await changes();
+  const done = listDecisions({ since: 0, action: 'scenario-missing', limit: 10_000 });
+  const owners = missingScenarioOwners(runs, tasks, (t) => { const k = getTask(t.id); return k?.change ? getChange(k.change)?.verify?.scenario : null; },
+    (task, sc) => done.some((d) => d.subject === task && String(d.detail ?? '').includes(`"${sc}"`)));
+  const sent: string[] = [];
+  for (const o of owners) {
+    const t = getTask(o.task);
+    if (!t) continue;
+    const note = `Beta's build (run ${o.run}) has no playtest scenario "${o.scenario}", which this task's playtest uses, so its criteria were never played${o.has.length ? ` (beta has: ${o.has.join(', ')})` : ''}. Your feature is merged on beta: don't redo it. Register the scenario "${o.scenario}" in the game's playtest scenarios (or name an existing one that covers these criteria in .hawkes/scenario.txt) so beta's build can play it.`;
+    setTask(t.id, { status: 'planned' });
+    try {
+      await startTaskChange(getTask(t.id)!, note, `beta's build has no scenario "${o.scenario}" (not a try)`, false);
+    } catch (e: any) {
+      setTask(t.id, { status: 'merged', note: `couldn't send it back to register "${o.scenario}": ${e.message}`.slice(0, 500) });
+      continue;
+    }
+    logDecision('scenario-missing', t.id, t.product, `"${t.title}": beta run ${o.run} has no scenario "${o.scenario}": sent back once to register it (not a try)`);
+    sent.push(t.title);
+  }
+  return sent;
 }
 
 /**
