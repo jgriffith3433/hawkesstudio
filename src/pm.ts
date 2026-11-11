@@ -43,6 +43,7 @@ import {
   pmLogVersion, unityGated, setBar,
 } from './roadmap.ts';
 import { gateTask, PHONE, splitPlays, focusWithGoals } from './taskbar.ts';
+import { milestoneCriticStatus } from './critic-gate.ts';
 import { askKey } from './playplan.ts';
 import { gate, allMet, runVerdicts, changeVerdictHolds, localGitDeps, awaitingVerdict, SWEEP_MAX } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
@@ -1745,6 +1746,18 @@ function announceReady(itemId: string) {
 function announceMilestone(id: string) {
   const m = getMilestone(id);
   if (!m) return;
+  // Critic gate (critic-gate.ts): a game milestone stays open until a beta critic run scores every touched dimension
+  // at or above target. Triggered again when that critic step finishes (critic.afterRun → reachMilestones).
+  try {
+    const c = milestoneCriticStatus(id);
+    if (c.waiting) {
+      const line = `milestone "${m.title}": ${c.line || 'waiting for the critic'}`;
+      if (listDecisions({ since: 0, action: 'milestone-critic', limit: 10_000 }).find((d) => d.subject === id)?.detail !== line.slice(0, 2000)) {
+        logDecision('milestone-critic', id, m.product, line);
+      }
+      return;
+    }
+  } catch (e: any) { console.warn(`[pm] milestone critic ${id}: ${e?.message ?? e}`); }
   markReached(id);
   const ready = readyReport({ milestone: id });
   const verified = ready.flatMap((r) => r.criteria).filter((c) => c.met === 'yes').length;

@@ -41,6 +41,12 @@ test('what makes going live impossible is never gone past', () => {
   assert.equal(D.overridableOnly([]), false);
 });
 
+test('a critic regression hold is one a person may go live past', () => {
+  const b = 'Critic: fun dropped 2 points against live (beta 5/10, live 8/10): the critic said so.';
+  assert.equal(D.isOverridable(b), true);
+  assert.equal(D.overridableOnly([b]), true);
+});
+
 test("fixWork is empty on a server with nothing running", () => {
   const w = D.fixWork('no-such-product', ['r_x']);
   assert.deepEqual(w, { changes: [], open: [] });

@@ -28,6 +28,7 @@ import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from '
 import { walkAwaySettings, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
 import { refreshTaskChanges } from './queue-follow.ts';
 import { unityBuildOf } from './betabuild.ts';
+import { milestoneCriticStatus } from './critic-gate.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -800,7 +801,17 @@ export function listMilestones(q: { product?: string; status?: string } = {}) {
   const st = (q.status ?? 'open,reached,live').split(',').map((x) => x.trim());
   const rows = db.prepare(`SELECT * FROM milestones WHERE status IN (${st.map(() => '?').join(',')}) ORDER BY ord, created`).all(...st) as Milestone[];
   const pid = q.product ? productId(q.product) : null;
-  return rows.filter((m) => !pid || m.product === pid || m.product === null).map((m) => ({ ...m, ...milestoneProgress(m.id) }));
+  // Critic wait (critic-gate.ts): open milestones show "waiting for the critic" with scores on the Roadmap at 390 px.
+  return rows.filter((m) => !pid || m.product === pid || m.product === null).map((m) => {
+    const progress = milestoneProgress(m.id);
+    const critic = m.status === 'open' ? milestoneCriticStatus(m.id) : null;
+    return {
+      ...m, ...progress,
+      critic: critic && (critic.waiting || critic.line)
+        ? { waiting: critic.waiting, line: critic.line, scores: critic.scores }
+        : null,
+    };
+  });
 }
 /**
  * Its items and how far along they are, from their tasks (itemProgress): an item counts once every task of it is on

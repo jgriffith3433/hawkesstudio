@@ -90,6 +90,13 @@ if (typeof document !== 'undefined') (() => {
     .gl-done { font-size: 13px; margin: 6px 0; } .gl-fail { color: var(--red); }
     .gl-play { font-size: 14px; margin: 6px 0; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); }
     .gl-play.passed { border-color: rgba(80,200,120,.4); } .gl-play.failed { border-color: rgba(255,90,90,.5); } .gl-play.untested { border-color: rgba(255,190,85,.5); } .gl-play.running { background: rgba(255,190,85,.12); border-color: rgba(255,190,85,.4); }
+    /* Critic beta vs live (critic-gate.ts): wrap, no table, so it reads at 390 px. */
+    .gl-critic { font-size: 13px; margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); min-width: 0; overflow-wrap: anywhere; }
+    .gl-critic b { display: block; margin-bottom: 4px; }
+    .gl-critic .gl-crit-row { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 0; border-top: 1px solid var(--line); min-width: 0; }
+    .gl-critic .gl-crit-row:first-of-type { border-top: 0; }
+    .gl-critic .gl-crit-dim { flex: 1 1 8rem; min-width: 0; }
+    .gl-critic .gl-crit-scores { flex: 0 1 auto; white-space: nowrap; }
     .gl-slot:not(:empty) { margin-top: 10px; }
     .gl-card details { margin-top: 8px; font-size: 13px; } .gl-card details code { font-size: 12px; }
     .gl-links { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
@@ -127,6 +134,29 @@ if (typeof document !== 'undefined') (() => {
 
   const when = (d) => (d ? ago(typeof d === 'number' ? d : Date.parse(d)) : 'unknown');
   const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+
+  /** Critic beta vs live on the card (plan.critic from deploy.ts), readable at 390 px. */
+  function criticHtml(c) {
+    if (!c) return '';
+    const beta = c.beta?.judged ? c.beta : null;
+    const live = c.live?.judged ? c.live : null;
+    if (!beta && !live && !(c.lines ?? []).length) {
+      return `<div class="gl-critic" data-key="glcrit"><b>Critic</b><span class="meta">Critic: not judged</span></div>`;
+    }
+    const byDim = new Map();
+    for (const s of beta?.scores ?? []) byDim.set(s.dimension, { dim: s.dimension, beta: s.score, live: null });
+    for (const s of live?.scores ?? []) {
+      const row = byDim.get(s.dimension) ?? { dim: s.dimension, beta: null, live: null };
+      row.live = s.score;
+      byDim.set(s.dimension, row);
+    }
+    const rows = [...byDim.values()];
+    const body = rows.length
+      ? rows.map((r) => `<div class="gl-crit-row"><span class="gl-crit-dim">${esc(r.dim)}</span><span class="gl-crit-scores meta">beta ${r.beta != null ? `${r.beta}/10` : '—'} · live ${r.live != null ? `${r.live}/10` : '—'}</span></div>`).join('')
+      : (c.lines ?? []).map((l) => `<div class="gl-crit-row"><span class="gl-crit-dim">${esc(l)}</span></div>`).join('');
+    const head = !beta ? 'Critic: not judged' : `Critic · beta${beta.scenario ? ` (${esc(beta.scenario)})` : ''} vs live`;
+    return `<div class="gl-critic" data-key="glcrit"><b>${head}</b>${body}</div>`;
+  }
 
   /** Who made a commit, in J's words. */
   function who(c) {
@@ -229,6 +259,7 @@ if (typeof document !== 'undefined') (() => {
       ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
       ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : recent.result?.nothing ? 'Already live' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.skippedPlaytest ? ` without a playtest (${esc(recent.result.skippedPlaytest.by)})` : ''}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
       ${p.players ? `<div class="gl-players meta" title="Real players on the live site (Hawkes Analytics; bots and your own devices left out)">👥 ${esc(p.players)}</div>` : ''}
+      ${criticHtml(p.critic)}
       ${up && p.release ? `<div class="gl-release meta">${p.release.existing ? 'What\'s new (already on beta, kept)' : 'Releases'} v${esc(p.release.version)}: ${esc(p.release.title ?? '(the notes are being written)')}${p.release.notes?.length ? `<ul>${p.release.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
       ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}${BuildFail.attempts(p.product, p.buildAttempts)}</div>` : ''}
