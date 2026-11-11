@@ -98,7 +98,8 @@ test('a cell\'s games: empty at first, added by onboarding, checked', () => {
   assert.throws(() => C.saveProduct({ id: 'my-game', name: 'x', engine: 'web', live: 'http://insecure.example' }), /https/);
   assert.throws(() => C.saveProduct({ id: 'my-game', name: 'x', engine: 'web' }), /live|build/);
   const p = C.saveProduct({ id: 'my-game', name: 'My Game', engine: 'web', live: 'https://mygame.example/play', story: 'A knight looks for her cat.', quality: 'Boots, plays, no soft-lock.' });
-  assert.deepEqual(p.playtests, [{ scenario: 'smoke', where: 'live' }]);
+  // Every project plays on a phone too (#259, "Phone playtests standard for every project").
+  assert.deepEqual(p.playtests, [{ scenario: 'smoke', where: 'live' }, { scenario: 'smoke', where: 'live', device: 'phone' }]);
   assert.equal(C.getProduct('my-game').name, 'My Game');
   assert.match(C.storyOf(C.getProduct('my-game')), /looks for her cat/);
   C.removeProduct('my-game');

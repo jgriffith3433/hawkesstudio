@@ -256,6 +256,37 @@ export function sweepLogs(dir = path.join(DATA, 'logs'), keep = 20, maxBytes = 3
   return { removed, bytes: freed };
 }
 
+/** npm's download cache (npm_config_cache, else ~/.npm): its _cacache only. */
+export const npmCacheDir = () => path.join(process.env.npm_config_cache || process.env.NPM_CONFIG_CACHE || path.join(os.homedir(), '.npm'), '_cacache');
+
+/** Whether an npm (npm ci, npx) runs on this machine now: its cache is not cleared under it. Linux /proc; elsewhere "yes". */
+export let npmRunning = (): boolean => {
+  try {
+    for (const pid of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+      let cmd = '';
+      try { cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' '); } catch { continue; }
+      if (/(^|\/)(npm|npx|npm-cli\.js|npx-cli\.js)(\s|$)/.test(cmd)) return true;
+    }
+    return false;
+  } catch { return true; }
+};
+export function setNpmRunning(f: () => boolean) { npmRunning = f; }
+
+/**
+ * A hard sweep on a working disk in memory clears npm's download cache: it is only a cache (the next install fetches
+ * again) and on the cell it held 540 MB of the 2.5 GB volume while PH Origins' site builds failed "in-memory disk is
+ * full" (2026-11-11), cleared by nothing. Left alone on a real disk, and while an npm runs.
+ */
+export function sweepNpmCache(dir = npmCacheDir()): { bytes: number; skipped?: string } {
+  if (onRealDisk()) return { bytes: 0, skipped: 'a real disk' };
+  if (!fs.existsSync(dir)) return { bytes: 0 };
+  if (npmRunning()) return { bytes: 0, skipped: 'an npm is running' };
+  const bytes = sizeOf(dir);
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { return { bytes: 0, skipped: 'it could not be removed' }; }
+  return { bytes };
+}
+
 /**
  * Stale temp downloads: Studio's hs-build-* folders, leftover /tmp/build trees, and other Studio scratch dirs older
  * than TMP_MAX_AGE_MS. Never touches another process's live cwd.
@@ -367,6 +398,12 @@ export async function sweepDisk(opts: {
     if (w.removed) report.detail.push(`worktrees -${w.removed} (${Math.round(w.bytes / MB)} MB)`);
   }
 
+  if (hard) {
+    const n = sweepNpmCache();
+    report.bytes += n.bytes;
+    if (n.bytes) report.detail.push(`npm cache -${Math.round(n.bytes / MB)} MB`);
+  }
+
   if (hard && opts.repos?.length) {
     const g = await pruneGit(opts.repos);
     report.git = g.repos;
@@ -403,7 +440,7 @@ export async function ensureDiskRoom(need = 0, opts: { keep?: Set<string>; repos
     opts.say?.(`[disksweep] past the soft limit, but no other work is running: the write goes ahead (${diskSummary()}; need ${Math.round(need / MB)} MB)`);
     return diskSummary();
   }
-  throw new Error(`${onRealDisk() ? 'working' : 'in-memory'} disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). Cleared profiles, logs, tmp and ended worktrees; free space and try again.`);
+  throw new Error(`${onRealDisk() ? 'working' : 'in-memory'} disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). Cleared profiles, logs, tmp, ended worktrees and the npm cache; free space and try again.`);
 }
 
 /** Resolve live keep-set and repo list from Studio's DB (lazy import so tests stay free of agents.ts). */

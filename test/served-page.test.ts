@@ -12,6 +12,18 @@ test('the commit a published page says it was built from', async () => {
   assert.equal(servedSha(`<script data-hawkes='{"sha":"zz"}'></script>`), null);
 });
 
+test("the page Studio injects today says its commit (the loader since #369), so a stale page is caught, not judged", async () => {
+  // The suite was red for days: the injector moved to a loader script, the reader still looked for the old attribute,
+  // and every served page read as "unknown", so the check never fired.
+  const { servedSha, servedMismatch, pageInfoOf } = await import('../src/servedpage.ts');
+  const { injectReport } = await import('../src/bugreport.ts');
+  const html = injectReport('<!doctype html><html><head><meta charset="utf-8"></head><body>game</body></html>', { product: 'p', sha: '0cac1b7', ref: 'beta', root: "/o/a'b<c" });
+  assert.equal(servedSha(html), '0cac1b7');
+  assert.equal(pageInfoOf(html)!.root, "/o/a'b<c", 'quotes and < round-trip');
+  assert.match(servedMismatch(html, { sha: 'd269309' }, 'https://x/')!, /published from 0cac1b7/);
+  assert.equal(servedSha(injectReport('<html><body>x</body></html>', { product: 'p' })), null);
+});
+
 test('a page published from another commit than the run reports is not judged', async () => {
   const { servedMismatch, sameCommit } = await import('../src/servedpage.ts');
   const played = { branch: 'beta', sha: 'd2693091234567890abcdef1234567890abcdef1' };

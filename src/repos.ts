@@ -18,6 +18,7 @@ import { trackCommand } from './ops.ts';
 import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
 import { REF_LOCK, fetchLocked, repoBusy, repoKey } from './gitlock.ts';
 import { lfsPull, lightCheckout } from './lfs.ts';
+import { diskInfo, onRealDisk } from './disksweep.ts';
 
 export const BRANCH = process.env.STUDIO_BRANCH || 'main';
 /** The branch between agent changes and the live site (beta.ts). On the server, product source repos are kept on it. */
@@ -215,8 +216,22 @@ async function syncRepoNow(folder: string, slug: string, branch: string, want?: 
 /** True on Cloud Run, where the repo folder is the instance's memory disk: big repos take the light path there. */
 export const cloudHost = () => Boolean(process.env.K_SERVICE);
 
-/** Megabytes of repo over which, on Cloud Run, a clone is light (partial, no LFS files, no npm ci): STUDIO_CLONE_MAX_MB. */
-export const cloneMaxMb = () => Number(process.env.STUDIO_CLONE_MAX_MB) || 600;
+/**
+ * Megabytes of repo over which, on Cloud Run, a clone is light (partial, no LFS files, no npm ci): STUDIO_CLONE_MAX_MB,
+ * and on a working disk in memory at most CLONE_DISK_SHARE of that disk. A full clone costs about twice GitHub's size
+ * (.git and the checkout) and every agent worktree of it another checkout: on 2026-11-11 the 446 MB PH Origins site took
+ * 906 MB of the cell's 2.5 GB memory volume, its agents' worktrees 548 MB each, and its site builds failed "in-memory disk
+ * is full" for hours. A real disk (10 GiB) keeps the 600 MB line.
+ */
+export const CLONE_DISK_SHARE = 0.15;
+export const cloneMaxMb = (disk: { size: number; real: boolean } = workingDisk()) => {
+  const set = Number(process.env.STUDIO_CLONE_MAX_MB) || 600;
+  return disk.real || !(disk.size > 0) ? set : Math.min(set, Math.floor((disk.size / (1024 * 1024)) * CLONE_DISK_SHARE));
+};
+/** The working disk's size and whether it is a real disk (disksweep.ts); unknown reads as a real disk (the 600 MB line). */
+function workingDisk(): { size: number; real: boolean } {
+  try { return { size: diskInfo().size, real: onRealDisk() }; } catch { return { size: 0, real: true }; }
+}
 
 /** GitHub's size of a repo in MB (what a clone downloads), cached per repo; null when GitHub doesn't say. */
 const sizes = new Map<string, { mb: number; at: number }>();

@@ -34,7 +34,7 @@ import { syncRepos, syncRepo, repoMap, betaFolders, isServer, builtFromGitHub, B
 import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria, sweepFor, type Sweep } from './acceptance.ts';
-import { isFirstFive, enrichFtue, firstFiveParams } from './ftue.ts';
+import { isFirstFive, enrichFtue, firstFiveParams, firstFiveOnBuild } from './ftue.ts';
 import { isPhone, runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from './betaqueue.ts';
@@ -272,8 +272,6 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(run) as any).c;
   db.prepare(`UPDATE runs SET status = ?, finished = ?, cost = ? WHERE id = ?`).run(endStatus({ ...runCounts(run), failed: 0 }, runCancelled(run)), Date.now(), cost, run);
   kickFollowups();
-  // The first five minutes (ftue.ts): played when a game's week is up, as a run of their own.
-  if (isServer() && !runCancelled(run)) void import('./ftue.ts').then((m) => m.afterRun(run)).catch(() => {});
   // The critic (critic.ts): when it is due for a game of this run; it adds its step and writes the report again.
   if (isServer() && !runCancelled(run)) await import('./critic.ts').then((m) => m.afterRun(run)).catch(() => {});
   const report = writeReport(run);
@@ -786,7 +784,8 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     }
     // A scenario this copy is known not to have is skipped, not played (scenarios.ts). The list is the one seen at this
     // page of this build, so a list from another page (the lore site's root) never skips the game's scenarios.
-    const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build, url) : null;
+    // The first five minutes are Gen's built-in scenario, never on a game's own list (ftue.ts).
+    const has = t.where === 'local' && t.scenario && !prior && !isFirstFive(t.scenario) ? knownScenarios(p.id, build, url) : null;
     if (isRenamedScenario(has, t.scenario!)) {
       if (port) stopServed(port);
       return skipMissing(run, p, s, asked, t.scenario!, has!, played);
@@ -1390,9 +1389,8 @@ export function closeRun(id: string, label: string) {
   const status = endStatus(n, runCancelled(id));
   db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(status, runCancelDetail(id, `${label}${n.failed ? ' failed' : status === 'done' ? '' : ` ${status}`}`), Date.now(), cost, id);
   kickFollowups();
-  // The first five minutes are played when a game's week is up (ftue.ts); the critic judges the game when any run of it
-  // ends and its week is up, and on a milestone's beta run (critic.ts).
-  if (isServer() && status !== 'cancelled') void import('./ftue.ts').then((m) => m.afterRun(id)).catch(() => {});
+  // The critic judges the game when any run of it ends and its week is up, and on a milestone's beta run (critic.ts).
+  // The first five minutes play inside a build's one play (betaBody), never as a run of their own (ftue.ts).
   if (isServer() && status !== 'cancelled') void import('./critic.ts').then((m) => m.afterRun(id)).catch(() => {});
   // A one-off playtest or a beta run ended: its review may have left the project fix-first or broken (verdictwork.ts).
   if (isServer() && status !== 'cancelled') void import('./verdictwork.ts').then((m) => m.actOnRun(id)).catch((e) => console.warn(`[studio] verdicts after ${id}: ${e.message ?? e}`));
@@ -1743,6 +1741,12 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     } else if (lane && t) {
       const s = startStep(id, p.id, 'playtest', nameOf(t));
       updateStep(s, { status: 'skipped', detail: `not playtested: ${PLAY_RULE}`, data: { held: PLAY_RULE }, finished: true });
+    }
+    // A game's first five minutes, in the same one play of the same build (ftue.ts firstFiveOnBuild): desktop and phone side
+    // by side. claimPlay (playScenario) keeps it to once per build, whoever asks again.
+    if (lane && !skipPlay && playsFor(play) && !runCancelled(id)) {
+      await Promise.all(firstFiveOnBuild(p).map((ft) => playtestProduct(id, p, ft, { mode: 'regression', abandon: newerBuild })));
+      if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
     }
     closeRun(id, `beta ${p.id}`);
     // The owner said to keep going live (golive-policy.ts): beta's run passed, so it goes live by itself.

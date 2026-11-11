@@ -22,7 +22,7 @@ import { getProduct, StudioError, managedElsewhere, managedNote, type Product } 
 import { git } from './local.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
-import { ftueWarnings, beforeGoLive } from './ftue.ts';
+import { ftueWarnings } from './ftue.ts';
 import { noRuntimeChange } from './playplan.ts';
 import { opLog, registerOp, enqueue, queuePosition, getOp, wakeOps, OpWaits, type Op } from './ops.ts';
 import {
@@ -643,8 +643,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     }
   }
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
-  // The first five minutes of what is live now are played before this goes live (ftue.ts); it never holds the go live.
-  beforeGoLive(p.id);
+  // No play here (play-policy.ts rule 3): the first five minutes were played in the build's one play (ftue.ts).
   // A person's "Go live anyway" on an Approve card (playtestSkipFor) goes past beta not being playtested and the quality
   // rules its playtests broke (isOverridable), and nothing else.
   // Or the owner skips beta playtests for this project (golive-policy.ts betaPlay) and CI passed on that exact commit.

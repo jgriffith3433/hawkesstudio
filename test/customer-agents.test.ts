@@ -61,7 +61,8 @@ test("its GitHub token comes from the control plane, scoped to that repo, never 
   assert.equal(await T.repoToken('someone/else'), null, "a repo the org's installations don't reach: nothing (not J's token)");
   assert.equal(T.repoTokenNow('acme/space-game'), 'ghs_scoped');
   assert.equal(T.repoTokenNow('never/primed'), null);
-  assert.match(T.gitAuthEnv('acme/space-game').GIT_CONFIG_VALUE_0, /^Authorization: Basic /);
+  const env = T.gitAuthEnv('acme/space-game');
+  assert.match(env[`GIT_CONFIG_VALUE_${Number(env.GIT_CONFIG_COUNT) - 1}`], /^Authorization: Basic /, "the header is the last entry (after the process's own)");
 });
 
 test("one of J's repos only when this org's own GitHub App installation covers it (ownership, not the name)", async () => {

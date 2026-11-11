@@ -16,20 +16,21 @@
 // ftueOf() turns that into the numbers; ftueMetrics() into the `ftue.*` playtest metrics the rubric's
 // "first-five-minutes" checks read (quality/game-rubric.json; qualityGate in quality.ts judges them, a product's `tuning`
 // moves a limit); the report and the go-live plan show them (ftueLines, ftueWarnings). A milestone never reached is a miss
-// (the metric is the run's length), never "unmeasured". This is run weekly for every game, when a run of it ends, and
-// before each go live (afterRun, beforeGoLive); it is never a timer.
+// (the metric is the run's length), never "unmeasured".
+//
+// When: only in a build's one play (play-policy.ts, J 2026-11-11: "Playtests run only on that milestone build, once"),
+// beside the milestone's scenarios: its beta page cold, on desktop and on a phone (firstFiveOnBuild, pipeline.ts
+// betaBody). Never as a run of its own, weekly, after another run or before a go live: each of those was another GPU
+// play of a build that was already played (#419 started one with every go live and after every run).
 
-import { db, J, parse, newId, rowToStep } from './db.ts';
-import { getProduct, loadProducts, type Product, type Playtest } from './config.ts';
+import { db, rowToStep } from './db.ts';
+import type { Product, Playtest } from './config.ts';
 import { isGame } from './quality.ts';
 import { fileUrl } from './gen.ts';
-import { PORTAL_URL } from './external.ts';
 
 export const FIRST_FIVE = 'first-five';
 /** A run of it plays this long (seconds). */
 export const FIRST_FIVE_SECONDS = 300;
-/** One game gets one first-five run per this long. */
-export const FIRST_FIVE_EVERY_MS = 7 * 86_400_000;
 
 /** The limits (also the rubric's; the rubric and a game's `tuning` win, these are what the report says without them). */
 export const LIMITS = { gameplay: 20, firstInput: 30, firstSuccess: 60, tapsToPlay: 2, wordsMinuteOne: 40 } as const;
@@ -159,8 +160,10 @@ export function ftueLines(f: Ftue | null | undefined, opts: { limits?: Partial<t
   return out;
 }
 
-const lastFirstFive = (product: string, name: string) => {
-  const row = db.prepare(`SELECT * FROM steps WHERE product = ? AND kind = 'playtest' AND name = ? AND status = 'done' ORDER BY started DESC LIMIT 1`).get(product, name);
+// Played in a build's one play (first-five@local) since 2026-11-11; first-five@live before that.
+const lastFirstFive = (product: string, phone: boolean) => {
+  const names = ['local', 'live'].map((w) => `${FIRST_FIVE}@${w}${phone ? ':phone' : ''}`);
+  const row = db.prepare(`SELECT * FROM steps WHERE product = ? AND kind = 'playtest' AND name IN (?, ?) AND status = 'done' ORDER BY started DESC LIMIT 1`).get(product, ...names);
   return row ? rowToStep(row) : null;
 };
 
@@ -168,13 +171,13 @@ const lastFirstFive = (product: string, name: string) => {
 export function latestFtue(product: string): Ftue[] {
   const out: Ftue[] = [];
   for (const dev of ['desktop', 'phone'] as const) {
-    const s = lastFirstFive(product, `${FIRST_FIVE}@live${dev === 'phone' ? ':phone' : ''}`);
+    const s = lastFirstFive(product, dev === 'phone');
     if (s?.data?.ftue) out.push(s.data.ftue as Ftue);
   }
   return out;
 }
 
-/** For the go-live plan: the first-five misses of what's live now, in a sentence each (warnings, never blockers: a fix has to be able to ship). */
+/** For the go-live plan: the first-five misses of the last build played, in a sentence each (warnings, never blockers: a fix has to be able to ship). */
 export function ftueWarnings(product: string): string[] {
   const out: string[] = [];
   for (const f of latestFtue(product)) {
@@ -199,77 +202,11 @@ export function firstFiveParams(url: string, device: 'desktop' | 'phone'): Recor
   };
 }
 
-/** The pages a game's first five minutes are played at: its live URL, and hawkesgames.com for a hub game. */
-export function firstFiveTargets(p: Pick<Product, 'live' | 'hub'>): { scenario: string; url: string }[] {
-  const out: { scenario: string; url: string }[] = [];
-  if (p.live) out.push({ scenario: FIRST_FIVE, url: p.live });
-  if (p.hub) out.push({ scenario: `${FIRST_FIVE}-hub`, url: PORTAL_URL() });
-  return out;
-}
-
-/** The playtests of a game's first five minutes: each target on desktop and on a phone. */
-export function firstFivePlaytests(p: Pick<Product, 'live' | 'hub'>): Playtest[] {
-  return firstFiveTargets(p).flatMap((t) => (['desktop', 'phone'] as const).map((device): Playtest => ({ scenario: t.scenario, where: 'live', device, url: t.url, timeout: FIRST_FIVE_SECONDS + 30 })));
-}
-
-/** Whether a game's first five minutes are due: a game with a live page and no finished play in the last 7 days. */
-export function firstFiveDue(product: string, now = Date.now()): boolean {
-  let p: Product;
-  try { p = getProduct(product); } catch { return false; }
-  if (!isGame(p) || !p.live || /^https:\/\/(www\.)?github\.com\//i.test(p.live)) return false;
-  const last = db.prepare(`SELECT MAX(started) AS at FROM steps WHERE product = ? AND kind = 'playtest' AND name LIKE 'first-five%' AND status IN ('done', 'failed')`).get(product) as any;
-  return !last?.at || now - Number(last.at) >= FIRST_FIVE_EVERY_MS;
-}
-
-const going = new Set<string>();
-
 /**
- * Plays a game's first five minutes (desktop and phone, in parallel) as a run of its own. Returns its id, or null when
- * one is already going for the game. The run's end doesn't start another (ftue.afterRun skips these runs).
+ * The first five minutes in a build's one play (play-policy.ts): the build's beta page as a stranger meets it, on desktop
+ * and on a phone. A game only. Not the hub's page: hawkesgames.com shows what is live, another build than the one played.
  */
-export async function startFirstFive(product: string, why: string): Promise<string | null> {
-  if (going.has(product)) return null;
-  const p = getProduct(product);
-  const tests = firstFivePlaytests(p);
-  if (!tests.length) return null;
-  going.add(product);
-  const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'playtest', 'running', `first five minutes: ${p.id}`, J([p.id]), J({ origin: 'first-five', firstFive: true, why }), Date.now());
-  void (async () => {
-    try {
-      const P = await import('./pipeline.ts');
-      await Promise.all(tests.map((t) => P.playtestProduct(id, p, t, { mode: 'regression' })));
-      P.closeRun(id, 'first five minutes');
-    } catch (e: any) {
-      db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e?.message ?? e).slice(0, 300), Date.now(), id);
-    } finally { going.delete(product); }
-  })();
-  return id;
+export function firstFiveOnBuild(p: Pick<Product, 'engine' | 'kind'>): Playtest[] {
+  if (!isGame(p)) return [];
+  return (['desktop', 'phone'] as const).map((device): Playtest => ({ scenario: FIRST_FIVE, where: 'local', ...(device === 'phone' ? { device } : {}), timeout: FIRST_FIVE_SECONDS + 30 }));
 }
-
-/** A run of a game ended: its first five minutes are played when their week is up (an event, never a timer). Never throws. */
-export async function afterRun(run: string) {
-  try {
-    const r = db.prepare('SELECT * FROM runs WHERE id = ?').get(run) as any;
-    if (!r || r.status === 'cancelled' || r.kind === 'build' || r.kind === 'test') return [];
-    if ((parse(r.options) as any)?.firstFive) return [];
-    const started: string[] = [];
-    for (const id of (parse(r.products) as string[]) ?? []) {
-      if (!firstFiveDue(id)) continue;
-      const s = await startFirstFive(id, `weekly, after run ${run}`);
-      if (s) started.push(s);
-    }
-    return started;
-  } catch (e: any) {
-    console.warn(`[studio] first five after ${run}: ${e?.message ?? e}`);
-    return [];
-  }
-}
-
-/** Going live: the live page's first five minutes are played now, so the plan and the next report have fresh numbers. Never throws, never waits. */
-export function beforeGoLive(product: string) {
-  void startFirstFive(product, 'before going live').catch((e) => console.warn(`[studio] first five before go live (${product}): ${e?.message ?? e}`));
-}
-
-/** Every game with a live page, for the daily list. */
-export const firstFiveGames = () => loadProducts().filter((p) => isGame(p) && p.live).map((p) => p.id);

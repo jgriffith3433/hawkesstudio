@@ -103,7 +103,7 @@ async function settled(id: string) {
 
 // A Cloud Run agent job outlives Studio: its output moving between restarts means progress, so the restart isn't counted.
 const cloudProc = (offset: number) => ({ rec: { unit: 'hawkes-agent-x', mode: 'cloudrun' as const, started: 1 }, offset });
-const cloudPhase = (offset: number, restarts?: Record<string, unknown>) => ({ step: 'agent', since: 1, proc: cloudProc(offset), ...(restarts ? { restarts } : {}) });
+const cloudPhase = (offset: number, restarts?: Record<string, unknown>) => ({ step: 'agent' as const, since: 1, proc: cloudProc(offset), ...(restarts ? { restarts } : {}) });
 
 const restartsOf = (id: string) => JSON.parse((db.prepare(`SELECT phase FROM changes WHERE id = ?`).get(id) as { phase: string }).phase).restarts;
 /** Studio restarts: the change is as the last restart left it (the same counter), its job's output at `offset`. */
@@ -146,7 +146,7 @@ test('a Cloud Run agent whose output does not move across restarts is stopped wi
 
 test('restartCount: local agents never get the progress exemption; slow restarts start again', () => {
   const now = Date.now();
-  const local = { step: 'agent', proc: { rec: { unit: 'u', mode: 'systemd' as const, started: 1 }, offset: 900 } };
+  const local = { step: 'agent' as const, proc: { rec: { unit: 'u', mode: 'systemd' as const, started: 1 }, offset: 900 } };
   assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 10 }, local, now).n, 3);
   assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 10 }, cloudPhase(900), now).n, 1);
   assert.equal(restartCount({ step: 'agent', n: 2, at: now - 1000, offset: 900 }, cloudPhase(900), now).n, 3);

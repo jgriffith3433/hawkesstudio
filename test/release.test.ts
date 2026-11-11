@@ -79,7 +79,11 @@ test('the writer: Claude errors or says nothing usable -> the fallback; notes qu
     assert.deepEqual({ ...fails }, { title: 'Improvements and fixes', notes: ['Improvements and fixes.'], source: 'fallback' });
     assert.match(asked, /never quote them/, 'the commits are for the writer only');
     assert.equal((await rel.writeNotes(p, titles, undefined, { ask: async () => null })).source, 'fallback');
-    assert.equal((await rel.writeNotes(p, titles, undefined, { ask: () => new Promise(() => {}), timeoutMs: 10 })).source, 'fallback', 'a writer that never answers');
+    // A server's process stays up while it waits; this one is held open by hand (the deadline itself is unref'd).
+    const up = setInterval(() => {}, 1000);
+    try {
+      assert.equal((await rel.writeNotes(p, titles, undefined, { ask: () => new Promise(() => {}), timeoutMs: 10 })).source, 'fallback', 'a writer that never answers');
+    } finally { clearInterval(up); }
 
     // Every way a commit leaks: quoted whole, 6 of its words in a row, an id, dev words.
     const leaky = await rel.writeNotes(p, titles, undefined, { ask: async () => ({ title: 'Fixes (#10)', notes: [

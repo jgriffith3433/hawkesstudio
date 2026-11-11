@@ -120,6 +120,8 @@ Write a short title (under 50 characters) and 1-5 notes, one sentence each, in t
 Never copy or quote the developers' notes, never name an issue, a version or a number like #12, and never use
 development words (fix, bug, pull request, PR, commit, changelog, agent, beta, merge, devtools, playtest).
 Leave out tooling, pipelines and internals. If nothing in it is visible to the public, write one note: "${FALLBACK.notes[0]}"`;
+  // The deadline is unref'd: the plan drafts notes in the background (draftNow), and that must never hold a process
+  // (a script, the tests) open for a minute and a half after its work is done.
   try {
     const out = await Promise.race([
       ask(prompt, timeoutMs),

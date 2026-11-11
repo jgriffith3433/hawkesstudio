@@ -96,19 +96,30 @@ test('the report lines name the time, the clip, every wall and the developer UI'
   assert.match(lines, /screenshot/);
 });
 
-test('the first-five play is cold: its params carry no hint or setup, and a hub game is played from its hub too', () => {
+test('the first-five play is cold: its params carry no hint or setup, and it plays the build on desktop and a phone', () => {
   const p = F.firstFiveParams('https://fgame.example/', 'phone');
   assert.equal(p.fresh, true);
   assert.equal(p.scenario, 'first-five');
   assert.equal(p.mobile, true);
   assert.equal(p.options, undefined);
-  const tests = F.firstFivePlaytests({ live: 'https://fgame.example/', hub: true });
-  assert.deepEqual(tests.map((t) => `${t.scenario}:${t.device}`), ['first-five:desktop', 'first-five:phone', 'first-five-hub:desktop', 'first-five-hub:phone']);
-  assert.ok(tests.every((t) => t.where === 'live'));
-  assert.equal(F.firstFivePlaytests({ live: 'https://x.example/' }).length, 2);
+  const tests = F.firstFiveOnBuild(game);
+  assert.deepEqual(tests.map((t) => `${t.scenario}:${t.device ?? 'desktop'}@${t.where}`), ['first-five:desktop@local', 'first-five:phone@local']);
+  assert.deepEqual(F.firstFiveOnBuild({ engine: 'static', kind: 'site' } as any), [], 'a website has no first five minutes');
 });
 
-test('it is due once a week per game', () => {
-  assert.equal(F.firstFiveDue('fgame'), true);
-  assert.equal(F.firstFiveDue('nope'), false);
+// J, 2026-11-11: "Playtests run only on that milestone build, once. No daily, scheduled, standalone or per-change
+// playtests, and never twice on the same build." #419 started a first-five run of its own before every go live and
+// after every run (weekly per game): each another GPU play of a build already played.
+test('the first five minutes play only in a build\'s one play: never at a go live, after a run, or as a run of their own', () => {
+  const src = (f: string) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
+  const ftue = src('ftue.ts');
+  for (const gone of ['startFirstFive', 'beforeGoLive', 'afterRun', 'firstFiveDue', 'INSERT INTO runs']) assert.ok(!ftue.includes(gone), `ftue.ts has no ${gone}`);
+  assert.doesNotMatch(src('deploy.ts'), /beforeGoLive|startFirstFive/);
+  const pipe = src('pipeline.ts');
+  assert.doesNotMatch(pipe, /ftue\.ts'\)\.then\(\(m\) => m\.afterRun/);
+  // The one place it plays: the beta run's play of its build, once that run plays at all.
+  const at = pipe.indexOf('firstFiveOnBuild(p).map');
+  assert.ok(at > 0);
+  assert.match(pipe.slice(pipe.lastIndexOf('if (', at), at), /playsFor\(play\)/);
+  assert.equal(pipe.split('firstFiveOnBuild(').length - 1, 1, 'nothing else starts it');
 });

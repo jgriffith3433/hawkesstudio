@@ -227,7 +227,9 @@ test('apply: a branch from beta through the Git Data API with the repo\'s token,
   assert.ok(calls.some((c) => c.method === 'PATCH' && c.path === '/repos/acme/unigame/git/refs/heads/plugin/hawkes-net-0.6.0' && c.body.force), 'its branch moved onto the new commit');
 
   const embed: any = await P.apply('unigame', 'playtest', { engine: 'unity' });
-  assert.equal(embed.branch, 'plugin/playtest-0.2.0');
+  // Named for the embedded package's own version (the catalog's "versions": studio-file), never a number frozen here.
+  const upm = JSON.parse(fs.readFileSync(new URL('../clients/unity/com.hawkes.playtest/package.json', import.meta.url), 'utf8')).version;
+  assert.equal(embed.branch, `plugin/playtest-${upm}`);
   assert.equal((await P.apply('unigame', 'analytics') as any).nothing, true, 'nothing to change: no branch');
 });
 

@@ -202,6 +202,7 @@ test('no Actions preflight or card for a project that builds in Studio; the open
   const DISPATCH = `GitHub wouldn't start firebase.yml in jgriffith3433/hawkesgenwebsite: 403 {"message":"Resource not accessible by integration"}`;
   const card = await A.fileAccessCard('hawkes-games', 'firebase', 'jgriffith3433/hawkesgenwebsite', A.accessCause(DISPATCH)!, 'firebase.yml');
   assert.equal(A.openAccess('hawkes-games').length, 1);
+  probed = 0; // filing a permission card reads the app's access once (buildaccess.ts fileAccessCard); count from here
   // Preflight: never probes or files anything for it.
   assert.deepEqual(await A.preflight('hawkes-games', 'firebase', 'jgriffith3433/hawkesgenwebsite', 'firebase.yml'), { ok: true });
   assert.equal(probed, 0);

@@ -47,6 +47,7 @@
   --panel: var(--surface);
   --panel2: var(--surface-raised);
   --line: var(--border);
+  --media-bg: #000;
   --dim: var(--text-muted);
   --fg: var(--text);
   --red: var(--danger);
@@ -77,6 +78,7 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-15: 60px;
+  --space-16: 64px;
   --space-40: 160px;
   /* Radii */
   --radius-xs: 4px;
@@ -306,9 +308,9 @@ body:has(#talk.on) main { padding-bottom: var(--space-3); }
 .talk-table th, .talk-table td { border: 1px solid var(--border); padding: var(--space-1) var(--space-2); text-align: left; }
 .talk-table th { background: var(--surface-raised); }
 .talk-code { position: relative; }
-.talk-code pre { margin: 0; max-height: none; overflow: visible; white-space: pre; padding-right: 64px; }
-.talk-code .talk-copy { position: absolute; top: 6px; right: 6px; z-index: 1; font-size: var(--text-xs); padding: 2px 8px; }
-.talk-video { max-width: min(100%, 480px); border-radius: var(--radius-md); display: block; margin: 6px 0; background: #000; }
+.talk-code pre { margin: 0; max-height: none; overflow: visible; white-space: pre; padding-right: var(--space-16); }
+.talk-code .talk-copy { position: absolute; top: 6px; right: 6px; z-index: 1; font-size: var(--text-xs); padding: calc(var(--space-1) / 2) var(--space-2); }
+.talk-video { max-width: min(100%, 480px); border-radius: var(--radius-md); display: block; margin: 6px 0; background: var(--media-bg); }
 .talk-ref { display: inline-block; max-width: 100%; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 0 var(--space-2); font-size: var(--text-sm); cursor: pointer; color: var(--violet, inherit); }
 .talk-ref:hover, .talk-ref:focus-visible { border-color: var(--violet, var(--border)); }
 .talk-ref.gone { opacity: .6; }
@@ -453,7 +455,7 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .pt-legend2 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; background: var(--violet); }
 .pt-legend2 .dot.blocker, .pt-legend2 .dot.fail { background: var(--danger); } .pt-legend2 .dot.bug { background: var(--bug); } .pt-legend2 .dot.pass { background: var(--success); }
 .pt-flist { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
-.pt-fitem { display: flex; gap: 8px; align-items: center; min-height: 44px; padding: 6px 10px; text-align: left; background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-sm); color: inherit; cursor: pointer; }
+.pt-fitem { display: flex; gap: 8px; align-items: center; min-height: 44px; padding: calc(var(--space-3) / 2) calc(var(--space-5) / 2); text-align: left; background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-sm); color: inherit; cursor: pointer; }
 .pt-fitem .pt-ftitle { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .pt-fitem.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised)); }
 .pt-fitem.untimed { opacity: .65; cursor: default; }
@@ -916,7 +918,7 @@ body.lt-big-open { overflow: hidden; }
 .rail .rs.failed .rs-detail { font-weight: 600; }
 
 /* The critic section (app.js criticHtml): rows that wrap, so the report reads at 390 px with no sideways scroll. */
-.critic-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line, #2a2f3a); min-width: 0; }
+.critic-row { display: flex; gap: 10px; align-items: flex-start; padding: var(--space-2) 0; border-top: 1px solid var(--line); min-width: 0; }
 .critic-row > div { min-width: 0; overflow-wrap: anywhere; }
 .critic-score { flex: 0 0 auto; min-width: 2ch; font-size: 1.3em; text-align: center; }
 .critic-row img { display: block; max-width: 100%; height: auto; margin-top: 6px; border-radius: 6px; }

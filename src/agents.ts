@@ -4240,6 +4240,10 @@ export async function updateBranchOnGithub(id: string): Promise<{ state: 'curren
     const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
     const head = String(pr.head?.sha ?? '');
     if (!head) return { state: 'failed', why: 'GitHub gave no head sha' };
+    if (pr.state && pr.state !== 'open') return { state: 'failed', why: `pull request #${c.pr} is ${pr.merged ? 'merged' : 'closed'}` };
+    // Only the verified head is brought up to date: the new head becomes verify.sha, so updating a head nobody verified
+    // would merge it unchecked (the merge-tip tests caught update-branch on a moved head, 2026-11-11).
+    if (c.verify?.sha && head !== c.verify.sha) return { state: 'failed', why: `the head moved after verification (verified ${c.verify.sha.slice(0, 7)}, now ${head.slice(0, 7)})` };
     try {
       await github(`/repos/${c.slug}/pulls/${c.pr}/update-branch`, { method: 'PUT', body: { expected_head_sha: head } });
     } catch (e: any) {
