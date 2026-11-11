@@ -37,6 +37,7 @@ import { syncRepos, syncRepo, repoMap, betaFolders, isServer, builtFromGitHub, B
 import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria, sweepFor, type Sweep } from './acceptance.ts';
+import { claimPersona, claimStepIs, noteClaimStep, personaParams, personaOf, personaLine, filePersonaFindings } from './persona.ts';
 import { isFirstFive, enrichFtue, firstFiveParams, firstFiveOnBuild } from './ftue.ts';
 import { enrichPhonePerf, phonePerfFindings } from './phoneperf.ts';
 import { isPhone, runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
@@ -824,6 +825,8 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     // The first five minutes (ftue.ts): the public page as a stranger meets it, with nothing set up and nothing signed in.
     const firstFive = isFirstFive(t.scenario);
     if (firstFive) Object.assign(params, firstFiveParams(url, isPhone(t) ? 'phone' : 'desktop'));
+    // The newcomer persona (persona.ts) rides the first-five play once per game, device and week; the claim is taken first, so a second ask plays without it.
+    if (firstFive && (prior ? claimStepIs(p.id, isPhone(t) ? 'phone' : 'desktop', s) : claimPersona(p.id, isPhone(t) ? 'phone' : 'desktop'))) { Object.assign(params, personaParams()); noteClaimStep(p.id, isPhone(t) ? 'phone' : 'desktop', s); }
     if (t.mode === 'site') params.maxPages = 40;
     if (!firstFive && p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
     // The first five minutes meet the page as a stranger would (nothing set up), but a gated beta site still needs its pass to be
@@ -922,6 +925,9 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   }
   // A first-five play: the numbers, the ftue.* metrics and the developer-UI problems go on the result (ftue.ts).
   if (job.status === 'done' && isFirstFive(t.scenario)) job.result = enrichFtue(job.result ?? {}, t.scenario, isPhone(t) ? 'phone' : 'desktop');
+  // The persona's timeline, its cost on the step (the run line) and a finding per lost stretch (persona.ts).
+  const persona = job.status === 'done' && isFirstFive(t.scenario) && params.persona ? personaOf(job.result ?? {}, isPhone(t) ? 'phone' : 'desktop') : null;
+  if (persona) { try { filePersonaFindings(p.id, persona, run, name); } catch (e: any) { console.warn(`[studio] persona findings for ${p.id}: ${e.message ?? e}`); } }
   // Phone load budget (phoneperf.ts): MB before gameplay, seconds to gameplay, fps p5 under 4x CPU + Slow 4G.
   if (job.status === 'done' && isPhone(t)) job.result = enrichPhonePerf(job.result ?? {}, 'phone');
   // The page was Studio's sign-in card or Google's: the game was never reached, whatever Gen's outcome says (authwall.ts).
@@ -950,8 +956,9 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
   const slow = ok && criteria?.length ? slowNote(r.seconds) : null;
   updateStep(s, {
     status: ok ? 'done' : 'failed', job: job.id,
-    detail: ok ? `${r.outcome} in ${playTime(r.seconds ?? 0)}${at ? ` (from "${at}")` : ''} · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}${slow ? ` · ⚠ ${slow}` : ''}` : `failed: ${job.error ?? job.detail} (opened ${url})`,
-    data: ok ? { ...playtestData(job, url), ...(r.ftue ? { ftue: r.ftue } : {}), ...(r.phone ? { phone: r.phone } : {}), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
+    ...(persona ? { cost: persona.cost ?? 0 } : {}),
+    detail: ok ? `${r.outcome} in ${playTime(r.seconds ?? 0)}${persona ? ` · ${personaLine(persona)}` : ''}${at ? ` (from "${at}")` : ''} · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}${slow ? ` · ⚠ ${slow}` : ''}` : `failed: ${job.error ?? job.detail} (opened ${url})`,
+    data: ok ? { ...playtestData(job, url), ...(r.ftue ? { ftue: r.ftue } : {}), ...(persona ? { persona } : {}), ...(r.phone ? { phone: r.phone } : {}), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
     finished: true,
   });
   if (!ok && /^stuck:/.test(String(job.error ?? ''))) fileStuck(run, p, name, job);

@@ -18,6 +18,7 @@ import { paths, getProduct, CRITIC_DIMENSIONS, targetFor, releaseFloorOf, type P
 import { db, rowToStep, parse } from './db.ts';
 import { knownScenarios } from './scenarios.ts';
 import { latestFtue, ftueLines } from './ftue.ts';
+import { personaBlock } from './persona.ts';
 
 export const DIMENSIONS = CRITIC_DIMENSIONS;
 export type Dimension = (typeof DIMENSIONS)[number];
@@ -231,7 +232,7 @@ WORLD BIBLE: ${bible ? `\n${bible}` : 'none yet (say so under story through play
 
 THIS REVIEW PLAYED: ${chosen.scenario ?? 'the run\'s scenarios'}.
 Metrics (desktop): ${JSON.stringify(ev.metrics).slice(0, 1500)}
-${ev.phone || Object.keys(ev.phoneMetrics).length ? `Metrics (phone run): ${JSON.stringify(ev.phoneMetrics).slice(0, 800)}\n` : 'There was no phone run: score "phone" only from what the desktop frames show about touch, and say so.\n'}${audioBlock(ev)}${ftueBlock(p.id)}The reviewers' summaries:
+${ev.phone || Object.keys(ev.phoneMetrics).length ? `Metrics (phone run): ${JSON.stringify(ev.phoneMetrics).slice(0, 800)}\n` : 'There was no phone run: score "phone" only from what the desktop frames show about touch, and say so.\n'}${audioBlock(ev)}${ftueBlock(p.id)}${personaBlock(p.id)}The reviewers' summaries:
 ${ev.summaries.join('\n').slice(0, 3000)}
 
 THE ATTACHED FRAMES, in order:

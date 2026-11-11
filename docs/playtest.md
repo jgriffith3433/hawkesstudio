@@ -515,3 +515,14 @@ A page with no `window.hawkesPlaytest` still gets a **generic smoke test**: load
 content, click the middle, press common keys (Enter, Space, arrows, WASD) for 30 s, then screenshot. Errors and
 blank screens are still caught. Static sites (the corporate site, the blog pages) get a **site check**: every page
 and link loads, nothing 404s, no console errors.
+
+## Newcomer persona (J, 2026-11-11) {#persona}
+
+A mode of Gen's `playtest.run` (`persona: "newcomer"`, `personaLostSeconds: 15`, `personaFailedInputs: 3`), only with the built-in
+`first-five` scenario: a vision model plays from the screen alone and reports `persona-step` events (`{intent}`), `lost` events
+(`{from, to, reason: idle|failed-inputs, intent, shot?}`) and `personaCost` (dollars). Studio (`src/persona.ts`): claims one
+run per game, device (desktop, 390x844 touch) and week BEFORE the play (`persona_claims`; a second ask plays without it), puts
+the timeline (`data.persona`), its cost (the step's `cost` and the run line) and a finding per lost stretch (source `persona`,
+area clarity, its clip with `#t=from,to`) on the first-five step, in the report's "First five minutes", and in the critic's
+evidence for clarity and first-five scores. A play with no persona events says "not reported", never "never lost". Gen's half
+(the driver) is a change in the hawkesgen repo: until it ships the claim is spent without a timeline.
