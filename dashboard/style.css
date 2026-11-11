@@ -479,14 +479,14 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .pt-pairs { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
 /* The playtest viewer's scrubber: markers for findings (circles, by severity) and scenario events (squares, pass / fail). */
 .pt-scrub { margin: 6px 0 4px; user-select: none; }
-.pt-lane { position: relative; height: 30px; margin: 0 14px; }
-.pt-track { position: relative; height: 28px; margin: 0 14px; touch-action: none; cursor: pointer; border-radius: var(--radius-sm); }
-.pt-track::before { content: ""; position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 3px; background: var(--border); }
-.pt-fill { position: absolute; left: 0; top: 11px; height: 6px; border-radius: 3px; background: var(--accent); opacity: .55; width: 0; }
-.pt-head { position: absolute; top: 3px; width: 4px; height: 22px; margin-left: -2px; border-radius: 2px; background: var(--text); left: 0; }
+.pt-lane { position: relative; height: 44px; margin: 0 22px; }
+.pt-track { position: relative; height: 44px; margin: 0 22px; touch-action: none; cursor: pointer; border-radius: var(--radius-sm); }
+.pt-track::before { content: ""; position: absolute; left: 0; right: 0; top: 19px; height: 6px; border-radius: 3px; background: var(--border); }
+.pt-fill { position: absolute; left: 0; top: 19px; height: 6px; border-radius: 3px; background: var(--accent); opacity: .55; width: 0; }
+.pt-head { position: absolute; top: 11px; width: 4px; height: 22px; margin-left: -2px; border-radius: 2px; background: var(--text); left: 0; }
 .pt-track:focus-visible { outline: 2px solid var(--accent); }
-.pt-mark { position: absolute; top: 3px; width: 24px; height: 24px; margin-left: -12px; padding: 0; border: 0; background: transparent; cursor: pointer; }
-.pt-mark::before { content: ""; position: absolute; left: 5px; top: 5px; width: 14px; height: 14px; border-radius: 50%; background: var(--violet); border: 2px solid var(--surface-raised); box-sizing: border-box; }
+.pt-mark { position: absolute; top: 0; width: 44px; height: 44px; margin-left: -22px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.pt-mark::before { content: ""; position: absolute; left: 15px; top: 15px; width: 14px; height: 14px; border-radius: 50%; background: var(--violet); border: 2px solid var(--surface-raised); box-sizing: border-box; }
 .pt-mark.event::before { border-radius: 2px; transform: rotate(45deg) scale(.85); }
 .pt-mark.blocker::before, .pt-mark.fail::before { background: var(--danger); }
 .pt-mark.bug::before { background: var(--bug); }
@@ -502,7 +502,9 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .pt-fitem.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised)); }
 .pt-fitem.untimed { opacity: .65; cursor: default; }
 .pt-strip figure.now img { border-color: var(--accent); outline: 2px solid var(--accent); }
-@media (max-width: 760px) { .pt-top video { max-height: none; } }
+/* On a phone the video runs edge to edge: it takes back the page's side padding (main, 12px at this width). */
+@media (max-width: 760px) { .pt-top video { max-height: none; width: calc(100% + 2 * var(--space-3)); margin-inline: calc(-1 * var(--space-3)); max-width: none; } }
+.pt-embed { margin: 6px 0 10px; } .pt-embed .inline-video { margin-bottom: 0; }
 #ptDetail h3 { margin: 18px 0 8px; font-size: var(--text-lg); }
 @media (max-width: 760px) {
   .pt-row { grid-template-columns: 80px 1fr; } .pt-thumb { width: 80px; height: 46px; } .pt-when { grid-column: 2; }
