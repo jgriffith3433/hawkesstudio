@@ -324,3 +324,10 @@ test('agents paused (maxConcurrent 0) pause every lane, Studio\'s own included',
     close(['c_paus00000001', 'c_paus00000002']);
   }
 });
+
+test('the baseline says what it is made of', async () => {
+  const lines: string[] = [];
+  const line = await D.logBaselineMakeup((s) => lines.push(s));
+  assert.ok(line === null || /baseline is made of: .* MB/.test(line));
+  assert.equal(lines.length, line ? 1 : 0);
+});

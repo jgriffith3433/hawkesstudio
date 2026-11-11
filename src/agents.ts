@@ -2002,7 +2002,7 @@ function dropFlight(id: string) { if (flying.delete(id)) { inFlight--; memFreed(
  */
 function queueIdle() {
   if (running.size || checkoutsActive) return;
-  try { noteDiskBaseline(); } catch { /* no disk to read here */ }
+  try { noteDiskBaseline(); void import('./disksweep.ts').then((d) => d.logBaselineMakeup()).catch(() => {}); } catch { /* no disk to read here */ }
 }
 
 /**

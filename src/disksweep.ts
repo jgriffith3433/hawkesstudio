@@ -97,6 +97,31 @@ export function noteDiskBaseline(d: DiskInfo = diskInfo(), now = Date.now()) {
   baseline = { used: d.used, size: d.size, at: now };
   return baseline;
 }
+/**
+ * What the baseline is made of, logged once per measurement (J, 2026-11-11: "log what the baseline is made of"): the
+ * biggest top-level folders of the projects and data folders, so a baseline that sits over the budget names what holds
+ * it (repo mirrors, node_modules, worktrees of waiting changes). Async `du`, never blocking; says nothing on failure.
+ */
+export async function logBaselineMakeup(say: (s: string) => void = (s) => console.log(s)): Promise<string | null> {
+  const { execFile } = await import('node:child_process');
+  const sizes: { name: string; kb: number }[] = [];
+  for (const root of [PROJECTS, DATA]) {
+    let names: string[] = [];
+    try { names = fs.readdirSync(root); } catch { continue; }
+    if (!names.length) continue;
+    const out: string = await new Promise((r) => execFile('du', ['-sk', ...names.map((n) => path.join(root, n))], { timeout: 20_000, maxBuffer: 4 * MB }, (_e, o) => r(String(o ?? ''))));
+    for (const line of out.split('\n')) {
+      const m = line.match(/^(\d+)\t(.+)$/);
+      if (m) sizes.push({ name: path.relative(path.dirname(root), m[2]), kb: Number(m[1]) });
+    }
+  }
+  if (!sizes.length) return null;
+  sizes.sort((a, b) => b.kb - a.kb);
+  const line = `[disksweep] baseline is made of: ${sizes.slice(0, 8).map((x) => `${x.name} ${(x.kb / 1024).toFixed(0)} MB`).join(', ')}`;
+  say(line);
+  return line;
+}
+
 /** The measured baseline of the volume as it is now (bytes), or 0 when none was measured on it. */
 export function diskBaseline(d: Pick<DiskInfo, 'size'> = diskInfo()): number {
   return baseline && baseline.size === d.size ? baseline.used : 0;
