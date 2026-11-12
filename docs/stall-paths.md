@@ -202,10 +202,10 @@ The queue starting nothing while a Studio deploy is pending.
 Studio following one Hawkes Gen job to its end (genWait: builds, assets, playtests, reviews).
 
 - **Waits on (event):** Gen's job event (genevents.ts), a look at start-up or reconnect.
-- **Deadline:** 4 h unless the caller gives its own (`(the call's timeoutMs)`; never more than 6 h)
-- **Fallback:** The wait ends and the job is cancelled or left to Gen; the caller goes on without it (never left behind: unityslot.ts).
+- **Deadline:** 4 h unless the caller gives its own; a Unity build counts from Gen's start; a job Gen answers unknown or still queued past STUDIO_GEN_QUEUED_GHOST_MS while its lane is free ends as lost and is resubmitted once (gen-recover.ts) (`(the call's timeoutMs)`; never more than 6 h)
+- **Fallback:** The wait ends and the job is cancelled or left to Gen; lost/ghost jobs are resubmitted once then reported; the caller goes on without it (never left behind: unityslot.ts).
 - **Where:** `src/gen.ts` (`genWait`)
-- **Test:** `test/gen-wait.test.ts`
+- **Test:** `test/gen-recover.test.ts`
 - **Kind:** keeps its own deadline (below); listed so no gate goes unnamed
 
 ### `gen-pace`

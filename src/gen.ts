@@ -8,6 +8,7 @@ import { GEN_URL, GEN_PUBLIC_URL, PROJECTS } from './config.ts';
 import { GenEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
 import { submitKnown } from './gen-params.ts';
 import { isGenBusy, noteGenBusy, submitTurn } from './genpace.ts';
+import { ghostQueued, jobUnknown, laneJobs, lostResult, QUEUED_GHOST_MS, recoverOnce, stillQueued } from './gen-recover.ts';
 import { unitySlot, type UnityPriority } from './unityslot.ts';
 
 const isSubmit = (p: string, o: any) => String(p).split('?')[0] === '/jobs' && String(o?.method ?? 'GET').toUpperCase() === 'POST';
@@ -167,12 +168,13 @@ function queuedSince(j: any, fallback: number): number {
 /**
  * Waits for a Gen job. A busy or restarting service is retried for a few minutes (jobs resume after a Gen
  * restart), so one missed look doesn't fail a long build. Never throws for a failed job: returns it.
+ *
+ * fromStart: timeoutMs times the job itself, from when Gen reports it started, never the time it sat queued behind
+ * other jobs (a builder lane runs 2 at a time). A job Gen answers as unknown, or that stays queued past
+ * STUDIO_GEN_QUEUED_GHOST_MS while Gen's lane shows free room, ends as lost (gen-recover.ts) so the shared recovery
+ * can submit it again once — never a new poller; the check runs on the look this wait already does.
  */
-export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, halt?: () => string | null, { api = gen, events = genEvents, pollMs = 2000, fromStart = false }: { api?: { job(id: string): Promise<any>; cancel(id: string): Promise<any> }; events?: JobFollower; pollMs?: number; fromStart?: boolean } = {}) {
-  // fromStart: timeoutMs times the job itself, from when Gen reports it started (status running, or its `started`), never
-  // the time it sat queued behind other jobs (a builder lane runs 2 at a time; 2026-11-11 two Unity builds were cancelled
-  // at 22 min having never started). The queue is not limited here: the run's halt and Gen's own limits end it.
-  // The job's start and queue time are put on the job it returns (queuedMs, ranMs) for the report.
+export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, halt?: () => string | null, { api = gen, events = genEvents, pollMs = 2000, fromStart = false, tool }: { api?: { job(id: string): Promise<any>; jobs?(q: Record<string, string>): Promise<any[]>; cancel(id: string): Promise<any> }; events?: JobFollower; pollMs?: number; fromStart?: boolean; tool?: string } = {}) {
   const t0 = Date.now();
   let end = fromStart ? Infinity : t0 + timeoutMs;
   let begun: number | null = null;
@@ -197,6 +199,7 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
   let look = true;
   let fromGet = false;
   let heard = Date.now();
+  let ghostChecked = 0;
   try {
     for (;;) {
       if (look) {
@@ -209,8 +212,8 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
           heard = Date.now();
         } catch (e: any) {
           // Gen doesn't know the job (404): it is gone, whatever the stream says. Nothing will ever finish it, so the wait
-          // ends now as lost (builds.ts infraLost resubmits it) instead of after an hour of misses or the build's timeout.
-          if (e?.status === 404 || /no such job/i.test(String(e?.message ?? ''))) return { id, status: 'failed', error: `Hawkes Gen lost job ${id} (no such job)`, lost: true };
+          // ends now as lost (gen-recover recoverOnce resubmits it once) instead of after an hour of misses or the build's timeout.
+          if (jobUnknown(e)) return lostResult(id, 'no such job');
           if (++misses > 60) throw e;
           if (misses === 10) await ensureGen();
           const ev = await f.next(3000);
@@ -230,6 +233,16 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
       if (terminal(j)) {
         if (!fromGet) { look = true; continue; }
         return timed(j);
+      }
+      // Still queued past the bound while Gen's lane shows free room (or Gen's list no longer has this job): lost, so the
+      // shared recovery submits again. Only on a fresh GET, and at most once per bound window (not a poller).
+      if (fromGet && stillQueued(j) && Date.now() - t0 >= QUEUED_GHOST_MS() && Date.now() - t0 >= ghostChecked) {
+        ghostChecked = Date.now() - t0 + QUEUED_GHOST_MS();
+        const listed = await laneJobs(api, String(tool || j.tool || ''));
+        if (ghostQueued({ ...j, id }, listed, t0)) {
+          const why = listed && !listed.some((x) => String(x?.id) === id) ? "no longer in Gen's queue" : "still queued while Gen's lane is free";
+          return { ...timed(j), ...lostResult(id, why) };
+        }
       }
       // The run it belongs to was cancelled (cancel.ts haltOf): the job is cancelled at once, whenever it was submitted.
       const why = halt?.();
@@ -310,7 +323,23 @@ export async function outstandingUnityBuilds(product: string, api: Pick<GenApi, 
  */
 export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit, halt, priority, paramsNow, identity, fromStart, api = gen as any, events = genEvents, pollMs }: { job?: string; onSubmit?: (id: string) => void; halt?: () => string | null; priority?: UnityPriority; paramsNow?: () => Promise<Record<string, unknown>>; identity?: string; fromStart?: boolean; api?: GenApi; events?: JobFollower; pollMs?: number } = {}) {
   // A unity.build's limit counts from when Gen starts it, not from the submit (fromStart; a queue can be an hour).
-  const waitOpts = { api, events, ...(pollMs ? { pollMs } : {}), ...(fromStart ?? tool === 'unity.build' ? { fromStart: true } : {}) };
+  const waitOpts = { api, events, tool, ...(pollMs ? { pollMs } : {}), ...(fromStart ?? tool === 'unity.build' ? { fromStart: true } : {}) };
+  /** One wait, then the shared recovery (gen-recover.ts) if Gen lost the job. */
+  const waitRecovering = async (id: string, upd?: (job: any) => void, submitParams: Record<string, unknown> = params) => {
+    const first = await genWait(id, upd, timeoutMs, halt, waitOpts);
+    if (!first?.lost) return first;
+    if (halt?.()) return { ...first, status: 'cancelled', error: halt(), halted: true };
+    return recoverOnce({
+      first,
+      resubmit: async () => {
+        const p = paramsNow ? await paramsNow().catch(() => submitParams) : submitParams;
+        return submitGen(tool, project, p, api);
+      },
+      wait: (nid) => genWait(nid, upd, timeoutMs, halt, waitOpts),
+      onSubmit,
+      log: (s) => console.log(`[gen] ${project}: ${s}`),
+    });
+  };
   // Cancelled before it was submitted: nothing is submitted.
   if (!reuse) {
     const before = halt?.();
@@ -322,16 +351,16 @@ export async function genRun(tool: string, project: string, params: Record<strin
       : (id: string) => api.cancel(id);
     return unitySlot({ product: project, params, priority, reuse, halt, onSubmit, paramsNow, identity }, {
       submit: (p) => submitGen(tool, project, p, api),
-      wait: (id, upd) => genWait(id, upd, timeoutMs, halt, waitOpts),
+      wait: (id, upd) => waitRecovering(id, upd, params),
       job: (id) => api.job(id),
       outstanding: () => outstandingUnityBuilds(project, api),
       cancel,
     }, onUpdate);
   }
-  if (reuse) return genWait(reuse, onUpdate, timeoutMs, halt, waitOpts);
+  if (reuse) return waitRecovering(reuse, onUpdate);
   const job = await submitGen(tool, project, params, api);
   onSubmit?.(job.id);
-  return genWait(job.id, onUpdate, timeoutMs, halt, waitOpts);
+  return waitRecovering(job.id, onUpdate);
 }
 
 /** The bare link: Gen answers it with "Sign in first" to anyone without a session, so people get signedFileUrl. */

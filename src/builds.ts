@@ -1150,6 +1150,8 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // (sick-of-it-unity v3 to v7 failed on it). Each resubmit is a new Gen job, recorded on the row. A Unity compile error is
   // never retried, a real access problem fails every time and ends here, and a build stuck twice isn't tried a third time.
   for (let n = 1; job.status === 'failed' && !slowRetried && infraLost(job.error) && n <= TOKEN_RETRIES; n++) {
+    // Shared Gen recovery (gen-recover.ts via genRun) already resubmitted a lost/ghost job once; don't do it again here.
+    if (job.reported || (job.lost && job.retried)) break;
     forgetRepoToken(slug);
     const fresh = await repoToken(slug);
     if (!fresh) break;

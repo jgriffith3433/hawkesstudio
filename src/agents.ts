@@ -63,6 +63,7 @@ import { replayOf } from './feel.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
 import { gen, genEvents, genRun, fileUrl, warmGenMcp, GEN_MCP_TIMEOUT_MS } from './gen.ts';
+import { ghostQueued, laneJobs, QUEUED_GHOST_MS, stillQueued } from './gen-recover.ts';
 import { SAFETY_MS as GEN_EVENTS_SAFETY_MS, terminal as genTerminal } from './genevents.ts';
 import { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { unityBuild } from './buildpkgs.ts';
@@ -5558,10 +5559,19 @@ export async function pollGenWaits(look: GenLook = {}) {
         }
         if (!due) continue;
         try {
-          applyGenJob(j, await gen.job(j.id));
+          const r = await gen.job(j.id);
+          applyGenJob(j, r);
+          // Still queued past the bound while Gen's lane shows free room: same shared recovery as builds/playtests
+          // (gen-recover.ts). Parked GPU work can't resubmit here; the agent is told the job is gone and goes on.
+          if (stillQueued(r) && Date.now() - w.since >= QUEUED_GHOST_MS()) {
+            const listed = await laneJobs(gen as any, String(r.tool || ''));
+            if (ghostQueued({ ...r, id: j.id }, listed, w.since)) {
+              Object.assign(j, { status: 'missing', error: listed && !listed.some((x) => String(x?.id) === j.id) ? "Hawkes Gen no longer has this job in its queue" : "Hawkes Gen's lane is free but this job stayed queued" });
+            }
+          }
         } catch (e: any) {
           // Gen doesn't know it (a wrong id): nothing to wait for. Gen not answering: next time.
-          if (e?.status === 404) Object.assign(j, { status: 'missing', error: 'Hawkes Gen has no such job' });
+          if (e?.status === 404 || /no such job/i.test(String(e?.message ?? ''))) Object.assign(j, { status: 'missing', error: 'Hawkes Gen has no such job' });
         }
       }
       if (due) w.checked = Date.now();

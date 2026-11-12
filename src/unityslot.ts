@@ -203,7 +203,13 @@ async function holdJob(me: Holder, req: UnitySlotRequest, deps: UnitySlotDeps, w
     await deps.cancel(id, `Studio stopped waiting for it (${String(e?.message ?? e).slice(0, 120)})`).catch(() => {});
     throw e;
   }
+  // Shared recovery (gen-recover) may have submitted a new Gen job under the same wait: follow that id in the slot.
+  if (r?.id && String(r.id) !== id) {
+    me.job = String(r.id);
+    id = String(r.id);
+  }
   // The wait stopped before the job ended (its timeout; a halt cancelled it already): Studio never leaves it behind.
+  // A job Gen lost (r.lost) is already gone there: do not cancel. A successful recovery is ended(r).
   if (!r?.halted && !r?.lost && (r?.timedOut || !ended(r))) {
     console.log(`[unityslot] ${product}: cancelling ${id}: Studio stopped waiting for it (${r?.error ?? r?.status})`);
     await deps.cancel(id, `Studio stopped waiting for it: ${r?.error ?? r?.status ?? 'no answer'}`).catch((e) => console.warn(`[unityslot] ${product}: cancelling ${id}: ${e?.message ?? e}`));
