@@ -92,13 +92,27 @@ export const PLAYED_NOTHING: readonly PlayOutcome[] = ['stuck', 'failed', 'skipp
  * Why an agent pass with no commit made none (J, 2026-11-11: c_80e16b1110e4 and c_b8771b800762 read "source missing" though
  * their Cloud Run job's own full workspace had the source and the agent said the task was already done; Studio had restarted
  * and remade its own server-side worktree light):
+ * - gen-unreachable: Gen's MCP timed out at session start (CONNECT_TIMEOUT). Never "already done"; requeued, not a try.
  * - already-done: the agent says the work is there. Never blamed on the source.
  * - source-missing: the worktree the pass ran in has no source (only judged for a pass that ran in Studio's own worktree).
  * - source-unreadable: the agent said it couldn't read the repo.
  * - no-commit: the agent just did nothing: its own failure.
  */
-export const NO_COMMIT_OUTCOMES = ['already-done', 'source-missing', 'source-unreadable', 'no-commit'] as const;
+export const NO_COMMIT_OUTCOMES = ['gen-unreachable', 'already-done', 'source-missing', 'source-unreadable', 'no-commit'] as const;
 export type NoCommitOutcome = (typeof NO_COMMIT_OUTCOMES)[number];
+
+/** The change's detail / outcome when Gen's MCP never connected (agents.ts parkForGenUnreachable). */
+export const GEN_UNREACHABLE = 'Gen unreachable';
+
+/**
+ * Whether the agent's words (summary, stuck.md, result) say Gen's MCP never connected: CONNECT_TIMEOUT after 30 s, or
+ * "stuck: Hawkes Gen…". Wins over "already done" so a pass that couldn't reach Gen is never closed as done.
+ */
+export function genUnreachableSaid(text: string): boolean {
+  const s = String(text ?? '');
+  if (!s.trim()) return false;
+  return /MCP server hawkesgen connection timed out|CONNECT_TIMEOUT|hawkesgen[^\n]{0,100}(timed? ?out|unreachable|unavailable|failed to connect|connection timed out)|(?:^|\b)Gen (is )?unreachable\b|stuck:\s*Hawkes Gen|Hawkes Gen (MCP |tools )?(is )?(unreachable|unavailable)/i.test(s);
+}
 
 export function noCommitOutcome(f: {
   /** The pass ran in a Cloud Run job's own workspace: Studio's worktree is not what it worked in, so its probe says nothing. */
@@ -107,7 +121,10 @@ export function noCommitOutcome(f: {
   worktreeProbeOk: boolean | null;
   saidUnreadable: boolean;
   saidAlreadyDone: boolean;
+  /** Gen's MCP failed to connect (CONNECT_TIMEOUT): requeued, never already-done. */
+  saidGenUnreachable?: boolean;
 }): NoCommitOutcome {
+  if (f.saidGenUnreachable) return 'gen-unreachable';
   if (!f.ranInJob && f.worktreeProbeOk === false) return 'source-missing';
   if (f.saidAlreadyDone) return 'already-done';
   if (f.saidUnreadable) return 'source-unreadable';

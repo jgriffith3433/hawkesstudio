@@ -840,7 +840,8 @@ export function cloudMcp(studioEnv: Record<string, string>, genKey: string) {
     // A customer's Studio says so to its tool server, which runs in the shared job with none of the cell's env: without
     // it Talk and agents got J's tool list and instructions (2026-10-31 review).
     hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', ...(customerStudio() ? { STUDIO_CUSTOMER: '1' } : {}), ...studioEnv, ...(process.env.STUDIO_SERVICE_URL || process.env.STUDIO_URL ? { STUDIO_URL: process.env.STUDIO_SERVICE_URL || process.env.STUDIO_URL! } : {}), ...(process.env.STUDIO_AGENT_KEY ? { STUDIO_AGENT_KEY: process.env.STUDIO_AGENT_KEY } : {}) } },
-    ...(genKey && gen ? { hawkesgen: { type: 'http', url: `${gen}/mcp`, headers: { Authorization: `Bearer ${genKey}` } } } : {}),
+    // alwaysLoad: the first turn waits for Gen's tools (gen.ts warmGenMcp + MCP_TIMEOUT cover cold starts past 45 s).
+    ...(genKey && gen ? { hawkesgen: { type: 'http', url: `${gen}/mcp`, headers: { Authorization: `Bearer ${genKey}` }, alwaysLoad: true } } : {}),
   };
 }
 

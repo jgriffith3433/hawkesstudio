@@ -82,7 +82,8 @@ export function mcpToml(file) {
       if (Array.isArray(s.args)) lines.push(`args = ${tomlVal(s.args)}`);
       if (s.env && Object.keys(s.env).length) lines.push(`env = ${tomlVal(s.env)}`);
     }
-    lines.push('startup_timeout_sec = 60', 'tool_timeout_sec = 600', '');
+    // Past Gen's Cloud Run cold start (~45 s); Claude Code's default MCP connect was 30 s (CONNECT_TIMEOUT).
+    lines.push('startup_timeout_sec = 90', 'tool_timeout_sec = 600', '');
   }
   return lines.join('\n');
 }
