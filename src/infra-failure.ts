@@ -16,6 +16,8 @@ export const INFRA_PHRASES = [
   'source unreadable', 'source missing', 'promisor remote',
   "studio's job step", "studio's studio step", "couldn't be brought back", "couldn't bundle",
   'cloud run job failed', 'ended without its result',
+  // Gen's MCP CONNECT_TIMEOUT at session start (agents.ts parkForGenUnreachable): not the agent's try.
+  'gen unreachable',
   'git add', 'git commit',
 ];
 // "git add"/"git commit" are infra only when the shell refused them (the content role's sandbox did, 2026-11-02).

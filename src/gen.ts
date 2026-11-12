@@ -72,6 +72,70 @@ export async function genUp() {
   }
 }
 
+/**
+ * How long Claude Code waits for an MCP server to connect (`MCP_TIMEOUT`), and the budget for warming Gen's `/mcp`
+ * before an agent session. Past a Cloud Run cold start (~45 s); the old default was 30 s (CONNECT_TIMEOUT), which
+ * left agents "stuck: Gen unreachable" while Gen itself was up (c_f8fb18d7e7cb and others, Nov 2026).
+ */
+export const GEN_MCP_TIMEOUT_MS = () => {
+  const n = Number(process.env.STUDIO_GEN_MCP_TIMEOUT_MS);
+  return n > 0 ? n : 90_000;
+};
+
+export type WarmGenMcp = { ok: boolean; ms: number; status?: number; error?: string; attempts: number };
+
+/**
+ * Wake Gen's MCP endpoint before an agent session starts. A Cloud Run cold start often takes longer than Claude Code's
+ * default 30 s connect timeout; one bounded burst of retries here (no watchdog after) means the session starts with
+ * hawkesgen tools when Gen answers within the budget. Any HTTP status means the process is up (401 still wakes it).
+ */
+export async function warmGenMcp(opts: {
+  url?: string;
+  key?: string;
+  budgetMs?: number;
+  fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+} = {}): Promise<WarmGenMcp> {
+  const base = (opts.url ?? process.env.HAWKESGEN_URL ?? GEN_URL).replace(/\/+$/, '');
+  if (!base) return { ok: false, ms: 0, error: 'no Gen URL', attempts: 0 };
+  const budget = opts.budgetMs ?? GEN_MCP_TIMEOUT_MS();
+  const fetchFn = opts.fetch ?? globalThis.fetch;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const t0 = now();
+  const key = opts.key ?? process.env.AGENT_GEN_KEY ?? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? process.env.HAWKESGEN_KEY ?? '';
+  let lastErr = '';
+  let attempts = 0;
+  while (now() - t0 < budget) {
+    attempts++;
+    const left = budget - (now() - t0);
+    try {
+      // One attempt may wait the rest of the budget (Gen answering at 45 s must succeed; a 30 s per-try cap would miss it).
+      const r = await fetchFn(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'initialize',
+          params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'hawkesstudio-warm', version: '1' } },
+        }),
+        signal: AbortSignal.timeout(Math.max(1_000, left)),
+      });
+      if (Number(r.status) > 0) return { ok: true, ms: now() - t0, status: r.status, attempts };
+    } catch (e: any) {
+      lastErr = String(e?.message ?? e).slice(0, 200);
+    }
+    const wait = Math.min(8_000, Math.max(500, budget - (now() - t0)));
+    if (now() - t0 + wait >= budget) break;
+    await sleep(wait);
+  }
+  return { ok: false, ms: now() - t0, error: lastErr || 'timed out', attempts };
+}
+
 let restarting: Promise<boolean> | null = null;
 /** Starts Hawkes Gen if it isn't answering (its restart script waits until it is). Jobs resume after a restart. */
 export function ensureGen(): Promise<boolean> {

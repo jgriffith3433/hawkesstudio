@@ -62,7 +62,7 @@ import { getFinding, updateFinding } from './backlog.ts';
 import { replayOf } from './feel.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
-import { gen, genEvents, genRun, fileUrl } from './gen.ts';
+import { gen, genEvents, genRun, fileUrl, warmGenMcp, GEN_MCP_TIMEOUT_MS } from './gen.ts';
 import { SAFETY_MS as GEN_EVENTS_SAFETY_MS, terminal as genTerminal } from './genevents.ts';
 import { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { unityBuild } from './buildpkgs.ts';
@@ -116,7 +116,7 @@ import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './infligh
 import { noteRail, betaPart } from './change-rail.ts';
 import { noteTiming, timingOf } from './change-timing.ts';
 import { beginWait, endWait, endWaitsWhere, within, onDeadline } from './waits.ts';
-import { noCommitOutcome, passState } from './outcomes.ts';
+import { noCommitOutcome, passState, genUnreachableSaid, GEN_UNREACHABLE } from './outcomes.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -439,8 +439,52 @@ export function cutOffLeftovers({ onlyStudio, stopped, hasSummaryFile }: { onlyS
 export const ALREADY = 'nothing to do: already done';
 /** An agent's summary (of a change with no commit) saying the work is already there. */
 export function alreadyDone(summary: string) {
+  // Gen's MCP never connected: never close as "already done" (outcome reads Gen unreachable instead).
+  if (genUnreachableSaid(summary)) return false;
   if (doneByOf(summary)) return true;
   return /\b(already (been )?(done|merged|landed|shipped|implemented|in place|on (beta|main)|there|present|fixed|exists?|works?)|nothing (left|more|else) to (do|change|implement)|(work|task|change) (is|was) (already )?(done|merged|complete))\b/i.test(String(summary ?? ''));
+}
+/** How many times one change requeues for Gen MCP CONNECT_TIMEOUT before it fails as Gen unreachable (still not a try). */
+export const GEN_MISS_CAP = 3;
+/** What the agent said about Gen (summary, stuck.md, the pass result) for CONNECT_TIMEOUT / unreachable. */
+export function genUnreachableText(worktree: string, summary: string, result?: string | null): string {
+  let stuck = '';
+  try { stuck = fs.readFileSync(path.join(worktree, '.hawkes', 'stuck.md'), 'utf8'); } catch { /* none */ }
+  return `${summary}\n${result ?? ''}\n${stuck}`;
+}
+/**
+ * A pass that made no commit because Gen's MCP never connected (CONNECT_TIMEOUT while Gen was up): requeue like a
+ * merge-conflict pass, not failed and not "already done"; tries unchanged. After GEN_MISS_CAP times, fail as
+ * Gen unreachable with phase.failed so the PM does not count a try (infra-failure.ts).
+ */
+export function parkForGenUnreachable(
+  id: string,
+  ph: Phase,
+  save: (patch: Partial<Phase>, extra?: Record<string, any>) => void,
+  summary: string,
+  commits: unknown[],
+): boolean {
+  const c = getChange(id);
+  if (!c || commits.length) return false;
+  const said = genUnreachableText(c.worktree, summary, ph.result);
+  if (!genUnreachableSaid(said)) return false;
+  const misses = (ph.genMisses ?? 0) + 1;
+  if (misses >= GEN_MISS_CAP) {
+    const detail = `${GEN_UNREACHABLE} (${misses}×; not counted as a try)`.slice(0, 300);
+    addLog(id, `Gen's MCP still unreachable after ${misses} tries: ${detail}`);
+    reopenTaken(id, c.findings ?? [], detail);
+    update(id, { status: 'failed', detail, summary, commits, phase: { step: ph.step, failed: true, genMisses: misses } });
+    return true;
+  }
+  // Warm Gen again on the next pass; a short gap lets a cold start finish without a watchdog.
+  const retryAt = Date.now() + 30_000;
+  addLog(id, `Gen unreachable (MCP connect timed out); queued to try again (${misses} of ${GEN_MISS_CAP}), not a try`);
+  save(
+    { step: 'agent', genMisses: misses, notBefore: retryAt, proc: undefined, result: undefined, stopped: undefined, nudge: false, genDone: undefined, harness: undefined },
+    { status: 'queued', detail: GEN_UNREACHABLE, summary },
+  );
+  pumpAt(retryAt);
+  return true;
 }
 /**
  * A fix (no task) whose agent made no commit because it found the bug already fixed (e.g. the error came from a beta
@@ -716,6 +760,8 @@ export type Phase = {
   notBefore?: number;
   /** Its agent's Cloud Run job never started for want of room, n times in a row (waitForJobRoom); cleared once one runs. */
   noRoom?: { n: number; at: number };
+  /** Times this change requeued because Gen's MCP was unreachable at session start (parkForGenUnreachable); not a try. */
+  genMisses?: number;
 };
 
 /**
@@ -896,7 +942,11 @@ export function sourceLost(c: Pick<Change, 'worktree' | 'product' | 'infra'>, sa
     if (light || isUnity(c.product)) probe = fs.existsSync(c.worktree) ? probeSource(c.worktree, { unity: light && isUnity(c.product) }) : { ok: false, tracked: 0, reason: `source missing: the worktree ${c.worktree} is gone` };
   }
   const hit = SOURCE_UNREADABLE_SAID.exec(said);
-  const outcome = noCommitOutcome({ ranInJob, worktreeProbeOk: probe ? probe.ok : null, saidUnreadable: Boolean(hit), saidAlreadyDone: alreadyDone(said) });
+  const outcome = noCommitOutcome({
+    ranInJob, worktreeProbeOk: probe ? probe.ok : null, saidUnreadable: Boolean(hit),
+    saidAlreadyDone: alreadyDone(said), saidGenUnreachable: genUnreachableSaid(said),
+  });
+  if (outcome === 'gen-unreachable') return null;
   if (outcome === 'source-missing') return `${sourceError('the agent made no commit', probe as Parameters<typeof sourceError>[1])}`;
   if (outcome === 'source-unreadable') return `source unreadable: the agent made no commit and said it could not read the repo ("${hit![0].slice(0, 80)}"; not counted as a try)`;
   return null;
@@ -2802,7 +2852,15 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       if (!ph.proc && ph.harness) addLog(id, `agent ${resume?.session ? 'resumed its session' : 'started again in its worktree'} after the harness hold (${ph.harness.kind}): it carries on where it was`);
       else if (!ph.proc && ph.genDone) addLog(id, resume?.session ? 'agent resumed its session with its finished Gen jobs' : 'agent started again with its finished Gen jobs (no session recorded)');
       else if (!ph.proc && !ph.nudge) addLog(id, resumed && !ph.conflict ?'agent: it ran inside Studio, which restarted; starting the pass again' : resume?.session ? `agent resumed its session ${ph.conflict ? 'to resolve the conflicts with beta' : 'with the answer'}` : ph.conflict ? 'agent started: resolving the conflicts with beta' : `agent started`);
-      const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
+      // Wake Gen's MCP before the session (Cloud Run cold starts often beat the old 30 s CONNECT_TIMEOUT).
+      if (!ph.proc && !ph.nudge) {
+        const warm = await warmGenMcp();
+        addLog(id, warm.ok
+          ? `Gen MCP ready after ${Math.round(warm.ms / 1000)} s (${warm.attempts} probe${warm.attempts === 1 ? '' : 's'}, HTTP ${warm.status})`
+          : `Gen MCP still not answering after ${Math.round(warm.ms / 1000)} s (${warm.attempts} probes${warm.error ? `: ${warm.error}` : ''}); session starts anyway with a longer connect timeout`);
+      }
+      const mcpMs = String(GEN_MCP_TIMEOUT_MS());
+      const r = await agentPass(id, ph, save, s, claudeEnv({ MCP_TIMEOUT: mcpMs, MCP_CONNECT_TIMEOUT_MS: mcpMs }), resume);
       // Cancelled while it worked (cancelChange stopped it): not a failure, not a try; its branch and worktree stay.
       if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
       if (r.noRoom) return waitForJobRoom(id, ph, r.noRoom);
@@ -2892,6 +2950,11 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       }
       // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
       if (!commits.length || (note && !changedNow && !c.task && !ph.conflict)) {
+        // Gen's MCP never connected: requeue (not a try), never "already done".
+        if (parkForGenUnreachable(id, ph, save, summary, commits)) {
+          if (getChange(id)?.status === 'failed') await dropEmptyWorktree(id, commits);
+          return;
+        }
         // Nothing to change because J already decided it: not a failed try, and the bugs it holds stay done (not reopened
         // for another agent to reach the same answer). Otherwise the bugs it still holds open again (reopenTaken):
         // never one the PM or J triaged while it ran (f_6ba75c6c2ac8: won't-fix reset to open on 2026-10-17).
@@ -3717,7 +3780,14 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       update(id, { detail: `${brainLabel()} is working on it` });
       if (!ph.proc && !ph.nudge) addLog(id, ph.conflict ? `agent resumed to resolve the conflicts with ${c.base}` : resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
       if (!ph.proc && ph.harness) addLog(id, `agent carries on after the harness hold (${ph.harness.kind})`);
-      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), forHarness(ph, ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : ph.harness ? harnessResume(getChange(id)!, ph) : undefined));
+      if (!ph.proc && !ph.nudge) {
+        const warm = await warmGenMcp();
+        addLog(id, warm.ok
+          ? `Gen MCP ready after ${Math.round(warm.ms / 1000)} s (${warm.attempts} probe${warm.attempts === 1 ? '' : 's'}, HTTP ${warm.status})`
+          : `Gen MCP still not answering after ${Math.round(warm.ms / 1000)} s (${warm.attempts} probes${warm.error ? `: ${warm.error}` : ''}); session starts anyway with a longer connect timeout`);
+      }
+      const mcpMs = String(GEN_MCP_TIMEOUT_MS());
+      const r = await agentPass(id, ph, save, s, { ...infraEnv({ agent: true }), MCP_TIMEOUT: mcpMs, MCP_CONNECT_TIMEOUT_MS: mcpMs }, forHarness(ph, ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : ph.harness ? harnessResume(getChange(id)!, ph) : undefined));
       if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
       if (r.noRoom) return waitForJobRoom(id, ph, r.noRoom);
       // Its commits go to GitHub now, before anything else can lose them (never throws; publish pushes again for real).
@@ -3757,6 +3827,10 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       }
       // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
       if (!commits.length || (note && !changedNow && !ph.conflict)) {
+        if (parkForGenUnreachable(id, ph, save, summary, commits)) {
+          if (getChange(id)?.status === 'failed') await dropEmptyWorktree(id, commits);
+          return;
+        }
         const stopped = passStop({ ok: false, sawResult: false, result: ph.result ?? '' }, summary);
         if (stopped) return parkForHarness(id, ph, save, stopped);
         update(id, { status: 'failed', detail: noCommitDetail(summary, noCommitWhy(c.worktree, ph)), summary, commits, phase: null });

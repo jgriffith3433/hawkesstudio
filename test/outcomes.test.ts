@@ -2,7 +2,7 @@
 // each member: nothing defaults to "built nothing", to a failure it didn't have, or to "hung" (docs/stall-paths.md).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILD_OUTCOMES, PLAY_OUTCOMES, PASS_STATES, PLAYED_NOTHING, buildOutcome, isBuilderLoss, playOutcome, passState, type BuildFacts } from '../src/outcomes.ts';
+import { BUILD_OUTCOMES, PLAY_OUTCOMES, PASS_STATES, PLAYED_NOTHING, NO_COMMIT_OUTCOMES, buildOutcome, isBuilderLoss, playOutcome, passState, noCommitOutcome, genUnreachableSaid, type BuildFacts } from '../src/outcomes.ts';
 
 const facts = (o: Partial<BuildFacts> = {}): BuildFacts => ({ runStatus: 'done', failedBuildSteps: 0, failedSteps: 0, ...o });
 
@@ -68,4 +68,20 @@ test('a build the build server lost (Studio\'s own timeout) is read as builder-l
   for (const d of ['cancelled by Studio (timed out after 92 min of building)', 'the Unity build failed: timed out after 92 min of building', 'the build was stuck in Hawkes Gen: it ran 12 min']) assert.equal(isBuilderLoss(d), true, d);
   for (const d of ['error CS0103: The name x does not exist', 'size guard: build is 900 MB', '']) assert.equal(isBuilderLoss(d), false, d);
   assert.equal(buildOutcome(facts({ runStatus: 'failed', failedBuildSteps: 1, builderLost: true })), 'builder-lost');
+});
+
+test('every no-commit outcome, and Gen unreachable wins over already-done', () => {
+  const base = { ranInJob: true, worktreeProbeOk: null as boolean | null, saidUnreadable: false, saidAlreadyDone: false, saidGenUnreachable: false };
+  const reads: Record<(typeof NO_COMMIT_OUTCOMES)[number], Parameters<typeof noCommitOutcome>[0][]> = {
+    'gen-unreachable': [{ ...base, saidGenUnreachable: true, saidAlreadyDone: true }],
+    'already-done': [{ ...base, saidAlreadyDone: true }],
+    'source-missing': [{ ...base, ranInJob: false, worktreeProbeOk: false }],
+    'source-unreadable': [{ ...base, saidUnreadable: true }],
+    'no-commit': [base],
+  };
+  for (const outcome of NO_COMMIT_OUTCOMES) {
+    assert.ok(reads[outcome].length, `no case for ${outcome}`);
+    for (const f of reads[outcome]) assert.equal(noCommitOutcome(f), outcome, JSON.stringify(f));
+  }
+  assert.ok(genUnreachableSaid('MCP server hawkesgen connection timed out after 30000ms'));
 });
