@@ -146,8 +146,8 @@ export const WAIT_POINTS: WaitPoint[] = [
   },
   {
     id: 'gen-job-wait', what: 'Studio following one Hawkes Gen job to its end (genWait: builds, assets, playtests, reviews).', event: 'Gen\'s job event (genevents.ts), a look at start-up or reconnect.',
-    deadline: '4 h unless the caller gives its own', env: '(the call\'s timeoutMs)', maxMs: 6 * H, fallback: 'The wait ends and the job is cancelled or left to Gen; the caller goes on without it (never left behind: unityslot.ts).', fallbackKind: 'without',
-    file: 'src/gen.ts', symbols: ['genWait'], test: 'test/gen-wait.test.ts', via: 'own',
+    deadline: '4 h unless the caller gives its own; a Unity build counts from Gen\'s start; a job Gen answers unknown or still queued past STUDIO_GEN_QUEUED_GHOST_MS while its lane is free ends as lost and is resubmitted once (gen-recover.ts)', env: '(the call\'s timeoutMs)', maxMs: 6 * H, fallback: 'The wait ends and the job is cancelled or left to Gen; lost/ghost jobs are resubmitted once then reported; the caller goes on without it (never left behind: unityslot.ts).', fallbackKind: 'without',
+    file: 'src/gen.ts', symbols: ['genWait'], test: 'test/gen-recover.test.ts', via: 'own',
   },
   {
     id: 'gen-pace', what: 'A Gen job submit or an agent job start waiting out Gen\'s calm window and its spacing.', event: 'The calm window ending.',

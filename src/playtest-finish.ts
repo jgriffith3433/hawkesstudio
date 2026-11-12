@@ -27,13 +27,15 @@ export const QUEUE_CUT = /the playtest queue didn.t move|waited in the queue for
 /** What cut a failed playtest job off, if it is the kind a second try on another backend can get past. */
 export function classifyFailure(job: any): { kind: FailureKind; provider: string | null } | null {
   if (!job || job.status === 'done' || job.status === 'cancelled') return null;
+  // Shared recovery (gen-recover.ts via runGenJob) already resubmitted a lost/ghost job once: do not try again here.
+  if (job.reported || (job.lost && job.retried)) return null;
   const t = text(job);
   // Cut by the queue's own limit (runGenJob): nothing ahead moved, or Gen couldn't say and the ceiling passed. It never
   // says a provider is at fault, so the GPU breaker isn't tripped; the step is tried once more by itself.
   if (QUEUE_CUT.test(t)) return { kind: 'queue', provider: null };
   const provider = providerOf(t) ?? providerOf(job.stuckAt) ?? null;
   if (/no space left|disk (is )?full|ENOSPC|out of disk/i.test(t)) return { kind: 'disk', provider };
-  if (/Hawkes Gen stopped answering|gen(\s|-)?restart|interrupted by a restart|job was lost|worker (was )?(lost|restarted)/i.test(t)) return { kind: 'restart', provider };
+  if (/Hawkes Gen (stopped answering|lost job)|gen(\s|-)?restart|interrupted by a restart|job was lost|no such job|worker (was )?(lost|restarted)/i.test(t)) return { kind: 'restart', provider };
   if (/ERR_CONNECTION_(REFUSED|RESET|CLOSED)|ECONNREFUSED|502|503|bad gateway|service unavailable|Studio.*restart/i.test(t) && !/^stuck:/.test(t)) return { kind: 'beta-restart', provider };
   if (/^stuck:/.test(t) || /no free worker|waiting for (a |this )?(machine|worker)|out of credit|timed out/i.test(t)) return { kind: 'provider', provider };
   return null;

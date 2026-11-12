@@ -13,6 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { db, rowToStep, type Step } from './db.ts';
 import { gen, genEvents, ensureGen, signedFileUrl } from './gen.ts';
 import { noEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
+import { ghostQueued, jobUnknown, laneJobs, lostResult, QUEUED_GHOST_MS, recoverOnce, stillQueued } from './gen-recover.ts';
 import { PROJECTS, GEN_PUBLIC_URL, today, betaPageGlobals, type Playtest } from './config.ts';
 import { withPass } from './sitekeys.ts';
 import { submitKnown } from './gen-params.ts';
@@ -30,7 +31,7 @@ export const PLAYTEST_IDLE_MS = () => Number(process.env.STUDIO_PLAYTEST_IDLE_MS
 export const progressOf = (detail: unknown) => String(detail ?? '').replace(/\bt=\d+(\.\d+)?s?\b/g, 't=_').replace(/\b\d+(\.\d+)?\s?(s|sec|secs|seconds)\b/g, '_s');
 const QUIET_PHASE = /^(waiting for this machine|saving the recording|encoding|stacking|comparing screenshots|uploading)/i;
 
-type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): Promise<any>; cancel(id: string): Promise<any> };
+type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): Promise<any>; jobs?(q: Record<string, string>): Promise<any[]>; cancel(id: string): Promise<any> };
 
 /**
  * Submits a Gen job and waits for it, with limits: how long it may wait in Gen's queue (other playtests ahead of it are
@@ -44,9 +45,21 @@ type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): 
  */
 export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, opts: RunGenJobOptions) {
   const { job: reuse, halt, api = gen, priority, share } = opts;
+  const withTool = { ...opts, tool };
   // halt: the run was cancelled (cancel.ts haltOf). Before the submit nothing is submitted; after it the job is cancelled at once.
   const stopped = () => ({ status: 'cancelled', error: halt?.() ?? 'run cancelled', halted: true });
   if (!reuse && halt?.()) return { id: null, ...stopped() };
+  /** Wait, then the shared recovery (gen-recover.ts) if Gen lost the job. */
+  const finish = async (watched: Promise<any>, resubmit: () => Promise<any>) => {
+    const first = await watched;
+    if (!first?.lost || halt?.()) return first;
+    return recoverOnce({
+      first,
+      resubmit,
+      wait: (id) => watchGenJob(onUpdate, { ...withTool, job: id }, null, false, { id }),
+      log: (s) => console.log(`[playtest] ${project}: ${s}`),
+    });
+  };
   // share: the same playtest (tool, project, params) another caller here submitted and Gen hasn't started yet is joined,
   // not queued a second time (2026-11-01: a beta run and a Talk walk-away each queued Hawkes Studio's smoke@local, and
   // both waited for a browser tab). Only a job still queued is joined: it hasn't opened the page, so whatever it plays
@@ -61,7 +74,8 @@ export async function runGenJob(tool: string, project: string, params: Record<st
       const now = id ? await api.job(id).catch(() => null) : null;
       if (id && now?.status === 'queued' && reg.byId.get(id) === pending && !halt?.()) {
         onUpdate({ ...now, detail: `queued (the same playtest another run asked for: one job plays it for both)` });
-        return watchGenJob(onUpdate, { ...opts, job: id }, pending, true);
+        // Shared: recovery would cancel under the other caller; a lost shared job ends for everyone and the next ask submits again.
+        return watchGenJob(onUpdate, { ...withTool, job: id }, pending, true);
       }
       await leaveShared(api, pending, id, 'detach');
       if (halt?.()) return { id: null, ...stopped() };
@@ -82,7 +96,7 @@ export async function runGenJob(tool: string, project: string, params: Record<st
     }
     reg.byId.set(job.id, entry);
     submitted(job.id);
-    return watchGenJob(onUpdate, opts, entry, false, job);
+    return finish(watchGenJob(onUpdate, withTool, entry, false, job), () => submitGenJob(api, tool, project, params, priority));
   }
   // A job submitted before a Studio restart (pipeline.ts resumes runs): waited on again, not submitted again.
   const job = reuse ? { id: reuse } : await submitGenJob(api, tool, project, params, priority);
@@ -93,7 +107,7 @@ export async function runGenJob(tool: string, project: string, params: Record<st
     if (entry) entry.subs++;
     else reg.byId.set(reuse, (entry = { key: null, id: Promise.resolve(reuse), subs: 1, cancelAsked: false }));
   }
-  return watchGenJob(onUpdate, opts, entry, false, job);
+  return finish(watchGenJob(onUpdate, withTool, entry, false, job), () => submitGenJob(api, tool, project, params, priority));
 }
 
 type RunGenJobOptions = {
@@ -103,6 +117,8 @@ type RunGenJobOptions = {
   events?: JobFollower;
   /** Join the same job another caller here submitted while Gen still has it queued (playtests: pipeline.ts playScenario). */
   share?: boolean;
+  /** The Gen tool (for the ghost-queue look at Gen's lane). */
+  tool?: string;
   /**
    * Playtests (playtest-finish.ts): a queued job is cut only when nothing ahead of it moved for queueStallMs. queuePosition
    * is its place in Gen's line (0 = next), null when Gen can't say; a place that dropped since the last look restarts the
@@ -158,7 +174,7 @@ async function submitGenJob(api: GenApi, tool: string, project: string, params: 
  * are one timer set to the next deadline; halt and abandon are Studio's own database, still looked at every pollMs
  * without asking Gen.
  */
-async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000, events, queueStallMs, queuePosition }: RunGenJobOptions, entry: Shared | null, joined: boolean, submittedJob?: any): Promise<any> {
+async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000, events, queueStallMs, queuePosition, tool }: RunGenJobOptions, entry: Shared | null, joined: boolean, submittedJob?: any): Promise<any> {
   const job: any = submittedJob ?? { id: reuse };
   let left = false;
   const leave = async (how: 'cancel' | 'done') => {
@@ -191,6 +207,7 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
     let look = true;
     let fromGet = false;
     let heard = Date.now();
+    let ghostChecked = 0;
     // The queue's clock (queueStallMs): the job's place in Gen's line at the last look, and when to look next.
     const placeOf = async (): Promise<number | null> => { try { return queuePosition ? await queuePosition(job.id) : null; } catch { return null; } };
     let qPos: number | null = queueStallMs ? await placeOf() : null;
@@ -205,6 +222,8 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
           fromGet = true;
           heard = Date.now();
         } catch (e: any) {
+          // Gen doesn't know the job: nothing will finish it (shared recovery resubmits once).
+          if (jobUnknown(e)) return lostResult(String(job.id), 'no such job');
           // Gen restarting (jobs resume) or busy: keep trying for a few minutes.
           if (++misses > 90) return { ...job, status: 'failed', error: `Hawkes Gen stopped answering: ${e.message}` };
           if (misses === 10) await ensureGen();
@@ -230,6 +249,15 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
         // An event: the whole job (its log, its result as Gen keeps it) is asked for once.
         if (!fromGet) { look = true; continue; }
         return j;
+      }
+      // Ghost queue: still queued past the bound while Gen's lane shows free room (same rule as genWait).
+      if (fromGet && !started && stillQueued(j) && Date.now() - submitted >= QUEUED_GHOST_MS() && Date.now() - submitted >= ghostChecked) {
+        ghostChecked = Date.now() - submitted + QUEUED_GHOST_MS();
+        const listed = await laneJobs(api, String(tool || j.tool || ''));
+        if (ghostQueued({ ...j, id: job.id }, listed, submitted)) {
+          const why = listed && !listed.some((x) => String(x?.id) === String(job.id)) ? "no longer in Gen's queue" : "still queued while Gen's lane is free";
+          return lostResult(String(job.id), why);
+        }
       }
       const halted = halt?.();
       if (halted) {
