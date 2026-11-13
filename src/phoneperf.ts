@@ -17,6 +17,20 @@
 // at most 20 MB before gameplay, at most 20 s to gameplay, fps p5 at least 30 (CrazyGames / Poki bar).
 
 export const LIMITS = { mbBeforeGameplay: 20, secondsToGameplay: 20, fpsP5: 30 } as const;
+/** Unity WebGL (J, 2026-11-13, q_d0be912a94e9): the engine alone is about 7 MB, so 20 s on Slow 4G can't be met; 20 MB and 60 s. */
+export const UNITY_LIMITS = { mbBeforeGameplay: 20, secondsToGameplay: 60, fpsP5: 30 } as const;
+export type PhoneLimits = { mbBeforeGameplay: number; secondsToGameplay: number; fpsP5: number };
+
+/** The phone budget of a project: by engine, then the project's own `tuning` (phone.* metrics) over it. */
+export function phoneLimitsFor(p?: { engine?: string; tuning?: Record<string, { max?: number; min?: number }> } | null): PhoneLimits {
+  const base: PhoneLimits = { ...(p?.engine === 'unity' ? UNITY_LIMITS : LIMITS) };
+  const t = p?.tuning ?? {};
+  return {
+    mbBeforeGameplay: t['phone.mbBeforeGameplay']?.max ?? base.mbBeforeGameplay,
+    secondsToGameplay: t['phone.secondsToGameplay']?.max ?? base.secondsToGameplay,
+    fpsP5: t['phone.fpsP5']?.min ?? base.fpsP5,
+  };
+}
 
 export type PhoneAsset = { url: string; bytes: number; path: string };
 export type PhonePerf = {
@@ -139,7 +153,7 @@ export function topAssets(f: PhonePerf | null | undefined, n = 5): PhoneAsset[] 
 }
 
 /** Report lines for one phone play (Markdown, readable at 390 px). */
-export function phonePerfLines(f: PhonePerf | null | undefined, opts: { limits?: Partial<typeof LIMITS>; step?: string; name?: string } = {}): string[] {
+export function phonePerfLines(f: PhonePerf | null | undefined, opts: { limits?: Partial<PhoneLimits>; step?: string; name?: string } = {}): string[] {
   if (!f) return [];
   const L = { ...LIMITS, ...(opts.limits ?? {}) };
   const head = opts.name ? `**${opts.name}:** ` : '';
@@ -160,15 +174,16 @@ export function phonePerfLines(f: PhonePerf | null | undefined, opts: { limits?:
 
 export type PhoneFinding = { title: string; severity: string; area: string; detail: string; fix: string; shots: string[]; replay: null };
 
-const FIX_MB = 'Cut what loads before gameplay: defer non-critical assets, compress textures and audio, code-split, and keep the first playable payload at most 20 MB (CrazyGames mobile homepage bar).';
-const FIX_TIME = 'Get to gameplay in at most 20 s on Slow 4G with a 4x CPU: fewer blocking requests, a smaller first paint, start play before secondary downloads finish.';
+const fixMb = (L: PhoneLimits) => `Cut what loads before gameplay: defer non-critical assets, compress textures and audio, code-split, and keep the first playable payload at most ${L.mbBeforeGameplay} MB (CrazyGames mobile homepage bar).`;
+const fixTime = (L: PhoneLimits) => `Get to gameplay in at most ${L.secondsToGameplay} s on Slow 4G with a 4x CPU: fewer blocking requests, a smaller first paint, start play before secondary downloads finish.`;
 const FIX_FPS = 'Raise the low percentiles on a mid-range phone: lower draw calls and overdraw, smaller textures, fewer per-frame allocations; watch the clip at the dip time.';
 
 /**
  * Findings for a phone play that missed the load or fps budget. Names the five largest pre-gameplay assets on a size
  * or time miss, and the clip time on an fps p5 miss. Empty when the numbers are inside the limits or not measured.
  */
-export function phonePerfFindings(r: any, { scenario }: { scenario: string }): PhoneFinding[] {
+export function phonePerfFindings(r: any, { scenario, product }: { scenario: string; product?: { engine?: string; tuning?: Record<string, { max?: number; min?: number }> } | null }): PhoneFinding[] {
+  const LIMITS = phoneLimitsFor(product);
   const f: PhonePerf | undefined = r?.phone ?? (r?.device === 'phone' || r?.metrics?.['phone.mbBeforeGameplay'] != null ? phonePerfOf(r) ?? undefined : undefined);
   if (!f) return [];
   const out: PhoneFinding[] = [];
@@ -177,7 +192,7 @@ export function phonePerfFindings(r: any, { scenario }: { scenario: string }): P
   if (overMb || overTime) {
     const big = topAssets(f, 5);
     const why = [
-      overMb ? `${f.mbBeforeGameplay} MB before gameplay (limit ${LIMITS.mbBeforeGameplay})` : null,
+      overMb ? `${f.mbBeforeGameplay} MB before gameplay (limit ${LIMITS.mbBeforeGameplay} MB)` : null,
       overTime ? `${f.secondsToGameplay} s to gameplay (limit ${LIMITS.secondsToGameplay} s)` : null,
     ].filter(Boolean).join('; ');
     const list = big.length
@@ -187,7 +202,7 @@ export function phonePerfFindings(r: any, { scenario }: { scenario: string }): P
       title: `Phone load budget missed: ${why}`,
       severity: 'bug', area: 'performance',
       detail: `In ${scenario} (390x844, ${f.throttling.cpu}x CPU, ${f.throttling.network}, DPR ${f.throttling.dpr}): ${why}.${list}`,
-      fix: overMb ? FIX_MB : FIX_TIME, shots: [], replay: null,
+      fix: overMb ? fixMb(LIMITS) : fixTime(LIMITS), shots: [], replay: null,
     });
   }
   if (f.fpsP5 !== null && f.fpsP5 < LIMITS.fpsP5) {

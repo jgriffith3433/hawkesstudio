@@ -135,3 +135,23 @@ test('the rubric has phone-load and a game can move a limit with tuning', () => 
   const g = q.qualityGate({ ...game, tuning: { 'phone.mbBeforeGameplay': { max: 40 } } }, { metrics: { 'phone.mbBeforeGameplay': 34.5, 'phone.secondsToGameplay': 10, 'phone.fpsP5': 40 } });
   assert.equal(g.fails.length, 0);
 });
+
+test('Unity projects are judged on 20 MB and 60 s; web keeps 20 s', () => {
+  const unity = { id: 'pgame', engine: 'unity', kind: undefined } as any;
+  const run = (mb: number, s: number) => ({ device: 'phone', loadSeconds: s, phone: { throttling: { cpu: 4, network: 'slow-4g', dpr: 2 }, mbBeforeGameplay: mb, secondsToGameplay: s, fpsP5: 40, assets: [] }, metrics: { 'phone.mbBeforeGameplay': mb, 'phone.secondsToGameplay': s, 'ftue.secondsToGameplay': s } });
+  const ok = run(19.7, 55);
+  assert.deepEqual(P.phonePerfFindings(ok, { scenario: 'first-five', product: unity }), []);
+  const g = q.qualityGate(unity, { metrics: ok.metrics });
+  assert.deepEqual(g.fails.filter((f) => f.rule === 'phone-load' || f.check.startsWith('first-five-gameplay')), []);
+  const bad = P.phonePerfFindings(run(19.7, 103), { scenario: 'first-five', product: unity });
+  assert.equal(bad.length, 1);
+  assert.match(bad[0].title, /\(limit 60 s\)/);
+  const both = P.phonePerfFindings(run(25, 103), { scenario: 'first-five', product: unity });
+  assert.match(both[0].title, /\(limit 20 MB\)/);
+  const web = P.phonePerfFindings(run(10, 25), { scenario: 'first-five', product: game });
+  assert.match(web[0].title, /\(limit 20 s\)/);
+  const f = q.qualityFindings(unity, run(19.7, 103), 'first-five').find((x) => x.title.includes('first-five-gameplay'));
+  assert.match(f!.detail, /at most 60/);
+  assert.doesNotMatch(f!.detail, /at most 20\b/);
+  assert.equal(P.phoneLimitsFor({ engine: 'unity', tuning: { 'phone.secondsToGameplay': { max: 45 } } }).secondsToGameplay, 45);
+});
