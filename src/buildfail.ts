@@ -13,7 +13,7 @@
 // No polling: the dashboard hears about a row changing through /api/stream (a database write).
 
 import { db } from './db.ts';
-import { tokenLost, infraLost, buildsOf, UNITY_FAILED, TRUNCATED, DOWNLOAD_FAILED_PREFIX } from './builds.ts';
+import { tokenLost, infraLost, buildsOf, UNITY_FAILED, TRUNCATED, DOWNLOAD_FAILED_PREFIX, NO_ROOM_PREFIX } from './builds.ts';
 import { getProduct } from './config.ts';
 import { QUOTA, accessCause, accessFix, retryPending } from './buildaccess.ts';
 import { fixerNow, fixedWording, fixSentence, type FixerNow } from './buildfix.ts';
@@ -88,6 +88,9 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
   }
   // The finished build's download never worked (builds.ts viaGen, after its own tries): Gen said it built fine, so no code is
   // to blame. Checked before everything else so a word in the error can't make it a compile failure.
+  // Studio had no room to unpack the finished build, not even in the site store (builds.ts unpackBuild, NoRoom): its words
+  // carry the bytes needed and free. Studio's working space, never the code, never sent to an agent.
+  if (e.includes(NO_ROOM_PREFIX)) return { class: 'other', kind: 'infrastructure', plain: `Hawkes Gen finished the build, but Studio had no room to unpack it (${e.slice(e.indexOf(NO_ROOM_PREFIX) + NO_ROOM_PREFIX.length, e.indexOf(NO_ROOM_PREFIX) + NO_ROOM_PREFIX.length + 220)}). That's Studio's working space, not your code: nothing is sent to an agent. Build again once space is freed.` };
   if (e.startsWith(DOWNLOAD_FAILED_PREFIX)) return { class: 'publish', kind: 'infrastructure', plain: `Hawkes Gen finished the build, but Studio couldn't download its output (${e.slice(DOWNLOAD_FAILED_PREFIX.length, DOWNLOAD_FAILED_PREFIX.length + 160)}) even after trying again.${retried} That's Hawkes Gen's storage or the connection, not your code: nothing is sent to an agent. Build again.` };
   if ((/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|Scripts have compiler errors/i.test(both) || UNITY_FAILED.test(both)) && !tokenLost(e)) {
     const first = /error CS\d+[^\n]{0,160}/i.exec(both)?.[0];
