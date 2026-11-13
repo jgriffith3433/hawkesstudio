@@ -1246,10 +1246,18 @@ export function capacity() {
   const s = pmSettings();
   const count = (st: string[]) => (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${st.map(() => '?').join(',')})`).get(...st) as any).n as number;
   const active = count(RUNNING);
-  const queued = count(['queued']);
+  // A queued change blocked on a sibling (its product's slots, or a file collision) holds no agent slot: the agents' pump
+  // starts only what fits beside the running ones, so it can't use one. It starts when its blocker finishes (that pass's
+  // end wakes the queue). Counting it left 3 working + 3 blocked = "6 of 6 used" while 17 tasks of other products waited
+  // (2026-11-13).
+  const queuedRows = db.prepare(`SELECT detail FROM changes WHERE status = 'queued'`).all() as { detail: string | null }[];
+  const blocked = queuedRows.filter((r) => waitsOnSibling(r.detail)).length;
+  const queued = queuedRows.length - blocked;
   const started = startsToday();
-  return { active, queued, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active - queued, s.maxStartsPerDay - started)) };
+  return { active, queued, blocked, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active - queued, s.maxStartsPerDay - started)) };
 }
+/** A queued change's detail says it waits on another change of its product ("waits for c_.. (both touch ..)", "behind c_.."). */
+export const waitsOnSibling = (detail: string | null | undefined) => /^queued: waits for c_\w+ \(|^queued behind c_\w+|\bbehind c_\w+/.test(detail ?? '');
 
 /**
  * Exactly why a startable task isn't starting, or null when it would (J, 2026-11-02: "waits: a free agent" for a day
@@ -1268,7 +1276,7 @@ export function startWaitReason(t?: Pick<Task, 'id' | 'product'>, now = Date.now
     if (hold) return `Studio could not run its agent ${hold.n} time${hold.n === 1 ? '' : 's'} in a row (${hold.why.slice(0, 160)}); trying again ${new Date(hold.until).toISOString().slice(11, 16)} UTC`;
   }
   if (cap.started >= s.maxStartsPerDay) return `daily start limit ${cap.started}/${s.maxStartsPerDay} reached, resets ${new Date(dayBounds(now).next).toISOString().slice(11, 16)} UTC`;
-  if (cap.active + cap.queued >= s.maxConcurrent) return `all ${s.maxConcurrent} agent slot${s.maxConcurrent === 1 ? ' is' : 's are'} busy (${cap.active} working${cap.queued ? `, ${cap.queued} queued` : ''}); it starts when one finishes`;
+  if (cap.active + cap.queued >= s.maxConcurrent) return `all ${s.maxConcurrent} agent slot${s.maxConcurrent === 1 ? ' is' : 's are'} busy (${cap.active} working${cap.queued ? `, ${cap.queued} queued to start` : ''}); it starts when one finishes`;
   return null;
 }
 
