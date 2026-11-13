@@ -865,6 +865,18 @@ test("a finished build's download is tried again when Gen answers 502 (half of P
   calls = 0;
   await assert.rejects(B.downloadBuild(async () => { calls++; throw Object.assign(new Error('Hawkes Gen /files/a_x: HTTP 404'), { status: 404 }); }, () => {}, { waits: [1, 1], unpack }), /404/);
   assert.equal(calls, 1);
+  // Gen's own job said the build is there: a 404 is asked again (missing: true), and the job's artifact url is the second way in.
+  calls = 0;
+  const got = await B.downloadBuild(async () => { if (++calls < 2) throw Object.assign(new Error('Hawkes Gen /files/a_x: HTTP 404'), { status: 404 }); return new Response('published'); }, () => {}, { waits: [1, 1], unpack, missing: true });
+  assert.equal(calls, 2);
+  assert.equal(fs.readFileSync(path.join(got, 'index.html'), 'utf8'), 'published');
+  calls = 0;
+  await assert.rejects(B.downloadBuild(async () => { calls++; throw Object.assign(new Error('Hawkes Gen /files/a_x: HTTP 404'), { status: 404 }); }, () => {}, { waits: [1, 1], unpack, missing: true }), /404/);
+  assert.equal(calls, 3, 'every fetch 404s: tried after each wait, then gives up');
+  const asked: string[] = [];
+  const viaUrl = await B.fetchBuildFile(async (p) => { asked.push(p); if (p.startsWith('/files/')) throw Object.assign(new Error('HTTP 404'), { status: 404 }); return new Response('x'); }, 'a_x', '/v1/assets/a_x/file');
+  assert.equal(await viaUrl.text(), 'x');
+  assert.deepEqual(asked, ['/files/a_x', '/assets/a_x/file']);
   // Transient every time: gives up after the waits, with the reason.
   calls = 0;
   await assert.rejects(B.downloadBuild(async () => { calls++; throw new Error('socket hang up'); }, () => {}, { waits: [1, 1], unpack }), /socket hang up/);
@@ -950,4 +962,17 @@ test('two starts of the same product and commit together submit one Gen build, a
   } finally {
     g.restore();
   }
+});
+
+test('a build whose finished output never downloads is an infrastructure failure, and no agent is sent back for it', async () => {
+  const { classify } = await import('../src/buildfail.ts');
+  const { isBuilderLoss } = await import('../src/outcomes.ts');
+  const e = B.DOWNLOAD_FAILED_PREFIX + 'Hawkes Gen /files/a_68efb13474c9bfbd: HTTP 404';
+  const c = classify(e, { stage: 'build' });
+  assert.equal(c.kind, 'infrastructure');
+  assert.equal(c.class, 'publish');
+  assert.match(c.plain, /not your code/);
+  assert.equal(isBuilderLoss(e), true, 'beta counts it as the builder\'s loss: nothing is sent back to the change\'s agent');
+  const { failType } = await import('../src/buildaccess.ts');
+  assert.notEqual(failType(e, { stage: 'build', kind: c.kind }), 'code');
 });
