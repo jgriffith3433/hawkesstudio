@@ -179,8 +179,20 @@ export async function siteStore(domain: string): Promise<SiteStore> {
   return workerStore(sitesUrl(domain));
 }
 
+/** Seconds to wait before each new try of one call to the store: 4 tries in all. */
+export const STORE_WAITS = [1000, 5000, 20000];
+
+/**
+ * Whether the store's answer is worth another try: no answer (status 0, a network error), 5xx, 429, or the store's own
+ * "internal error. Please try again" (a 400 with code 10001). Any other 4xx is the request's fault and fails at once.
+ */
+export function storeTransient(status: number, body: string): boolean {
+  if (status === 0 || status === 429 || status >= 500) return true;
+  return status === 400 && /internal error\.? please try again|\(10001\)|"code":\s*10001/i.test(body);
+}
+
 /** The real store: signed calls to the beta-sites Worker. */
-export function workerStore(url: string, { lane = laneOf(), fetcher = fetch, sign = signPublish }: { lane?: Lane; fetcher?: typeof fetch; sign?: typeof signPublish } = {}): SiteStore {
+export function workerStore(url: string, { lane = laneOf(), fetcher = fetch, sign = signPublish, waits = STORE_WAITS }: { lane?: Lane; fetcher?: typeof fetch; sign?: typeof signPublish; waits?: number[] } = {}): SiteStore {
   const call = async (method: string, p: string, body: Buffer | null, headers: Record<string, string> = {}, ok404 = false) => {
     const tag = method === 'PUT' ? `len:${body?.length ?? 0}` : `sha256:${crypto.createHash('sha256').update(body ?? Buffer.alloc(0)).digest('hex')}`;
     const pq = `/.hawkes-sites/${p}`;
@@ -191,8 +203,11 @@ export function workerStore(url: string, { lane = laneOf(), fetcher = fetch, sig
         body: body ? new Uint8Array(body) : undefined, signal: AbortSignal.timeout(5 * 60_000),
       }).catch((e: any) => ({ ok: false, status: 0, text: async () => String(e.message ?? e), arrayBuffer: async () => new ArrayBuffer(0) }) as unknown as Response);
       if (res.ok || (ok404 && res.status === 404)) return res;
-      if (attempt >= 3 || (res.status >= 400 && res.status < 500 && res.status !== 429)) throw new Error(`beta sites ${method} ${p.slice(0, 120)}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-      await new Promise((r) => setTimeout(r, attempt * 2000));
+      const text = (await res.text().catch(() => '')).slice(0, 200);
+      if (attempt > waits.length || !storeTransient(res.status, text)) {
+        throw new Error(`beta sites ${method} ${p.slice(0, 120)}: ${res.status} ${text}${attempt > 1 ? ` (gave up after ${attempt} tries)` : ' (1 try, not retried)'}`);
+      }
+      await new Promise((r) => setTimeout(r, waits[attempt - 1]));
     }
   };
   const enc = (key: string) => key.split('/').map(encodeURIComponent).join('/');

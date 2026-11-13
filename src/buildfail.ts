@@ -110,6 +110,8 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
   // GitHub refused the app's token (403/404): the real cause and the one fix, never "access or install" (buildaccess.ts).
   const cause = accessCause(e);
   if (cause) return { class: 'access', kind: 'infrastructure', plain: accessFix(cause, o.slug ?? null) };
+  // One file of the finished build couldn't be written to the beta sites store (sitestore.ts workerStore, after its own tries).
+  if (/^beta sites (PUT|GET|POST) /.test(e)) return { class: 'publish', kind: 'infrastructure', plain: `Hawkes Gen built it fine, but the beta sites store refused a file (${e.slice(0, 260)}). That's the site store, not your code: nothing is sent to an agent. Build again.` };
   if (o.stage === 'publish' || o.stage === 'mount' || o.stage === 'download' || /publish|loader|assertLoader|commit(ting)? into|couldn't (put|write)|R2/i.test(e)) {
     const loader = /loader/i.test(e);
     return { class: 'publish', kind: loader ? 'code' : 'infrastructure', plain: loader ? `The build finished but its files aren't what the site page loads (${e.slice(0, 160)}). That's the build's setup, not Studio.` : `The build itself finished, but Studio couldn't publish it (${e.slice(0, 160)}). That's Studio or the site store, not your code. Build again.` };
