@@ -91,7 +91,7 @@ export function adoptParks(): string[] {
 }
 
 /** How Studio sees each condition now (the gates that hold a start). Injected so tests need no Gen. */
-export type ParkView = Partial<Record<ParkKind, () => boolean | Promise<boolean>>>;
+export type ParkView = Partial<Record<ParkKind, (park: Park) => boolean | Promise<boolean>>>;
 
 const drop = (task: string, how: 'event' | 'deadline' | 'cancelled') => {
   db.prepare('DELETE FROM task_parks WHERE task = ?').run(task);
@@ -128,7 +128,7 @@ export async function releaseParks(view: ParkView = {}): Promise<string[]> {
     const heard = lastParkEvent(ENDS[p.kind]) >= p.since || p.adopted === 1 || p.since < bootedAt;
     if (!heard) continue;
     let clear = true;
-    try { clear = (await view[p.kind]?.()) ?? true; } catch { clear = false; }
+    try { clear = (await view[p.kind]?.(p)) ?? true; } catch { clear = false; }
     if (!clear) { if (p.adopted) db.prepare('UPDATE task_parks SET adopted = 0, since = ? WHERE task = ?').run(Date.now(), p.task); continue; }
     const id = release(p, `${p.kind} cleared`);
     if (id) out.push(id);

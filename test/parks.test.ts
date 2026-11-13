@@ -160,3 +160,55 @@ test('(d) a GPU run that found no GPU waits for the next GPU-capable moment, not
   const [again] = await pm.rerunGpuWaits(2, new Set(), { running: async () => true });
   assert.ok(again, 'it runs again at the next GPU-capable moment');
 });
+
+// (e) One verdict on GPU work (gpuverdict.ts): AWS unconfigured is not "GPU down"; low Gen credits park, once.
+const V = await import('../src/gpuverdict.ts');
+const AWS_OFF = { error: 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not in hawkesgen/.env', servers: [] };
+const noProviders = async () => { throw new Error('403'); };
+const gpuTask = (credits?: number) => {
+  const t = rm.addTask({ item: item.id, request: 'Enemy roster art', gpu: ITEMS });
+  db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ items: ITEMS, estimate: { gpuHours: 1, cost: 1, withIdleTail: 1, servers: 1, wallMinutes: 10, at: Date.now(), ...(credits ? { credits } : {}) }, budget: 2 }), t.id);
+  rm.setTask(t.id, { status: 'planned' });
+  return rm.getTask(t.id)!;
+};
+
+test('(e) Gen can run via RunPod/Modal and AWS is unconfigured: the task starts, and its brief says GPU is available', async () => {
+  V.forgetGpuVerdict();
+  const t = gpuTask(500);
+  const held = await pm.holdGpuTask(t, { providers: noProviders, fleet: async () => AWS_OFF, balance: async () => 5000 });
+  assert.equal(held, false, 'not held: an agent may start');
+  assert.equal(P.parkOf(t.id), null);
+  const v = V.lastGpuVerdict()!;
+  assert.equal(v.running, true);
+  assert.equal(v.via, 'no-aws');
+  const { gpuBrief } = await import('../src/agents.ts');
+  const brief = gpuBrief({ gpu_budget: '2' } as any);
+  assert.match(brief, /GPU work can run now/);
+  assert.match(brief, /AWS isn't set up/);
+  assert.match(brief, /not a\s+decision by J|not a decision by J/);
+});
+
+test('(e) credits below the estimate: no agent, parked on credits, one Inbox card; the credits event releases it and it starts', async () => {
+  V.forgetGpuVerdict();
+  const a = gpuTask(500);
+  const b = gpuTask(500);
+  const deps = { providers: noProviders, fleet: async () => AWS_OFF, balance: async () => 1 };
+  assert.equal(await pm.holdGpuTask(a, deps), true);
+  assert.equal(await pm.holdGpuTask(b, deps), true);
+  for (const t of [a, b]) {
+    assert.equal(P.parkOf(t.id)?.kind, 'credits');
+    assert.equal(rm.getTask(t.id)!.status, 'idea', 'parked, never started');
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE task = ?`).get(t.id)!.n, 0, 'no agent change');
+  }
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE subject = 'gen-credits' AND status IN ('open', 'asked J')`).get()!.n, 1, 'ONE card for J');
+  // Still short: the event releases nothing.
+  E.parkEvent('credits-added');
+  const view = (balance: number) => ({ credits: async (p: any) => !(await V.gpuVerdict(rm.getTask(p.task)!, { ...deps, balance: async () => balance })).short });
+  assert.deepEqual(await P.releaseParks(view(1)), []);
+  // Credits arrive: both are planned again, and holdGpuTask lets them start.
+  V.forgetGpuVerdict();
+  E.parkEvent('credits-added');
+  assert.deepEqual((await P.releaseParks(view(5000))).sort(), [a.id, b.id].sort());
+  assert.equal(rm.getTask(a.id)!.status, 'planned');
+  assert.equal(await pm.holdGpuTask(rm.getTask(a.id)!, { ...deps, balance: async () => 5000 }), false);
+});

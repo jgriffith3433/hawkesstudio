@@ -168,7 +168,7 @@ Free agent slots with nothing planned: an empty roadmap.
 
 A roadmap task parked on an outside condition (Gen credits, a GPU server, an AI provider), or waiting for GPU after a run that found none.
 
-- **Waits on (event):** A Gen job finishing ok, credits added, a GPU server coming up, a GPU budget approved, a provider back, or idle agent slots (parkevents.ts, read in the PM's pass); the condition is a row in task_parks.
+- **Waits on (event):** A Gen job finishing ok, credits added, a GPU server coming up, a GPU budget approved, a provider back, or idle agent slots (parkevents.ts, read in the PM's pass); the condition is a row in task_parks. A GPU task whose condition isn't met (gpuverdict.ts: no GPU able to run, or the Studio org's Gen credits below its estimate) is parked here before any agent starts (pm.ts holdGpuTask), with ONE Inbox card for credits.
 - **Deadline:** 6 h from the park (`STUDIO_PARK_WAIT_MS`; never more than 6 h)
 - **Fallback:** The task is planned again (or its GPU run goes again) whatever Studio sees; if the condition still holds, the attempt that hits it parks the task again with a new deadline.
 - **Where:** `src/parks.ts` (`releaseParks`, `recordPark`, `adoptParks`)

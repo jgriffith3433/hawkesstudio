@@ -56,7 +56,8 @@ import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
 import { REF_LOCK } from './gitlock.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
 import { heldRun, creditsWaitReason } from './creditwait.ts';
-import { adoptParks, releaseParks, parkOf, holdForGpu, gpuHeld, type ParkView } from './parks.ts';
+import { adoptParks, releaseParks, parkOf, holdForGpu, gpuHeld, parkTask, type ParkView } from './parks.ts';
+import { gpuRunning as gpuRunningRead, forgetGpuSeen, gpuVerdict } from './gpuverdict.ts';
 import { onParkEvent, parkEvent } from './parkevents.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
@@ -212,11 +213,17 @@ export function kick(ms = 3000) {
 // An event a parked task may be waiting for (a Gen job finished, credits added, a GPU server up): one PM pass looks at the parks.
 onParkEvent(() => kick(1000));
 
+/** The Studio org's Gen balance is below what the parked GPU task needs (gpuverdict.ts), so its credits park stays parked. */
+async function gpuCreditsShort(task: string) {
+  const t = getTask(task);
+  return t?.gpu?.items?.length ? Boolean((await gpuVerdict(t)).short) : false;
+}
+
 /** How Studio sees each outside condition now: the gates that hold a start (parks.ts releases a park once its gate is open). */
 function parkView(): ParkView {
   return {
-    credits: () => !creditsWaitReason(),
-    gpu: async () => { fleetSeen = null; return gpuRunning(); },
+    credits: async (p) => !creditsWaitReason() && !(await gpuCreditsShort(p.task)),
+    gpu: async () => { forgetGpuSeen(); return gpuRunning(); },
     provider: () => !noProviderFree(),
   };
 }
@@ -1463,6 +1470,9 @@ export async function startWork() {
       console.warn(`[pm] task bar on ${t.id}: ${e.message ?? e}`);
       continue;
     }
+    // A task that generates on the GPU starts an agent only when GPU work can run and the credits cover it (gpuverdict.ts):
+    // otherwise it is parked on that condition and the event that clears it starts it. No agent runs just to say "paused".
+    if (await holdGpuTask(t)) continue;
     try {
       out.push(await startTaskChange(t, rescueNote(t.id), `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked${rescueNote(t.id) ? '; with a scout\'s diagnosis' : ''}`));
     } catch (e: any) {
@@ -1514,6 +1524,25 @@ export async function startWork() {
 }
 
 // --------------------------------------------------------- waiting for GPU
+
+/**
+ * A planned task that generates on the GPU and whose condition isn't met (no GPU able to run, or Gen credits below its
+ * estimate) is parked on that condition instead of getting an agent; true when it was held. Credits are money: ONE Inbox
+ * card (subject gen-credits, merged however many tasks wait), never a card or an agent run per task.
+ */
+export async function holdGpuTask(t: Task, deps: Parameters<typeof gpuVerdict>[1] = {}): Promise<boolean> {
+  if (!t.gpu?.items?.length) return false;
+  let v;
+  try { v = await gpuVerdict(t, deps); } catch (e: any) { console.warn(`[pm] GPU verdict for ${t.id}: ${e.message ?? e}`); return false; }
+  if (!v.blocked) return false;
+  if (parkOf(t.id)) return true;
+  parkTask(t.id, v.blocked.kind, v.blocked.detail);
+  if (v.blocked.kind === 'credits') {
+    askJ(`Gen credits for the Studio org are too low for the GPU art on the roadmap (${v.credits} left${v.need !== null ? `, "${t.title}" needs about ${v.need}` : ''}). Those tasks are parked, and they start by themselves when credits are added. Add credits?`,
+      { subject: 'gen-credits', topic: 'credits', options: ['Credits added', 'Not now'], recommend: 'Credits added', blocks: 'every task that generates on the GPU', from: 'Studio (one card for all of them)' });
+  }
+  return true;
+}
 
 /** Runs for a task's real GPU art after stand-ins, before J is asked (each is not a try). */
 export const MAX_GPU_RERUNS = 3;
@@ -1595,21 +1624,8 @@ function waitForGpu(t: Task, c: { id: string; verify?: any }) {
   kick();
 }
 
-// The fleet, read at most every 2 minutes while tasks wait for GPU.
-let fleetSeen: { at: number; running: boolean } | null = null;
-async function gpuRunning() {
-  if (fleetSeen && Date.now() - fleetSeen.at < 2 * 60_000) return fleetSeen.running;
-  const { gen } = await import('./gen.ts');
-  const { generatorRunning, serverlessReady, fleetGone } = await import('./gpustart.ts');
-  // RunPod, Modal and the like run GPU jobs with no server to start: one of them ready counts as a GPU server up.
-  try {
-    if (serverlessReady(await (gen as any).request('/gpu/providers'))) { fleetSeen = { at: Date.now(), running: true }; return true; }
-  } catch { /* Gen couldn't say: the fleet as before */ }
-  const f: any = await gen.fleet();
-  // No AWS at all (the account suspended 2026-10-28): Gen's other providers take the GPU work, so the waits run now.
-  fleetSeen = { at: Date.now(), running: f?.error ? fleetGone(f.error) : generatorRunning(f?.servers ?? []) };
-  return fleetSeen.running;
-}
+/** Whether GPU jobs can run now (gpuverdict.ts: the one reading Studio, the park view and the agent's brief share). */
+const gpuRunning = async () => (await gpuRunningRead()).running;
 
 /**
  * Tasks waiting for GPU: with a GPU server running, each gets a new agent change for the real art (on top of beta,
@@ -1645,7 +1661,7 @@ export async function rerunGpuWaits(free: number, taken = new Set<string>(), dep
         ensuredAt.set(t.id, Date.now());
         const ensure = deps.ensure ?? (async (c: any) => (await import('./gpustart.ts')).ensureGpuFor(c));
         void ensure({ id: `gpu-wait-${t.id}`, product: t.product, task: t.id, title: t.title, gpu_budget: String(budget), stillNeeds: () => getTask(t.id)?.status === GPU_WAIT })
-          .then((r) => { if (/^started|already (running|pending)/.test(r)) { fleetSeen = null; parkEvent('gpu-up'); kick(); } }).catch(() => {});
+          .then((r) => { if (/^started|already (running|pending)/.test(r)) { forgetGpuSeen(); parkEvent('gpu-up'); kick(); } }).catch(() => {});
       }
       continue;
     }
