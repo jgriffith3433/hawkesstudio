@@ -82,6 +82,11 @@ export function onSizedMemoryVolume(limit = memInfo().limit): boolean {
 }
 /** On a sized in-memory volume: room that must stay on it after a write. */
 export const MEMORY_VOLUME_FLOOR = 256 * MB;
+/** Free space kept for the database and the dashboard that agent prepares and builds can't use (STUDIO_DB_RESERVE_MB; 200 MB). */
+export const dbReserve = () => (Number(process.env.STUDIO_DB_RESERVE_MB) > 0 ? Number(process.env.STUDIO_DB_RESERVE_MB) : 200) * MB;
+/** Share of the volume in use that starts the reclaim ladder (diskreclaim.ts). */
+export const LADDER_START = 0.8;
+export function ladderDue(d: DiskInfo = diskInfo()): boolean { return d.size > 0 && d.used / d.size >= LADDER_START; }
 
 /**
  * What the working files hold with no change work under way (agents.ts notes it at start-up and whenever the queue goes
@@ -93,8 +98,10 @@ export const MEMORY_VOLUME_FLOOR = 256 * MB;
  * doesn't apply.
  */
 let baseline: { used: number; size: number; at: number } | null = null;
-export function noteDiskBaseline(d: DiskInfo = diskInfo(), now = Date.now()) {
-  baseline = { used: d.used, size: d.size, at: now };
+export function noteDiskBaseline(d: DiskInfo = diskInfo(), now = Date.now(), reclaimable = 0) {
+  // At rest is only what Studio can't reclaim (diskreclaim.ts reclaimableBytes): a volume full of ended worktrees and
+  // unused clones has a small baseline, not a budget the ladder could never get under (2026-11-13).
+  baseline = { used: Math.max(0, d.used - Math.max(0, reclaimable)), size: d.size, at: now };
   return baseline;
 }
 /**
@@ -138,7 +145,8 @@ export function diskBudget(limit = memInfo().limit): number {
   const d = diskInfo();
   const room = bounded ? d.size : limit;
   const share = bounded ? REAL_DISK_SHARE : diskShare();
-  const base = Math.min(diskBaseline(d), room);
+  // Never more than 60% of the room: a baseline can't leave the work less than that, whatever it measured.
+  const base = Math.min(diskBaseline(d), Math.floor(room * 0.6));
   return Math.floor(base + (room - base) * share);
 }
 
@@ -164,8 +172,8 @@ export const diskFloor = (limit = memInfo().limit) => {
  */
 export function diskFull(need = 0): boolean {
   if (process.env.STUDIO_DISK_SWEEP === 'off') return false;
-  if (onRealDisk()) { const d = diskInfo(); return d.free - need < realDiskFloor(d.size); }
-  if (onSizedMemoryVolume() && diskInfo().free - need < MEMORY_VOLUME_FLOOR) return true;
+  if (onRealDisk()) { const d = diskInfo(); return d.free - need < Math.max(realDiskFloor(d.size), dbReserve()); }
+  if (onSizedMemoryVolume() && diskInfo().free - need < Math.max(MEMORY_VOLUME_FLOOR, dbReserve())) return true;
   return memInfo().available - need < diskFloor();
 }
 
@@ -177,7 +185,8 @@ export function diskFull(need = 0): boolean {
  */
 export function diskExhausted(need = 0): boolean {
   if (process.env.STUDIO_DISK_SWEEP === 'off') return false;
-  if (diskInfo().free < need) return true;
+  // The database's reserve is never part of a write's room: an agent's prepare can't take the last of the volume.
+  if (diskInfo().free < need + dbReserve()) return true;
   if (onRealDisk() || onSizedMemoryVolume()) return false;
   return memInfo().available < need;
 }
@@ -429,18 +438,30 @@ export async function sweepDisk(opts: {
  * keeps the same rule (memgate.ts memRoom: one always runs).
  */
 export async function ensureDiskRoom(need = 0, opts: { keep?: Set<string>; repos?: string[]; say?: (s: string) => void; alone?: boolean } = {}): Promise<string | null> {
-  if (process.env.STUDIO_DISK_SWEEP === 'off' || !diskHigh(need)) return null;
-  opts.say?.(`[disksweep] disk high before a write (${diskSummary()}; need ${Math.round(need / MB)} MB): sweeping`);
-  await sweepDisk({ soft: true, keep: opts.keep, repos: opts.repos, say: opts.say });
-  if (!diskHigh(need)) return diskSummary();
-  if (!diskFull(need)) return diskSummary();
+  if (process.env.STUDIO_DISK_SWEEP === 'off') return null;
+  const high = diskHigh(need);
+  // Past 80% of the volume the ladder runs even before a write is refused (diskreclaim.ts), down to 70%.
+  if (!high && !ladderDue()) return null;
+  opts.say?.(`[disksweep] disk ${high ? 'high' : 'past 80%'} before a write (${diskSummary()}; need ${Math.round(need / MB)} MB): sweeping`);
+  if (high) {
+    await sweepDisk({ soft: true, keep: opts.keep, repos: opts.repos, say: opts.say });
+    if (!diskHigh(need) && !ladderDue()) return diskSummary();
+    if (!diskFull(need) && !diskExhausted(need)) {
+      if (ladderDue()) void import('./diskreclaim.ts').then((r) => r.reclaimNow({ say: opts.say, why: 'past 80%' })).catch(() => {});
+      return diskSummary();
+    }
+  }
+  // A write that would be refused: the whole reclaim ladder, every rung, then the hard sweep.
+  const ladder = await import('./diskreclaim.ts').then((r) => r.reclaimNow({ all: diskFull(need) || diskExhausted(need), say: opts.say, why: high ? 'a write needs room' : 'past 80%' })).catch(() => null);
+  if (!diskHigh(need) && !diskFull(need)) return diskSummary();
+  if (!high) return diskSummary();
   await sweepDisk({ hard: true, keep: opts.keep, repos: opts.repos, say: opts.say });
-  if (!diskHigh(need) || !diskFull(need)) return diskSummary();
+  if (!diskHigh(need) || (!diskFull(need) && !diskExhausted(need))) return diskSummary();
   if (opts.alone && !diskExhausted(need)) {
     opts.say?.(`[disksweep] past the soft limit, but no other work is running: the write goes ahead (${diskSummary()}; need ${Math.round(need / MB)} MB)`);
     return diskSummary();
   }
-  throw new Error(`${onRealDisk() ? 'working' : 'in-memory'} disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). Cleared profiles, logs, tmp, ended worktrees and the npm cache; free space and try again.`);
+  throw new Error(`${onRealDisk() ? 'working' : 'in-memory'} disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). The full reclaim ladder ran (ended worktrees, temp, profiles, npm cache, unused clones${ladder ? `; freed ${Math.round(ladder.freed / MB)} MB` : ''}) and left no room.`);
 }
 
 /** Resolve live keep-set and repo list from Studio's DB (lazy import so tests stay free of agents.ts). */
@@ -470,6 +491,7 @@ async function liveContext(): Promise<{ keep: Set<string>; repos: string[] }> {
 /** Soft (or hard when already over budget) sweep with Studio's live keep-set. */
 export async function sweepNow(opts: { hard?: boolean; say?: (s: string) => void } = {}): Promise<SweepReport> {
   const ctx = await liveContext();
+  if (ladderDue()) void import('./diskreclaim.ts').then((r) => r.reclaimNow({ say: opts.say, why: 'past 80%' })).catch(() => {});
   return sweepDisk({ soft: !opts.hard, hard: opts.hard, keep: ctx.keep, repos: ctx.repos, say: opts.say ?? ((s) => console.log(s)) });
 }
 

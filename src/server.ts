@@ -262,7 +262,7 @@ const server = http.createServer(async (req, res) => {
     // Background operations (ops.ts): the go-live queue, rollbacks and merges, the commands running now, the event loop.
     if (route === '/api/ops' && method === 'GET') {
       const ops = await import('./ops.ts');
-      return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth() });
+      return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), diskReclaims: (await import('./diskreclaim.ts')).reclaimLog(Number(q('reclaims')) || 50), disk: (await import('./disksweep.ts')).diskSummary() });
     }
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
     if (route === '/api/overview') return send(res, 200, await overview());
