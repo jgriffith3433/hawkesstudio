@@ -117,6 +117,7 @@ import { inFlightPrompt, recordTouched, touchedFiles, doneByOf } from './infligh
 import { noteRail, betaPart } from './change-rail.ts';
 import { noteTiming, timingOf } from './change-timing.ts';
 import { beginWait, endWait, endWaitsWhere, within, onDeadline } from './waits.ts';
+import { lastGpuVerdict } from './gpuverdict.ts';
 import { noCommitOutcome, passState, genUnreachableSaid, GEN_UNREACHABLE } from './outcomes.ts';
 
 db.exec(`
@@ -1263,7 +1264,28 @@ function videoSkill() {
 }
 
 /** What GPU generation this change may do (content work): its approved budget (J's, or Studio's under the auto-approval threshold), or none. */
-function gpuBrief(c: Change) {
+export function gpuBrief(c: Change) {
+  return `${gpuBriefBody(c)}${gpuStateBrief()}`;
+}
+
+/** Studio's one verdict on GPU work (gpuverdict.ts), so an agent never re-decides it from the fleet tool. */
+function gpuStateBrief() {
+  const v = lastGpuVerdict();
+  return `### Can GPU work run now? Studio has already decided
+
+${v ? `${v.line} (read ${new Date(v.at).toISOString().slice(11, 16)} UTC)` : "Studio has no fresh reading; assume GPU jobs can run, and let a job's own error tell you otherwise."}
+
+- \`hawkesgen_fleet\` reports only Hawkes Gen's AWS servers. "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not in
+  hawkesgen/.env" with servers [] means AWS isn't set up, nothing more: Gen sends GPU jobs to RunPod and Modal. It is NOT
+  "the GPU fleet is down". Don't pause, wait or stop for it, and don't re-decide GPU availability from it; queue the job.
+- A "paused" or "wait until the fleet works" note left by an earlier pass (a .hawkes/summary.md, a memory) is not a
+  decision by J. Only an owner answer recorded in this brief is. If a job really is refused (402, no provider), say that
+  error in the summary and stop; Studio parks the task on it.
+
+`;
+}
+
+function gpuBriefBody(c: Change) {
   const b = c.gpu_budget === null ? null : Number(c.gpu_budget);
   if (b !== null && b > 0) {
     return `## GPU budget: $${b.toFixed(2)} (approved)

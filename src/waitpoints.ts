@@ -130,7 +130,7 @@ export const WAIT_POINTS: WaitPoint[] = [
   },
   {
     id: 'park-condition', what: 'A roadmap task parked on an outside condition (Gen credits, a GPU server, an AI provider), or waiting for GPU after a run that found none.',
-    event: 'A Gen job finishing ok, credits added, a GPU server coming up, a GPU budget approved, a provider back, or idle agent slots (parkevents.ts, read in the PM\'s pass); the condition is a row in task_parks.', deadline: '6 h from the park', env: 'STUDIO_PARK_WAIT_MS', maxMs: 6 * H,
+    event: 'A Gen job finishing ok, credits added, a GPU server coming up, a GPU budget approved, a provider back, or idle agent slots (parkevents.ts, read in the PM\'s pass); the condition is a row in task_parks. A GPU task whose condition isn\'t met (gpuverdict.ts: no GPU able to run, or the Studio org\'s Gen credits below its estimate) is parked here before any agent starts (pm.ts holdGpuTask), with ONE Inbox card for credits.', deadline: '6 h from the park', env: 'STUDIO_PARK_WAIT_MS', maxMs: 6 * H,
     fallback: 'The task is planned again (or its GPU run goes again) whatever Studio sees; if the condition still holds, the attempt that hits it parks the task again with a new deadline.', fallbackKind: 'carry-on',
     file: 'src/parks.ts', symbols: ['releaseParks', 'recordPark', 'adoptParks'], test: 'test/parks.test.ts', via: 'waits',
   },

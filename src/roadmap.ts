@@ -176,7 +176,7 @@ export function barOf(request: string, fields: Partial<Record<(typeof BAR_FIELDS
 }
 
 export type TaskBuild = { ok: boolean; /** The build server lost it (timeout, Studio's own cancel): rebuilt, never sent back. */ builderLost?: boolean; /** The run built nothing that includes the task's merge: not a failure of the task. */ unproven?: boolean; run: string; at: number; detail: string; unity?: boolean };
-export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
+export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; credits?: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
 export type Item = {
   id: string; product: string; title: string; goal: string | null; why: string | null; criteria: string[]; size: string | null; status: string;
   priority: string; ord: number; origin: string | null; note: string | null; by: string | null; milestone?: string | null; consumed?: string | null; created: number; updated: number | null; tasks?: Task[];
@@ -665,7 +665,7 @@ export async function estimateTask(id: string) {
   let estimate: NonNullable<TaskGpu['estimate']>;
   try {
     const e = await gen.estimate(t.gpu.items, { project: t.product });
-    estimate = { gpuHours: e.gpu.hours, cost: e.cost.total, withIdleTail: e.cost.withIdleTail, servers: e.gpu.servers, wallMinutes: e.wallMinutes, at: Date.now() };
+    estimate = { gpuHours: e.gpu.hours, cost: e.cost.total, withIdleTail: e.cost.withIdleTail, servers: e.gpu.servers, wallMinutes: e.wallMinutes, at: Date.now(), ...(Number(e.credits?.total ?? e.credits) > 0 ? { credits: Number(e.credits?.total ?? e.credits) } : {}) };
   } catch (err: any) {
     estimate = { gpuHours: 0, cost: 0, withIdleTail: 0, servers: 0, wallMinutes: 0, at: Date.now(), error: String(err.message ?? err).slice(0, 300) };
   }
