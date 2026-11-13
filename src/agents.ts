@@ -2190,7 +2190,7 @@ function dropFlight(id: string) { if (flying.delete(id)) { inFlight--; memFreed(
  */
 function queueIdle() {
   if (running.size || checkoutsActive) return;
-  try { noteDiskBaseline(); void import('./disksweep.ts').then((d) => d.logBaselineMakeup()).catch(() => {}); } catch { /* no disk to read here */ }
+  try { noteDiskBaseline(); void import('./diskreclaim.ts').then((r) => r.noteReclaimableBaseline()).catch(() => {}); void import('./disksweep.ts').then((d) => d.logBaselineMakeup()).catch(() => {}); } catch { /* no disk to read here */ }
 }
 
 /**
@@ -2472,13 +2472,26 @@ void import('./disksweep.ts').then((d) => d.onDiskFreed((why) => diskWait.freed(
 const waitsForDisk = (id: string) => diskWait.holds(id);
 /** A change that couldn't get disk room for its worktree: queued again (not failed), tried again once room may have freed. */
 function waitForDisk(id: string, why: string) {
+  const short = why.replace(/\. The full reclaim ladder .*$/, '').replace(/^(in-memory|working) disk is full/, 'the disk is full');
+  // The wait ends (J, 2026-11-13: "Make it so agents never get stuck"): the first refusal after the full reclaim ladder
+  // waits once for room to free by an event; a second one in a row fails the change with the cause (the PM plans it
+  // again once, its own backoff for a full disk: pm.ts infraHoldOf), instead of a queue of changes waiting forever.
+  const n = (diskStrikes.get(id) ?? 0) + 1;
+  diskStrikes.set(id, n);
+  if (n >= DISK_STRIKES && /reclaim ladder/.test(why)) {
+    diskStrikes.delete(id);
+    void endPass(id, { detail: `failed: no disk room after the full reclaim ladder, twice (${short.slice(0, 160)}); the PM plans it again once room is back`, phase: { step: 'prepare', failed: true }, log: `disk: still no room after the full reclaim ladder (${short.slice(0, 200)}), a second time: ended with that cause, not left waiting` });
+    return;
+  }
   diskWait.hold(id);
-  const short = why.replace(/\. Cleared .*$/, '').replace(/^(in-memory|working) disk is full/, 'the disk is full');
   const by = diskWait.deadline();
   const until = by ? `, at the latest at ${new Date(by).toISOString().slice(11, 16)} UTC` : '';
   update(id, { status: 'queued', phase: null, detail: `queued: waits for disk room (${short.slice(0, 200)})` });
-  addLog(id, `disk: no room for its worktree (${short.slice(0, 200)}): back in the queue, it looks again once work beside it ends, a worktree is removed or a sweep frees room${until}`);
+  addLog(id, `disk: no room for its worktree after the reclaim ladder (${short.slice(0, 200)}): back in the queue, it looks again once the ladder frees room, work beside it ends or a worktree is removed${until}`);
 }
+/** Refusals after the full reclaim ladder per change: the second one ends the wait (waitForDisk). */
+const diskStrikes = new Map<string, number>();
+const DISK_STRIKES = 2;
 
 /** A revision's note, kept until the pump starts its pass (revise). */
 const reviseNotes = new Map<string, string>();
@@ -2876,6 +2889,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         }));
         if (full) return void waitForDisk(id, full);
+        diskStrikes.delete(id);
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
         await checkoutSlot(async () => {
           await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
