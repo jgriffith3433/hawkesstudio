@@ -1172,7 +1172,17 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // is memory too) went over a customer's Studio's 2 GiB, which restarted it mid-build until the run was stopped.
   // Gen answering the download with a 502 (half of Place Department's builds on 2026-11-08 and 09) threw a finished Unity
   // build away: the download is tried again, each time into a fresh folder (downloadBuild).
-  const tmp = await downloadBuild(() => gen.request(`/files/${asset}`, { raw: true }), say);
+  // Gen's own job says it finished ok and names this asset, so a 404 on it is Gen's storage not showing it yet (or this route
+  // not serving it), never "no such build": it is asked for again through the job's own artifact url and tried again after a
+  // wait (place-department-unity web 136 and yoobaland web 126, 2026-11-13: finished builds thrown away on one 404).
+  let tmp: string;
+  try {
+    tmp = await downloadBuild(() => fetchBuildFile((path, o) => gen.request(path, o), asset, job.result?.artifact?.url), say, { missing: true });
+  } catch (e: any) {
+    // Said as the download's failure (buildfail.ts DOWNLOAD_FAILED): infrastructure, never the project's code, never sent back to an agent.
+    const m = String(e?.message ?? e);
+    throw Object.assign(new Error(DOWNLOAD_FAILED_PREFIX + m.slice(0, 300)), { status: e?.status });
+  }
   const learned = learnMachine(p.id, b, job.result);
   if (learned) say(learned);
   const timing = timingWords(job);
@@ -1241,11 +1251,29 @@ export async function folderOutput(dir: string, tmp: string, keepFolder = false)
  * the build is built once more on the same commit (buildaccess.ts, TRUNCATED_TRIES), through its line like any start.
  */
 export const TRUNCATED = /unexpected end of (file|data|archive|input)|Unexpected EOF|truncated (gzip|tar|archive|input|file)|incomplete (gzip|tar|archive)/i;
-export function downloadTransient(e: unknown): boolean {
+/** How a download that never worked is worded (buildfail.ts classify and outcomes.ts isBuilderLoss read it): "…failed: Hawkes Gen /files/a_x: HTTP 404". */
+export const DOWNLOAD_FAILED_PREFIX = 'downloading the finished build from Hawkes Gen failed: ';
+
+/**
+ * The build's file from Gen: /files/<asset>, and when that answers 404 the job's own artifact url (result.artifact.url,
+ * "/v1/assets/<asset>/file"), which Gen serves for the same asset. Exported for the tests.
+ */
+export async function fetchBuildFile(request: (path: string, o: { raw: true }) => Promise<Response>, asset: string, artifactUrl?: unknown): Promise<Response> {
+  try {
+    return await request(`/files/${asset}`, { raw: true });
+  } catch (e: any) {
+    const own = String(artifactUrl ?? '').replace(/^\/v1(?=\/)/, '');
+    if (Number(e?.status) !== 404 || !/^\/assets\/[\w.:-]+\/file$/.test(own) || own === `/files/${asset}`) throw e;
+    return await request(own, { raw: true });
+  }
+}
+
+export function downloadTransient(e: unknown, o: { missing?: boolean } = {}): boolean {
   const st = Number((e as any)?.status);
+  if (o.missing && st === 404) return true;
   if (st === 429 || (st >= 500 && st < 600)) return true;
   const m = String((e as any)?.message ?? e);
-  return TRUNCATED.test(m) || /HTTP (5\d\d|429)\b|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|terminated|fetch failed|other side closed|premature close|aborted/i.test(m);
+  return TRUNCATED.test(m) || (o.missing === true && /HTTP 404\b/.test(m)) || /HTTP (5\d\d|429)\b|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|terminated|fetch failed|other side closed|premature close|aborted/i.test(m);
 }
 
 /** The waits between download tries (ms). Exported for the tests to shorten. */
@@ -1255,7 +1283,7 @@ export const DOWNLOAD_WAITS = [5_000, 20_000, 60_000];
  * Downloads a finished build from Gen and unpacks it into a fresh folder, trying again on a transient failure (DOWNLOAD_WAITS);
  * a partly unpacked folder is thrown away before each new try. Returns the folder. Exported for the tests.
  */
-export async function downloadBuild(fetchIt: () => Promise<Response>, say: (s: string) => void = () => {}, o: { waits?: number[]; unpack?: (res: Response, dir: string) => Promise<void> } = {}): Promise<string> {
+export async function downloadBuild(fetchIt: () => Promise<Response>, say: (s: string) => void = () => {}, o: { waits?: number[]; unpack?: (res: Response, dir: string) => Promise<void>; missing?: boolean } = {}): Promise<string> {
   const waits = o.waits ?? DOWNLOAD_WAITS;
   for (let n = 0; ; n++) {
     const tmp = tmpDir();
@@ -1264,7 +1292,7 @@ export async function downloadBuild(fetchIt: () => Promise<Response>, say: (s: s
       return tmp;
     } catch (e: any) {
       fs.rmSync(tmp, { recursive: true, force: true });
-      if (n >= waits.length || !downloadTransient(e)) throw e;
+      if (n >= waits.length || !downloadTransient(e, { missing: o.missing })) throw e;
       say(`downloading the build failed (${String(e?.message ?? e).slice(0, 120)}): trying again in ${Math.round(waits[n] / 1000)} s (try ${n + 2} of ${waits.length + 1})`);
       await new Promise((r) => setTimeout(r, waits[n]));
     }

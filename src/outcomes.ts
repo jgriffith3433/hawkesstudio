@@ -43,7 +43,7 @@ export type BuildFacts = {
 
 /** Whether a failed build step's detail says the build SERVER failed, not the project (timeout, Studio's stuck cancel, a lost Gen job). */
 export const isBuilderLoss = (detail: string | null | undefined): boolean =>
-  /timed out after \d+ ?min|stuck in Hawkes Gen|cancelled by Studio|Studio stopped waiting|stopped: .*Gen job|lost this build|job (was )?lost/i.test(String(detail ?? ''));
+  /timed out after \d+ ?min|stuck in Hawkes Gen|cancelled by Studio|Studio stopped waiting|stopped: .*Gen job|lost this build|job (was )?lost|downloading the finished build from Hawkes Gen failed/i.test(String(detail ?? ''));
 
 export function buildOutcome(f: BuildFacts): BuildOutcome {
   if (f.cancelled) return 'cancelled';

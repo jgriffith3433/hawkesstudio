@@ -13,7 +13,7 @@
 // No polling: the dashboard hears about a row changing through /api/stream (a database write).
 
 import { db } from './db.ts';
-import { tokenLost, infraLost, buildsOf, UNITY_FAILED, TRUNCATED } from './builds.ts';
+import { tokenLost, infraLost, buildsOf, UNITY_FAILED, TRUNCATED, DOWNLOAD_FAILED_PREFIX } from './builds.ts';
 import { getProduct } from './config.ts';
 import { QUOTA, accessCause, accessFix, retryPending } from './buildaccess.ts';
 import { fixerNow, fixedWording, fixSentence, type FixerNow } from './buildfix.ts';
@@ -86,6 +86,9 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
     const line = new RegExp(`[^\\n]*(${QUOTA.source})[^\\n]*`, 'i').exec(both)?.[0].trim().slice(0, 200);
     return { class: 'other', kind: 'infrastructure', plain: `Google Cloud ran out of room for this deploy for a moment${line ? ` (${line})` : ''}. That's capacity, not the code.${retried} Studio builds again by itself.` };
   }
+  // The finished build's download never worked (builds.ts viaGen, after its own tries): Gen said it built fine, so no code is
+  // to blame. Checked before everything else so a word in the error can't make it a compile failure.
+  if (e.startsWith(DOWNLOAD_FAILED_PREFIX)) return { class: 'publish', kind: 'infrastructure', plain: `Hawkes Gen finished the build, but Studio couldn't download its output (${e.slice(DOWNLOAD_FAILED_PREFIX.length, DOWNLOAD_FAILED_PREFIX.length + 160)}) even after trying again.${retried} That's Hawkes Gen's storage or the connection, not your code: nothing is sent to an agent. Build again.` };
   if ((/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|Scripts have compiler errors/i.test(both) || UNITY_FAILED.test(both)) && !tokenLost(e)) {
     const first = /error CS\d+[^\n]{0,160}/i.exec(both)?.[0];
     return { class: 'compile', kind: 'code', plain: `The project's code doesn't build${first ? ` (${first.trim()})` : ''}. Studio can't fix this by building again: someone has to fix the code first.` };
