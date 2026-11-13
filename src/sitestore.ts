@@ -20,8 +20,11 @@ import os from 'node:os';
 import { laneOf, signPublish, siteOrg, type Lane } from './sitekeys.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 
-/** One file of a site: where it goes, its git blob id and size, and how to get its bytes. */
-export type SiteFile = { path: string; oid: string; size: number; read: () => Promise<Buffer> };
+/**
+ * One file of a site: where it goes, its git blob id and size, and how to get its bytes. `at`: a key in the site store that
+ * already holds these bytes (a big build's files staged there while it unpacked, builds.ts unpackBuild), copied instead of sent.
+ */
+export type SiteFile = { path: string; oid: string; size: number; read: () => Promise<Buffer>; at?: string };
 /** A source's files, optionally able to fetch many of them at once before they're read (publishSite calls it). */
 export type SiteFiles = SiteFile[] & { prefetch?: (paths: string[], progress?: (s: string) => void) => Promise<void>; cleanup?: () => void };
 /** A filtered or merged copy of a source's files keeps its prefetch (array methods return plain arrays). */
@@ -97,14 +100,14 @@ async function publishFiles(store: SiteStore, base: string, files: SiteFile[], o
   const pages = [...byPath.values()].filter((f) => isHtml(f.path));
   // The bytes this publish reads (changed assets nothing published holds, and every page), fetched in one go when the
   // source can (githubFiles: one tarball instead of an API call per file, 2026-10-29).
-  const toRead = [...assets.filter((f) => prev?.files[f.path]?.oid !== f.oid && !have.has(f.oid)), ...pages].map((f) => f.path);
+  const toRead = [...assets.filter((f) => prev?.files[f.path]?.oid !== f.oid && !have.has(f.oid) && !f.at), ...pages].map((f) => f.path);
   await (files as SiteFiles).prefetch?.(toRead, o.progress);
   let done = 0;
   const tick = () => { if (++done % 100 === 0) o.progress?.(`publishing: ${done} of ${byPath.size} files`); };
   await pool(assets, o.concurrency ?? 6, async (f) => {
     next.files[f.path] = { oid: f.oid, size: f.size };
     if (prev?.files[f.path]?.oid === f.oid) return void tick();
-    const from = have.get(f.oid);
+    const from = have.get(f.oid) ?? f.at;
     if (from && from !== `${base}/${f.path}`) {
       await store.copy(from, `${base}/${f.path}`);
       r.copied++;

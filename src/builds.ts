@@ -1175,10 +1175,18 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // Gen's own job says it finished ok and names this asset, so a 404 on it is Gen's storage not showing it yet (or this route
   // not serving it), never "no such build": it is asked for again through the job's own artifact url and tried again after a
   // wait (place-department-unity web 136 and yoobaland web 126, 2026-11-13: finished builds thrown away on one 404).
+  // Unpacked file by file where there is room, the rest staged in the site store (unpackBuild): a 1 GB Addressables build
+  // no longer dies on a full working volume (sick-of-it-unity web 146). Room is made first when Gen's size says it won't fit.
+  const archive = Number(job.result?.artifact?.rawBytes ?? job.result?.artifact?.bytes) || null;
+  await makeRoomFor(archive, say);
+  const stage = storeStage(p, resume.row ?? newId('st'));
   let tmp: string;
+  let unpacked: { files: Unpacked[] } = { files: [] };
   try {
-    tmp = await downloadBuild(() => fetchBuildFile((path, o) => gen.request(path, o), asset, job.result?.artifact?.url), say, { missing: true });
+    tmp = await downloadBuild(() => fetchBuildFile((path, o) => gen.request(path, o), asset, job.result?.artifact?.url), say, { missing: true, unpack: async (res, dir) => { unpacked = await unpackBuild(res, dir, { stage, archive: Number(job.result?.artifact?.bytes) || null, say }); } });
   } catch (e: any) {
+    // No room even in the site store: its own words (bytes needed and free), infrastructure, never sent to an agent (buildfail.ts).
+    if (e instanceof NoRoom) throw e;
     // Said as the download's failure (buildfail.ts DOWNLOAD_FAILED): infrastructure, never the project's code, never sent back to an agent.
     const m = String(e?.message ?? e);
     throw Object.assign(new Error(DOWNLOAD_FAILED_PREFIX + m.slice(0, 300)), { status: e?.status });
@@ -1189,7 +1197,25 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   const ran = job.result?.machine?.name ? `on ${job.result.machine.name} (${job.result.machine.cpu} vCPU, ${job.result.machine.memoryGiB} GiB)` : '';
   const detail = [timing, job.result?.unity ? `Unity ${job.result.unity}` : '', ran, learned ?? ''].filter(Boolean).join('; ');
   // A site with its own game page loads the build's own folder (PlaceDepartment/Build/...): never unwrap it.
-  return { ...(await folderOutput(tmp, tmp, b.publish?.page === 'site')), detail: detail || undefined };
+  return { ...unpackedOutput(unpacked, tmp, b.publish?.page === 'site', stage), detail: detail || undefined };
+}
+
+/**
+ * Before a big download: when Gen's size of the build is more than the scratch volume has room for, a hard disk sweep
+ * (ended worktrees, stale temp downloads, the npm cache in memory) frees what it can first. Whatever still doesn't fit is
+ * staged in the site store as it unpacks (unpackBuild), so this never refuses. Exported for the tests.
+ */
+export async function makeRoomFor(archive: number | null, say: (s: string) => void = () => {}, o: { room?: (dir: string) => Promise<{ free: number; room: number }>; sweep?: () => Promise<unknown> } = {}): Promise<boolean> {
+  if (!archive) return false;
+  const roomOf = o.room ?? unpackRoom;
+  const dir = os.tmpdir();
+  const before = await roomOf(dir);
+  if (before.room >= archive) return false;
+  say(`the build is about ${mb(archive)} and ${mb(Math.max(0, before.room))} is free for it here: clearing ended worktrees and temp files first`);
+  await (o.sweep ?? (async () => (await import('./disksweep.ts')).sweepNow({ hard: true, say: (s) => console.log(s) })))().catch((e: any) => say(`clearing space: ${String(e?.message ?? e).slice(0, 160)}`));
+  const after = await roomOf(dir);
+  say(`${mb(Math.max(0, after.room))} free for it now${after.room < archive ? ': what doesn\'t fit goes straight to the site store' : ''}`);
+  return true;
 }
 
 /**
@@ -1327,6 +1353,271 @@ export async function untar(data: Buffer, dir: string) {
   const code = await exited;
   if (code !== 0) throw new Error(`unpacking the build: ${err.trim().slice(0, 300)}`);
 }
+
+// ------------------------------------------------------------------ a big build, unpacked where there is room
+
+/**
+ * How a build that couldn't be unpacked for lack of room is worded (buildfail.ts classify, outcomes.ts isBuilderLoss):
+ * infrastructure, never the project's code, never sent to an agent. Sick-of-it-unity web 146 (run r_136e182c12ed,
+ * 2026-11-13): Gen's archive was 1.05 GB (2,675 files, Addressables ServerData), and tar stopped with "Wrote only 5120 of
+ * 10240 bytes" on Studio's working volume (2.5 GiB in memory when Cloud Run refuses the disk, shared with clones).
+ */
+export const NO_ROOM_PREFIX = 'not enough room to unpack the finished build: ';
+const MB_ = 1024 * 1024;
+const mb = (n: number) => `${Math.round(n / MB_).toLocaleString('en-US')} MB`;
+/** Room left free on the scratch volume after each unpacked file (Studio's database, logs and a running pass need it). */
+export const UNPACK_FLOOR = () => Math.max(16, Number(process.env.STUDIO_UNPACK_FLOOR_MB) || 256) * MB_;
+
+/** The unpack ran out of room: what it needed and what was free, in bytes (data) and in words (message). */
+export class NoRoom extends Error {
+  need: number; free: number; dir: string;
+  constructor(o: { need: number; free: number; dir: string; unpacked: number; archive?: number | null; why?: string }) {
+    const archive = o.archive ? `, the archive is ${mb(o.archive)}` : '';
+    super(`${NO_ROOM_PREFIX}it needs about ${mb(o.need)} (${o.need} bytes) and ${mb(o.free)} (${o.free} bytes) is free in ${o.dir} (${mb(o.unpacked)} unpacked before it ran out${archive})${o.why ? `; ${o.why}` : ''}. That's Studio's working space, not the game's code.`);
+    this.need = o.need; this.free = o.free; this.dir = o.dir;
+  }
+}
+
+/**
+ * Free bytes where `dir` lives, and how much of it an unpack may still use: the free space less UNPACK_FLOOR and, when
+ * it isn't a real disk (Cloud Run's in-memory filesystem or sized in-memory volume), no more than the memory still free
+ * above disksweep's floor. Exported for the tests.
+ */
+export async function unpackRoom(dir: string): Promise<{ free: number; room: number }> {
+  let free = Number.MAX_SAFE_INTEGER;
+  try { const s = fs.statfsSync(dir); free = s.bavail * s.bsize; } catch { /* unknown: the write itself will say */ }
+  let room = free - UNPACK_FLOOR();
+  const { onRealDisk, diskFloor } = await import('./disksweep.ts');
+  if (!onRealDisk(dir)) {
+    const { memInfo } = await import('./memgate.ts');
+    const m = memInfo();
+    if (m.available > 0) room = Math.min(room, m.available - diskFloor(m.limit));
+  }
+  return { free, room };
+}
+
+/** Where a build's files go when the scratch volume is full: the site store, under a key per file, removed after the publish. */
+export type Stage = { put(path: string, data: Buffer): Promise<string>; drop(): Promise<void> };
+
+/** A file of an unpacked build: on disk (`file`) or staged in the site store (`at`). */
+export type Unpacked = { path: string; oid: string; size: number; file?: string; at?: string };
+
+/** Pulls bytes from an async source in exact amounts (a tar archive is 512-byte blocks). */
+class Pull {
+  private bufs: Buffer[] = [];
+  len = 0;
+  private ended = false;
+  private it: AsyncIterator<Buffer>;
+  constructor(it: AsyncIterator<Buffer>) { this.it = it; }
+  async fill(n: number): Promise<boolean> {
+    while (this.len < n && !this.ended) {
+      const r = await this.it.next();
+      if (r.done) { this.ended = true; break; }
+      const b = Buffer.isBuffer(r.value) ? r.value : Buffer.from(r.value);
+      if (b.length) { this.bufs.push(b); this.len += b.length; }
+    }
+    return this.len >= n;
+  }
+  /** Up to n bytes that are already here, without copying (n > 0, len > 0). */
+  some(n: number): Buffer {
+    const b = this.bufs[0];
+    const out = b.length <= n ? b : b.subarray(0, n);
+    if (b.length <= n) this.bufs.shift(); else this.bufs[0] = b.subarray(n);
+    this.len -= out.length;
+    return out;
+  }
+  take(n: number): Buffer {
+    const parts: Buffer[] = [];
+    let k = n;
+    while (k > 0) { const p = this.some(k); parts.push(p); k -= p.length; }
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts, n);
+  }
+}
+
+const cstr = (b: Buffer, s: number, e: number) => { const x = b.subarray(s, e); const z = x.indexOf(0); return (z < 0 ? x : x.subarray(0, z)).toString('utf8'); };
+const octal = (b: Buffer, s: number, e: number) => {
+  if (b[s] & 0x80) { let n = 0; for (let i = s + 1; i < e; i++) n = n * 256 + b[i]; return n; } // GNU base-256 (files over 8 GB)
+  const t = cstr(b, s, e).trim();
+  return t ? parseInt(t, 8) : 0;
+};
+const paxOf = (data: Buffer) => {
+  const out: Record<string, string> = {};
+  let i = 0;
+  while (i < data.length) {
+    const sp = data.indexOf(0x20, i);
+    if (sp < 0) break;
+    const len = parseInt(data.subarray(i, sp).toString('utf8'), 10);
+    if (!(len > 0)) break;
+    const rec = data.subarray(sp + 1, i + len - 1).toString('utf8');
+    const eq = rec.indexOf('=');
+    if (eq > 0) out[rec.slice(0, eq)] = rec.slice(eq + 1);
+    i += len;
+  }
+  return out;
+};
+
+/**
+ * Unpacks a .tar.gz response as it downloads (never the whole archive in memory, never a sync tar; memory lesson
+ * m_6328f58fb3ae), one file at a time, each into `dir` while the volume has room for it (unpackRoom) and, past that, into
+ * the site store through `stage`, so a build bigger than Studio's working space is still published (publishSite copies
+ * staged files where they go). Without a stage, or when the store refuses too, it throws NoRoom with the bytes needed
+ * and free. Only regular files and folders are taken; a path that would leave `dir` is refused. Exported for the tests.
+ */
+export async function unpackBuild(res: Response, dir: string, o: { stage?: Stage | null; archive?: number | null; room?: (dir: string) => Promise<{ free: number; room: number }>; say?: (s: string) => void } = {}): Promise<{ files: Unpacked[]; bytes: number; staged: number }> {
+  if (!res.body) throw new Error('unpacking the build: the download was empty');
+  const zlib = await import('node:zlib');
+  const { Readable } = await import('node:stream');
+  const roomOf = o.room ?? unpackRoom;
+  const archive = o.archive ?? (Number(res.headers.get('content-length')) || null);
+  const src = Readable.fromWeb(res.body as any);
+  const gz = zlib.createGunzip();
+  let read = 0; // compressed bytes in so far
+  src.on('data', (c: Buffer) => { read += c.length; });
+  src.on('error', (e) => gz.destroy(e));
+  src.pipe(gz);
+  const pull = new Pull(gz[Symbol.asyncIterator]());
+  const files: Unpacked[] = [];
+  let bytes = 0, staged = 0, stagedBytes = 0, n = 0;
+  let left = (await roomOf(dir)).room;
+  let longName: string | null = null;
+  let pax: Record<string, string> = {};
+  const root = path.resolve(dir);
+  const need = (size: number) => {
+    // What it all comes to: what is unpacked so far, this file, and the rest of the archive at the ratio seen so far.
+    const sofar = bytes + size;
+    const rest = archive && read > 0 && archive > read ? Math.round(((archive - read) * bytes) / read) : 0;
+    return sofar + rest;
+  };
+  const fail = async (size: number, why?: string): Promise<never> => {
+    const r = await roomOf(dir).catch(() => ({ free: 0, room: 0 }));
+    throw new NoRoom({ need: need(size), free: Math.max(0, Math.min(r.free, Number.MAX_SAFE_INTEGER)), dir, unpacked: bytes, archive, why });
+  };
+  try {
+    for (;;) {
+      if (!(await pull.fill(512))) { if (pull.len === 0) break; throw new Error('Unexpected EOF in archive'); }
+      const h = pull.take(512);
+      if (h.every((x) => x === 0)) break; // the end-of-archive blocks
+      let sum = 0;
+      for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 0x20 : h[i];
+      if (sum !== octal(h, 148, 156)) throw new Error('not a tar archive (a header checksum is wrong)');
+      const type = String.fromCharCode(h[156] || 0x30);
+      let size = pax.size ? Number(pax.size) : octal(h, 124, 136);
+      const prefix = cstr(h, 257, 263).startsWith('ustar') ? cstr(h, 345, 500) : '';
+      const name = pax.path ?? longName ?? (prefix ? `${prefix}/${cstr(h, 0, 100)}` : cstr(h, 0, 100));
+      const padded = Math.ceil(size / 512) * 512;
+      // Metadata for the next entry: a GNU long name, a pax header (global ones are ignored).
+      if (type === 'L' || type === 'x' || type === 'g' || type === 'K') {
+        if (!(await pull.fill(padded))) throw new Error('Unexpected EOF in archive');
+        const data = padded ? pull.take(padded).subarray(0, size) : Buffer.alloc(0);
+        if (type === 'L') longName = cstr(data, 0, data.length);
+        if (type === 'x') pax = paxOf(data);
+        continue;
+      }
+      longName = null; pax = {};
+      const rel = name.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/+$/, '');
+      const abs = path.resolve(root, rel);
+      const inside = rel !== '' && abs.startsWith(root + path.sep);
+      if (rel && !inside) throw new Error(`the archive names a path outside its folder (${name.slice(0, 120)})`);
+      const regular = type === '0' || type === '7';
+      if (type === '5' && inside) await fs.promises.mkdir(abs, { recursive: true });
+      if (!regular || !inside) {
+        // Folders, links and the like carry no file of the build: their data (if any) is skipped.
+        for (let k = padded; k > 0;) { if (!(await pull.fill(1))) throw new Error('Unexpected EOF in archive'); k -= pull.some(k).length; }
+        continue;
+      }
+      if (!Number.isFinite(size) || size < 0) size = 0;
+      // The file's bytes, in the pieces they came in (no copy), hashed as they arrive.
+      const hash = crypto.createHash('sha1').update(`blob ${size}\0`);
+      const parts: Buffer[] = [];
+      for (let k = size; k > 0;) {
+        if (!(await pull.fill(1))) throw new Error('Unexpected EOF in archive');
+        const p = pull.some(k);
+        hash.update(p); parts.push(p); k -= p.length;
+      }
+      for (let k = padded - size; k > 0;) { if (!(await pull.fill(1))) throw new Error('Unexpected EOF in archive'); k -= pull.some(k).length; }
+      const oid = hash.digest('hex');
+      // Room is measured again before a file that might not fit, and every 64 files (other work writes too).
+      if (left < size || ++n % 64 === 0) left = (await roomOf(dir)).room;
+      let wrote = false;
+      if (left >= size) {
+        try {
+          await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+          const fh = await fs.promises.open(abs, 'w');
+          try { for (const p of parts) await fh.write(p); } finally { await fh.close(); }
+          wrote = true;
+          left -= size;
+          files.push({ path: rel, oid, size, file: abs });
+        } catch (e: any) {
+          await fs.promises.rm(abs, { force: true }).catch(() => {});
+          if (e?.code !== 'ENOSPC' && e?.code !== 'EDQUOT') throw e;
+          left = 0; // another writer took the room: the rest goes to the store
+        }
+      }
+      if (!wrote) {
+        if (!o.stage) await fail(size, 'and there is nowhere else to put it');
+        if (!staged) o.say?.(`Studio's working space is full (${mb(Math.max(0, left))} left for this build, ${mb(bytes)} unpacked): the rest of the build goes straight to the site store as it unpacks`);
+        let at: string;
+        try { at = await o.stage!.put(rel, parts.length === 1 ? parts[0] : Buffer.concat(parts, size)); }
+        catch (e: any) { return await fail(size, `the site store couldn't take the rest either (${String(e?.message ?? e).slice(0, 160)})`); }
+        files.push({ path: rel, oid, size, at });
+        staged++; stagedBytes += size;
+      }
+      bytes += size;
+    }
+  } catch (e: any) {
+    src.destroy(); gz.destroy();
+    await o.stage?.drop().catch(() => {});
+    if (e instanceof NoRoom) throw e;
+    const m = String(e?.message ?? e);
+    throw Object.assign(new Error(`unpacking the build: ${m.slice(0, 300)}`), { code: e?.code });
+  }
+  src.destroy(); gz.destroy();
+  if (staged) o.say?.(`unpacked ${files.length} files (${mb(bytes)}): ${staged} of them (${mb(stagedBytes)}) staged in the site store for lack of room here`);
+  return { files, bytes, staged };
+}
+
+/**
+ * The build's files from an unpack (unpackBuild), as folderOutput gives them: an archive that is one folder (and no
+ * index.html at its root) is unwrapped unless the site keeps its own page (keepFolder). Exported for the tests.
+ */
+export function unpackedOutput(u: { files: Unpacked[] }, tmp: string, keepFolder = false, stage: Stage | null = null, store: () => Promise<{ get(key: string): Promise<Buffer | null> }> = siteStore): Output {
+  const drop = () => { fs.rmSync(tmp, { recursive: true, force: true }); void stage?.drop().catch(() => {}); };
+  if (!u.files.length) { drop(); throw new Error('the build output is empty'); }
+  const tops = new Set(u.files.map((f) => f.path.split('/')[0]));
+  const strip = !keepFolder && tops.size === 1 && u.files.every((f) => f.path.includes('/')) ? `${[...tops][0]}/` : '';
+  const files = u.files.map((f) => ({
+    path: f.path.slice(strip.length), oid: f.oid, size: f.size, ...(f.at ? { at: f.at } : {}),
+    read: f.file ? async () => fs.promises.readFile(f.file!) : async () => {
+      const b = await (await store()).get(f.at!);
+      if (!b) throw new Error(`the staged file ${f.path} is gone from the site store`);
+      return b;
+    },
+  }));
+  return { files, bytes: sizeOf(files), cleanup: drop };
+}
+
+/** A build's stage in the site store (`<site>/.studio/stage/<id>/`), made on its first file. Exported for the tests. */
+export function storeStage(p: Product, id: string, store: () => Promise<{ put(key: string, data: Buffer, type: string): Promise<void>; remove(keys: string[]): Promise<void> }> = siteStore): Stage {
+  const keys: string[] = [];
+  let base: Promise<string> | null = null;
+  return {
+    async put(rel, data) {
+      base ??= siteOf(p).then((s) => `${s.sub}/.studio/stage/${id}`);
+      const key = `${await base}/${rel}`;
+      const { typeOf } = await import('./sitestore.ts');
+      await (await store()).put(key, data, typeOf(rel));
+      keys.push(key);
+      return key;
+    },
+    async drop() {
+      const all = keys.splice(0);
+      if (!all.length) return;
+      const s = await store();
+      for (let i = 0; i < all.length; i += 1000) await s.remove(all.slice(i, i + 1000));
+    },
+  };
+}
+
 function unzip(data: Buffer, dir: string) {
   const zip = path.join(dir, '.artifact.zip');
   fs.writeFileSync(zip, data);

@@ -124,6 +124,16 @@ project, build id and lane (`<project>|<build>|<branch or tag>`, or `c/<change>`
   downloaded again, and if it is still cut short the same commit is built once more by itself (buildaccess.ts
   `TRUNCATED_TRIES`). That retry is a start like any other in the line: it joins a build of the same commit, and it never
   pushes out a newer start that is already waiting.
+- A big build never dies on a full working volume (sick-of-it-unity web 146, run r_136e182c12ed: Gen's archive was
+  1.05 GB of Addressables ServerData, and tar stopped with "Wrote only 5120 of 10240 bytes"). When Gen's size of the
+  build is more than the scratch volume has room for, a hard disk sweep runs first (`makeRoomFor`). The archive is then
+  unpacked file by file as it downloads (`unpackBuild`: a tar reader in Node, no `tar` process, nothing held but the file
+  in hand). Each file goes to disk while the volume has room for it (`unpackRoom`: free space less 256 MB,
+  `STUDIO_UNPACK_FLOOR_MB`, and no more than free memory when the volume is memory). Past that, files go straight into
+  the site store at `<site>/.studio/stage/<build row>/` (`storeStage`). `publishSite` copies those into place (a
+  `SiteFile` with `at`) and the stage is removed after the publish. Only when the store refuses too does the build fail
+  with `NO_ROOM_PREFIX`, naming the bytes needed and free. That counts as infrastructure (buildfail.ts `classify`,
+  outcomes.ts `isBuilderLoss`): never sent to an agent.
 
 Event-driven: a build's own end hands its turn to the one waiting. No timer, no polling, no watcher. The line is in memory;
 after a restart the resumed builds take their turns at once, and the database's "already building" check covers the rest.
