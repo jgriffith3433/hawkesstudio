@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, newId } from './db.ts';
+import { phoneLimitsFor } from './phoneperf.ts';
 import { ROOT, StudioError, type Product } from './config.ts';
 
 export type CheckKind = 'scan' | 'playtest' | 'vision' | 'review';
@@ -259,6 +260,19 @@ export function hasWorld3d(p: { engine?: string; world?: string }, data: { metri
   return (Array.isArray(data.feel) ? data.feel : []).some((f) => CAMERA_KINDS.test(String(f?.kind ?? '')));
 }
 
+/**
+ * The limit a game is judged on: its own `tuning`, else its engine's default. Unity WebGL games get 60 s to gameplay
+ * (phone load and the first-five gameplay milestone) instead of 20 s: the engine alone is about 7 MB (J, 2026-11-13).
+ */
+export function limitFor(p: { engine?: string; tuning?: QualityTuning }, c: { metric?: string; max?: number; min?: number }): { max?: number; min?: number } {
+  const own = c.metric ? p.tuning?.[c.metric] : undefined;
+  let max = own?.max ?? c.max;
+  if (own?.max === undefined && p.engine === 'unity' && (c.metric === 'phone.secondsToGameplay' || c.metric === 'ftue.secondsToGameplay')) max = phoneLimitsFor(p).secondsToGameplay;
+  return { max, min: own?.min ?? c.min };
+}
+/** A check's text with its limit as this game has it ("at most 20" → "at most 60"). */
+export const whatFor = (c: { what: string; max?: number }, max?: number) => (max !== undefined && c.max !== undefined && max !== c.max ? c.what.replace(new RegExp(`at most ${c.max}\\b`), `at most ${max}`) : c.what);
+
 export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tuning?: QualityTuning; world?: Product['world'] }, data: { problems?: any[]; metrics?: Record<string, unknown> | null; findings?: any[]; fun?: { verdict?: string; why?: string } | null; feel?: any[] | null; polish?: any[] | null; motion?: { worstHitchMs?: number | null } | null; software?: boolean }) {
   if (!isGame(p)) return { fails: [] as QualityFail[], unmeasured: [] as string[], notes: [] as string[] };
   const world3d = hasWorld3d(p, data);
@@ -318,13 +332,11 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
       if (!c.optional && !fails.some((f) => f.check === c.id)) unmeasured.push(`${c.id} (${c.metric})`);
       continue;
     }
-    const own = p.tuning?.[c.metric];
-    const max = own?.max ?? c.max;
-    const min = own?.min ?? c.min;
+    const { max, min } = limitFor(p, c);
     const over = max !== undefined && v > max ? `${c.metric} = ${v}, over ${max}` : min !== undefined && v < min ? `${c.metric} = ${v}, under ${min}` : null;
     if (!over) continue;
     if (c.advisory) notes.push(`${over} (${c.id}, a note: ${c.what.split('. Advisory')[0]})`);
-    else add(c, `${over}: ${c.what}`);
+    else add(c, `${over}: ${whatFor(c, max)}`);
   }
   if (data.fun?.verdict === 'demo') {
     const c = checks.find((x) => x.id === 'fun-review');
@@ -404,12 +416,15 @@ export function qualityFindings(p: Pick<Product, 'id' | 'engine' | 'kind'> & { t
     if (!c?.metric || !f.evidence.startsWith(`${c.metric} = `)) return [];
     // phone-load misses are filed by phonePerfFindings (names the five largest assets / the fps dip time).
     if (c.rule === 'phone-load') return [];
+    const lim = limitFor(p, c);
+    const what = whatFor(c, lim.max);
+    const fix = (LIMIT_FIX[c.id] ?? `Bring ${c.metric} inside its limit, then play the scenario again.`).replace(/at most 20 s/, `at most ${lim.max ?? 20} s`);
     return [{
       title: `Quality limit broken: ${c.id} (${f.title})`,
       severity: 'bug', area: c.id.startsWith('first-five') ? 'onboarding' : c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : (c.rule === 'sound-design' || c.id.startsWith('audio') || ['loudness', 'true-peak', 'silent-actions', 'identical-repeats', 'voice-duck', 'silence-in-play'].includes(c.id) ? 'audio' : c.rule === 'menus-and-ui' ? 'mobile' : 'gameplay'),
-      detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${firstFiveEvidence(c.id, r)}${phoneEvidence(c.id, r)}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
+      detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${what}${firstFiveEvidence(c.id, r)}${phoneEvidence(c.id, r)}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
       shots: c.id === 'first-five-dev-ui' ? (r.ftue?.devUi ?? []).map((d: any) => d.shot).filter(Boolean) : [],
-      fix: LIMIT_FIX[c.id] ?? `Bring ${c.metric} inside its limit, then play the scenario again.`,
+      fix,
     }];
   });
 }

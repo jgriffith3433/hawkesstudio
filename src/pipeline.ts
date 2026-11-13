@@ -1041,7 +1041,7 @@ function fileFeel(run: string, p: Product, name: string, scenario: string, r: an
       ...storyFindings(r, { scenario }),
       ...uiFindings(r, { scenario }),
       // Phone load budget: over 20 MB / 20 s names the five largest pre-gameplay assets; fps p5 under 30 names the dip time.
-      ...phonePerfFindings(r, { scenario }),
+      ...phonePerfFindings(r, { scenario, product: p }),
       // A measured limit the play broke (a hitch in play over 250 ms, input latency): a bug the agents fix on beta, so
       // the go-live gate clears by itself (deploy.ts qualityBlockers), never a "fix it" for the owner.
       ...qualityFindings(p, r, scenario),
