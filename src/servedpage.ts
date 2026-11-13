@@ -66,18 +66,24 @@ export async function checkServedPage(url: string, played: { sha: string; branch
  */
 export type PublishedCurrent =
   | { ok: true; republished: boolean; waited?: { before: string; after: string; seconds: number } }
-  | { ok: false; why: string; published: string; tip: string; waited?: { before: string; after: string; seconds: number; timedOut: boolean } };
+  | { ok: false; why: string; published: string; tip: string; waited?: { before: string; after: string; seconds: number; timedOut: boolean }; waiting?: undefined }
+  /** A build run of the project is publishing already: nothing is republished, the run waits for it (buildwait.ts). */
+  | { ok: false; waiting: true; buildRun: string; why: string; published: string; tip: string; waited?: undefined };
 
 /** How long to wait for a republish: three times the site's last publish (`lastMs`), within 2 to 10 minutes. */
 export const publishWaitMs = (lastMs?: number | null) => Math.min(10 * 60_000, Math.max(2 * 60_000, Math.round((lastMs ?? 0) * 3)));
 
-export async function ensurePublishedCurrent(o: { tip: string | null; published: () => string | null | undefined; republish: () => Promise<unknown>; timeoutMs?: number; now?: () => number }): Promise<PublishedCurrent> {
+export async function ensurePublishedCurrent(o: { tip: string | null; published: () => string | null | undefined; republish: () => Promise<unknown>; building?: () => string | null; timeoutMs?: number; now?: () => number }): Promise<PublishedCurrent> {
   const behind = () => {
     const pub = o.published();
     return o.tip && pub && !sameCommit(pub, o.tip) ? pub : null;
   };
   const before = behind();
   if (!before) return { ok: true, republished: false };
+  // A build of the project is publishing already (a big site takes 25+ minutes): starting a republish would only queue behind
+  // it and time out as a stale verdict. The run waits for that build instead (buildwait.ts).
+  const buildRun = o.building?.() ?? null;
+  if (buildRun) return { ok: false, waiting: true, buildRun, published: before, tip: o.tip!, why: `Waiting for build ${buildRun}: the published beta site is at ${before.slice(0, 7)} but beta is at ${o.tip!.slice(0, 7)}, and that build is still publishing. Not judged, not a failure: beta is played again by itself when the build is done.` };
   const now = o.now ?? Date.now;
   const t0 = now();
   // Awaits the republish itself (the publish job's own promise, or the build already running for the tip), bounded by one

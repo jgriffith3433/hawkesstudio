@@ -1430,6 +1430,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void Promise.all([import('./credits.ts'), import('./gen.ts')]).then(([C, G]) => C.startCreditSettler((id) => G.gen.job(id), undefined, G.genEvents));
   // Credits added (a write to the ledger): the beta playtests that waited for credits play once (creditwait.ts; no timer).
   void import('./creditwait.ts').then((W) => W.watchCredits((product, o) => { return startBeta(product, o); })).catch((e) => console.warn(`[credits] ${e.message ?? e}`));
+  // Beta runs that waited for a build which ended while Studio was down play once (buildwait.ts; no timer).
+  void Promise.all([import('./buildwait.ts'), import('./pipeline.ts')]).then(([W, P]) => W.resumeAfterBuild((product, o) => P.startBeta(product, o))).catch((e) => console.warn(`[builds] ${e.message ?? e}`));
   void import('./cellside.ts').then((c) => c.startCellReports());
   // A deploy of J's Studio rolls the awake customer Studios onto it, in the background, a minute after start
   // (cells.ts followRoll; J, 2026-10-30: "Do roll on every deploy").

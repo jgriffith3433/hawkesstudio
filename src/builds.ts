@@ -285,6 +285,16 @@ export const buildsSettled = async (product: string): Promise<void> => { await P
 /** For tests: forget the claims of starts in flight. */
 export const resetCommitClaims = () => starting.clear();
 
+/** The build run of the project ended: the beta runs that waited for it play again, once (buildwait.ts). */
+async function afterBuild(product: string) {
+  try {
+    const [W, P] = await Promise.all([import('./buildwait.ts'), import('./pipeline.ts')]);
+    W.resumeAfterBuild((prod, o) => P.startBeta(prod, o), product);
+  } catch (e: any) {
+    console.warn(`[builds] ${product}: playing beta again after the build: ${e?.message ?? e}`);
+  }
+}
+
 /** The commit a branch of the project's repo is at on GitHub now, or null. */
 async function commitOfRef(p: Product, ref: string): Promise<string | null> {
   const slug = String((p as any).github ?? '');
@@ -358,6 +368,8 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
     } finally {
       for (const [b, sha] of claimed) releaseCommit(p.id, b, sha);
       closeRun(id, `build ${p.id}`);
+      // A beta run that waited for this build plays once now it is done (buildwait.ts); its end is the event, no polling.
+      void afterBuild(p.id);
     }
   })().catch((e) => console.warn(`[builds] ${p.id}: ${e?.message ?? e}`));
   const set = running.get(p.id) ?? running.set(p.id, new Set()).get(p.id)!;
