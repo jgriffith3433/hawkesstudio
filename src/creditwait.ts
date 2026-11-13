@@ -16,6 +16,7 @@
 
 import { db, onDbWrite, newId } from './db.ts';
 import { CreditsNeeded } from './billing.ts';
+import { parkEvent } from './parkevents.ts';
 
 export const HOLD_MS = 60 * 60_000;
 
@@ -105,6 +106,7 @@ export function resumeWaiting(startBeta: (product: string, o: { focus: string; p
 /** Credits were added (a grant): the waiting runs carry on. */
 export function creditsBack(startBeta: Parameters<typeof resumeWaiting>[0]) {
   const ids = resumeWaiting(startBeta);
+  parkEvent('credits-added'); // tasks parked until credits are back look again (parks.ts)
   if (ids.length) console.log(`[credits] credits are back: resumed ${ids.join(', ')}`);
   return ids;
 }

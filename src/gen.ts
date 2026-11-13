@@ -1,6 +1,7 @@
 // Hawkes Gen, from Studio: builds, playtests and reviews are Gen jobs (they show in its dashboard and library too).
 
 // @ts-ignore: plain JS client (a copy of hawkesgen/clients/js/hawkesgen.mjs)
+import { parkEvent } from './parkevents.ts';
 import { HawkesGen } from './hawkesgen.mjs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -232,6 +233,8 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
       }
       if (terminal(j)) {
         if (!fromGet) { look = true; continue; }
+        // A job Gen finished ok: Gen takes work and has credits, so tasks parked on it look again (parks.ts).
+        if (String(j.status) === 'done') parkEvent('gen-job-done');
         return timed(j);
       }
       // Still queued past the bound while Gen's lane shows free room (or Gen's list no longer has this job): lost, so the

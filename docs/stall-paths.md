@@ -164,6 +164,17 @@ Free agent slots with nothing planned: an empty roadmap.
 - **Test:** `test/wait-points.test.ts`
 - **Kind:** recorded in the `waits` table (durable, armed again at start-up)
 
+### `park-condition`
+
+A roadmap task parked on an outside condition (Gen credits, a GPU server, an AI provider), or waiting for GPU after a run that found none.
+
+- **Waits on (event):** A Gen job finishing ok, credits added, a GPU server coming up, a GPU budget approved, a provider back, or idle agent slots (parkevents.ts, read in the PM's pass); the condition is a row in task_parks.
+- **Deadline:** 6 h from the park (`STUDIO_PARK_WAIT_MS`; never more than 6 h)
+- **Fallback:** The task is planned again (or its GPU run goes again) whatever Studio sees; if the condition still holds, the attempt that hits it parks the task again with a new deadline.
+- **Where:** `src/parks.ts` (`releaseParks`, `recordPark`, `adoptParks`)
+- **Test:** `test/parks.test.ts`
+- **Kind:** recorded in the `waits` table (durable, armed again at start-up)
+
 ### `disk-wait`
 
 A change waiting for disk room for its worktree.

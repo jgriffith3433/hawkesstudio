@@ -56,6 +56,8 @@ import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
 import { REF_LOCK } from './gitlock.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
 import { heldRun, creditsWaitReason } from './creditwait.ts';
+import { adoptParks, releaseParks, parkOf, holdForGpu, gpuHeld, type ParkView } from './parks.ts';
+import { onParkEvent, parkEvent } from './parkevents.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
 import { walkAwayDefaults, WALK_AWAY_BY, walkAwayOn, idleWorkIsStudios, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
@@ -207,6 +209,18 @@ export function kick(ms = 3000) {
   kicked.unref?.();
 }
 
+// An event a parked task may be waiting for (a Gen job finished, credits added, a GPU server up): one PM pass looks at the parks.
+onParkEvent(() => kick(1000));
+
+/** How Studio sees each outside condition now: the gates that hold a start (parks.ts releases a park once its gate is open). */
+function parkView(): ParkView {
+  return {
+    credits: () => !creditsWaitReason(),
+    gpu: async () => { fleetSeen = null; return gpuRunning(); },
+    provider: () => !noProviderFree(),
+  };
+}
+
 // --------------------------------------------------------- task statuses
 
 /**
@@ -221,6 +235,7 @@ export async function syncTasks() {
   } catch (e: any) {
     console.warn(`[pm] reconcile: ${e.message ?? e}`);
   }
+  await settleGpuRuns().catch((e) => console.warn(`[pm] GPU waits: ${e.message ?? e}`));
   for (const t of (db.prepare(`SELECT id FROM tasks WHERE status IN ('working', 'needs answer', 'review', 'merged', 'verified')`).all() as any[]).map((r) => getTask(r.id)!)) {
     // One task going wrong never stops the loop (and the starts after it): its note says why.
     try {
@@ -316,6 +331,8 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
     // A run for the real GPU art that failed (no server after all, nothing made): the stand-ins stay on beta, and the
     // task waits for GPU again, not a try.
     if (c.status === 'failed' && gpuRerunOf(c.id)) {
+      // "No GPU" (k_1989d9a3f696, twice): its next run waits for the next GPU-capable moment (a server up, a Gen job done), not a count.
+      if (NO_GPU.test(`${c.detail ?? ''} ${c.summary ?? ''}`)) holdForGpu(t.id, 'a GPU that can take the job');
       setTask(t.id, { status: GPU_WAIT, merged_at: Date.now(), note: `the run for the GPU art (${c.id}) failed: ${String(c.detail ?? '').slice(0, 300)}` });
       logDecision('gpu-wait', t.id, t.product, `"${t.title}": ${c.id} (the run for its GPU art) failed: ${String(c.detail ?? '').slice(0, 300)}; it waits for a GPU server again (not a try)`);
       return;
@@ -1519,10 +1536,52 @@ export function gpuReruns(task: string): number {
     .reduce((m, q) => Math.max(m, q.answered_at ?? q.at ?? 0), 0);
   try {
     return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'gpu-rerun' AND subject = ? AND at > ?
-      AND NOT EXISTS (SELECT 1 FROM changes WHERE pm_log.detail LIKE '%' || changes.id || '%' AND ${STUDIO_FAILED_SQL})`).get(task, since) as any).n as number;
+      AND NOT EXISTS (SELECT 1 FROM changes WHERE pm_log.detail LIKE '%' || changes.id || '%' AND (${STUDIO_FAILED_SQL} OR (status = 'failed' AND lower(COALESCE(detail, '')) LIKE '%no gpu%')))`).get(task, since) as any).n as number;
   } catch {
     return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'gpu-rerun' AND subject = ? AND at > ?`).get(task, since) as any).n as number;
   }
+}
+
+/**
+ * Tasks waiting for GPU are not followed by syncTask (it follows a live change), so their newest change is read here, once per
+ * pass: "already done" is settled (settleGpuAlreadyDone), and a run that found no GPU gets its hold (no count, the next GPU event).
+ */
+export async function settleGpuRuns(): Promise<string[]> {
+  const out: string[] = [];
+  for (const r of db.prepare(`SELECT id FROM tasks WHERE status = ?`).all(GPU_WAIT) as any[]) {
+    const t = getTask(r.id)!;
+    const c = t.change ? (await changes()).getChange(t.change) : null;
+    if (!c || c.status !== 'failed') continue;
+    if (await settleGpuAlreadyDone(t, c)) { out.push(t.id); continue; }
+    if (NO_GPU.test(`${c.detail ?? ''} ${c.summary ?? ''}`) && !parkOf(t.id)) holdForGpu(t.id, 'a GPU that can take the job');
+  }
+  return out;
+}
+
+/** A run that failed because no GPU could take it: not a try, not a count against MAX_GPU_RERUNS. */
+const NO_GPU = /\bno (available )?gpu\b|gpu (is )?(unavailable|not available)/i;
+
+/**
+ * A task waiting for GPU whose newest change failed with "nothing to do: already done": the claim is checked (doneProof: its
+ * own change is merged, or the one the agent named is). Proved: the stand-ins' change is the task's work, so it is merged
+ * (beta's build and checks decide) or done; not proved: it is planned again with that said. Never left waiting for GPU.
+ * True when it settled the task.
+ */
+export async function settleGpuAlreadyDone(t: Task, c: any): Promise<boolean> {
+  const { ALREADY, alreadyDone } = await changes();
+  if ((c.commits ?? []).length || !(String(c.detail ?? '').startsWith(ALREADY) || alreadyDone(String(c.summary ?? '')))) return false;
+  const proof = await doneProof(t, c);
+  if (parkOf(t.id)) db.prepare('DELETE FROM task_parks WHERE task = ?').run(t.id);
+  if (proof) {
+    const status = proof.own ? 'merged' : DONE;
+    setTask(t.id, { status, ...(proof.change ? { change: proof.change } : {}), merged_at: Date.now(), build: null, note: `${c.id}: its GPU run found nothing left to make (${proof.why}); not waiting for GPU any more` });
+    logDecision('already-done', t.id, t.product, `"${t.title}" waited for GPU, but ${c.id} found nothing to do and it is true (${proof.why}): ${status}`);
+  } else {
+    setTask(t.id, { status: 'planned', note: `${c.id} said nothing was left to do, but Studio found no merged change that did it: planned again, not waiting for GPU` });
+    logDecision('retry', t.id, t.product, `"${t.title}" waited for GPU and ${c.id} said "already done" with nothing merged to show it: planned again (not a try)`);
+  }
+  kick();
+  return true;
 }
 
 // When Studio last tried to start a GPU server for a task waiting for GPU.
@@ -1586,10 +1645,12 @@ export async function rerunGpuWaits(free: number, taken = new Set<string>(), dep
         ensuredAt.set(t.id, Date.now());
         const ensure = deps.ensure ?? (async (c: any) => (await import('./gpustart.ts')).ensureGpuFor(c));
         void ensure({ id: `gpu-wait-${t.id}`, product: t.product, task: t.id, title: t.title, gpu_budget: String(budget), stillNeeds: () => getTask(t.id)?.status === GPU_WAIT })
-          .then((r) => { if (/^started|already (running|pending)/.test(r)) { fleetSeen = null; kick(); } }).catch(() => {});
+          .then((r) => { if (/^started|already (running|pending)/.test(r)) { fleetSeen = null; parkEvent('gpu-up'); kick(); } }).catch(() => {});
       }
       continue;
     }
+    // Its last run found no GPU: it waits for the next GPU-capable moment (parks.ts: a server up, a Gen job done, its deadline).
+    if (gpuHeld(t.id)) continue;
     if (free <= out.length || taken.has(t.product) || await slotHeld(t.product, await taskShape(t))) continue;
     // Studio failed to run its last runs for this task (a full disk, a clone killed): it waits, longer each time, like
     // every other start (infraHoldOf). Such a run isn't counted against MAX_GPU_RERUNS (gpuReruns) and puts the task
@@ -2895,7 +2956,9 @@ export function unblockDependencies(now = Date.now()): string[] {
     // Two automatic re-plans (a failed dependency one tier up, an idea planned) before J is asked.
     if (!parkedByPerson && autoReplan(dep, waiting)) { out.push(dep.id); continue; }
     // An idea held for other work (releaseHeldIdeas), a failed task (sweepFailed): not this pass's to decide.
-    if (dep.status !== 'idea' || /\b(held|hold|holds|holding|waits? for|until|after|once)\b/i.test(String(dep.note ?? ''))) continue;
+    // A held idea waits on other work (releaseHeldIdeas) or on an outside condition (parks.ts releases it, or its deadline does):
+    // not this pass's. One held for neither (no work named, no condition) would wait for ever, so it is asked about like any idea.
+    if (dep.status !== 'idea' || parkOf(dep.id) || (/\b(held|hold|holds|holding|waits? for|until|after|once)\b/i.test(String(dep.note ?? '')) && /\b[ik]_[0-9a-f]{12}\b|["“][^"”]{3,120}["”]/.test(String(dep.note ?? '')))) continue;
     ask.push({ dep, waiting });
   }
   if (ask.length) {
@@ -2941,7 +3004,7 @@ export function retryStudioFailure(t: Task, now = Date.now()): boolean {
  * its tries are set one below the limit; its earlier attempts go in the brief), an idea is planned. Returns whether it acted.
  */
 export function autoReplan(t: Task, waiting: Task[] = dependentsOf(t.id)): boolean {
-  if (!['failed', 'idea'].includes(t.status) || !waiting.length || heldFor(t.id) || hasLiveChange(t.id) || repairsOf(t.id) >= AUTO_REPLANS) return false;
+  if (!['failed', 'idea'].includes(t.status) || !waiting.length || heldFor(t.id) || hasLiveChange(t.id) || repairsOf(t.id) >= AUTO_REPLANS || parkOf(t.id)) return false;
   if (/^(parked|dropped) on \S+'s answer/.test(String(t.note ?? '')) || (t.status === 'idea' && /\b(held|hold|holds|holding|waits? for|until|after|once)\b/i.test(String(t.note ?? '')))) return false;
   if (rescues()[t.id]?.state === 'scouting') return false;
   const s = pmSettings();
@@ -3336,6 +3399,9 @@ export async function tick() {
       adoptDoneDrops();
       planEmptyItems();
       releaseHeldIdeas();
+      // A park that names an outside condition (credits, GPU, a provider): recorded as data, looked at again once per event.
+      adoptParks();
+      await releaseParks(parkView());
       unblockDependencies();
     } catch (e: any) {
       console.warn(`[pm] done and held tasks: ${e.message ?? e}`);
@@ -3399,6 +3465,8 @@ async function pace(startedNow: number, deps: Partial<IdleDepsLike> = {}) {
   const { WAITING_GEN, agentSettings } = await changes();
   const parked = (db.prepare('SELECT COUNT(*) AS n FROM changes WHERE status = ?').get(WAITING_GEN) as any).n + (db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE status = ?').get(GPU_WAIT) as any).n;
   samplePace({ freeSlots: Math.max(0, s.maxConcurrent - cap.active), parked });
+  // Idle slots and nothing started: a moment for tasks parked on an outside condition to look again (parks.ts).
+  if (cap.free > 0 && startedNow === 0) parkEvent('roadmap-refill');
   const { startScout, getScout } = await import('./scout.ts');
   return idleWatch({ free: agentSettings().enabled ? cap.free : 0, started: startedNow }, {
     idleProducts: () => idleProducts({ selfFill: idleWorkIsStudios() }), name,

@@ -23,6 +23,7 @@
 // and agents write them, agents read them), questions (an agent's question pausing its change, or a decision only J
 // can make) and the PM decision log (every merge, won't-fix, start and answer Talk made, with undo where possible).
 
+import { parkEvent } from './parkevents.ts';
 import { db, newId, J, parse } from './db.ts';
 import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 import { walkAwaySettings, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
@@ -796,6 +797,7 @@ export function approveGpu(id: string, budget: number, by: string) {
   if (!t) throw new StudioError(`No task ${id}`, 404);
   if (!(budget >= 0)) throw new StudioError('budget: dollars, 0 or more');
   db.prepare('UPDATE tasks SET gpu = ?, updated = ? WHERE id = ?').run(J({ ...(t.gpu ?? {}), budget, approvedBy: by, approvedAt: Date.now() }), Date.now(), id);
+  parkEvent('budget-approved'); // a park waiting on money looks again (parks.ts)
   return getTask(id)!;
 }
 
