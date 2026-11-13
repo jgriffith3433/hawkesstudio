@@ -184,3 +184,22 @@ test('a criterion keeps its own leading number; only list markers come off', () 
   const t = rm.addTask({ item: it.id, request: 'Numbers stay', criteria: ['0 console errors in a 5 min play', '60 fps on desktop', '- a bullet', '2. a numbered line', '3) another'] });
   assert.deepEqual(t.criteria, ['0 console errors in a 5 min play', '60 fps on desktop', 'a bullet', 'a numbered line', 'another']);
 });
+
+test('a pending list the agent already imported is dropped; only what is still missing stays', () => {
+  const wt = fs.mkdtempSync(path.join(tmp, 'wt-'));
+  fs.mkdirSync(path.join(wt, '.hawkes'));
+  const list = ['images are not baked yet:', 'characters/portrait/ana-512.webp', 'characters/portrait/bo-512.webp', 'site/img/key-art-main.webp'].join('\n');
+  fs.writeFileSync(path.join(wt, agents.PENDING_GPU), list);
+  const all = ['characters/portrait/ana-512.webp', 'characters/portrait/bo-512.webp', 'site/img/key-art-main.webp'];
+  // Identical to the brief's list, every path imported: nothing pending, so no stand-ins wait and no retry.
+  assert.equal(agents.pendingGpuOf(wt, 'done', { imported: all }), null);
+  // Imported by the work in the commit rather than the log, with wildcard entries.
+  fs.writeFileSync(path.join(wt, agents.PENDING_GPU), 'portraits: characters/portrait/<id>-512.webp\nkey art: site/img/key-art-*');
+  assert.equal(agents.pendingGpuOf(wt, 'done', { imported: ['characters/portrait/ana-512.webp'], inCommit: ['site/img/key-art-main.webp'] }), null);
+  // 1 of 3 still missing: only that one is named (and it is what the retry brief gets).
+  fs.writeFileSync(path.join(wt, agents.PENDING_GPU), list);
+  assert.equal(agents.pendingGpuOf(wt, 'done', { imported: all.slice(0, 2) }), 'images are not baked yet:\nsite/img/key-art-main.webp');
+  // Nothing imported (credits refused): the full list, as before.
+  assert.equal(agents.pendingGpuOf(wt, 'done', { imported: [] }), list);
+  assert.equal(agents.pendingGpuOf(wt, 'done'), list);
+});
