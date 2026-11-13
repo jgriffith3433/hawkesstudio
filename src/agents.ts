@@ -1170,13 +1170,56 @@ const NO_GPU = /\b(no GPU server (was |came |is )?(running|up|ready|available)|G
  * What a GPU task's change left to make on the GPU: its marker file, else its summary when it says it shipped stand-ins
  * because no GPU server ran (the agents before the marker). null: the real thing is in.
  */
-export function pendingGpuOf(worktree: string, summary: string): string | null {
+export function pendingGpuOf(worktree: string, summary: string, made: { imported?: string[]; inCommit?: string[] } = {}): string | null {
   try {
     const marked = fs.readFileSync(path.join(worktree, PENDING_GPU), 'utf8').trim();
-    if (marked) return marked.slice(0, 2000);
+    if (marked) return trimPendingGpu(marked.slice(0, 2000), made);
   } catch { /* no marker */ }
   const s = String(summary ?? '');
   return STAND_IN.test(s) && NO_GPU.test(s) ? `its summary says it shipped stand-ins because no GPU server ran: ${s.slice(0, 600)}` : null;
+}
+
+const PATH_TOKEN = /[\w.<>*{}-]+(?:\/[\w.<>*{}-]+)+/g;
+const normPath = (x: string) => x.replace(/\\/g, '/').replace(/^\.?\//, '').trim();
+/** A listed path as a matcher: `<id>` and `*` stand for any name (portrait/<id>-512.webp). */
+function pathMatcher(token: string): RegExp {
+  const esc = normPath(token).replace(/[.+?^$()|[\]\\]/g, '\\$&').replace(/\{[^}]*\}/g, '[^/]*').replace(/<[^>]*>|\*+/g, '[^/]*');
+  return new RegExp(`^${esc}$`);
+}
+/**
+ * A pending list can repeat the brief's old list word for word after the agent did the work (J, 2026-11-13: DoD #187
+ * imported 33 portraits and kept the list; Studio queued a $0.50 retry for art that was in). When the agent imported Gen
+ * files this session (studio_gen_import: `imported`; `inCommit`: the files the change added or changed), drop each entry
+ * whose listed paths were all written and keep what is really missing. Nothing left: null. Nothing imported: unchanged
+ * (credits refused, no GPU: the full list stays and the task waits as before). Entries naming no path stay.
+ */
+export function trimPendingGpu(pending: string, made: { imported?: string[]; inCommit?: string[] } = {}): string | null {
+  const imported = (made.imported ?? []).map(normPath).filter(Boolean);
+  if (!imported.length) return pending;
+  const written = [...new Set([...imported, ...(made.inCommit ?? []).map(normPath)])];
+  const lines = pending.split('\n').map((l) => l.trim()).filter(Boolean);
+  let dropped = 0;
+  const kept = lines.filter((l) => {
+    const toks = l.match(PATH_TOKEN) ?? [];
+    if (!toks.length || !toks.every((t) => written.some((w) => pathMatcher(t).test(w)))) return true;
+    dropped++;
+    return false;
+  });
+  if (!dropped) return pending;
+  return kept.some((l) => (l.match(PATH_TOKEN) ?? []).length) ? kept.join('\n') : null;
+}
+
+/** The repo paths this change imported from Gen (access_log, written by the gen-import route) and the files it changed. */
+async function madeOf(c: { id: string; worktree: string; base?: string | null }): Promise<{ imported: string[]; inCommit: string[] }> {
+  let imported: string[] = [];
+  try { imported = (db.prepare(`SELECT target FROM access_log WHERE who = ? AND kind = 'gen' AND target IS NOT NULL`).all(c.id) as { target: string }[]).map((r) => r.target); } catch { /* no log yet */ }
+  if (!imported.length) return { imported, inCommit: [] };
+  let inCommit: string[] = [];
+  try {
+    const r = await gitAsync(c.worktree, ['diff', '--name-only', '--diff-filter=AM', `${c.base || 'beta'}...HEAD`]);
+    inCommit = (r.ok ? r.out : '').split('\n').map((x) => x.trim()).filter(Boolean);
+  } catch { /* the imports alone decide */ }
+  return { imported, inCommit };
 }
 
 /** A video task's brief (videos.ts): how it's judged (J screens it), where the work goes, what to leave for Studio. */
@@ -3139,7 +3182,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
     const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
     const howTo = fs.existsSync(tryFile) ? fs.readFileSync(tryFile, 'utf8').trim().slice(0, 2000) : null;
     // A GPU task's change that shipped stand-ins: merged, but its task waits for GPU (pm.ts) and runs again.
-    const pendingGpu = c.task && (needsGpu(c) || roleOf(c) === 'content') ? pendingGpuOf(c.worktree, c.summary ?? '') : null;
+    const pendingGpu = c.task && (needsGpu(c) || roleOf(c) === 'content') ? pendingGpuOf(c.worktree, c.summary ?? '', await madeOf(c)) : null;
     if (pendingGpu) addLog(id, `stand-ins: still to make on the GPU: ${pendingGpu.split('\n')[0].slice(0, 200)}`);
     const visible = await visibleOf(c);
     const done = { ...verify, sha: ph.tip, preview, ...(visible !== null ? { visible } : {}), ...(ph.unity ? { unityCheck: ph.unity } : {}), ...(ph.compile ? { compileCheck: ph.compile } : {}), ...(ph.quality ? { qualityScan: { ok: ph.quality.ok, files: ph.quality.files, summary: ph.quality.summary, known: ph.quality.known.length } } : {}), try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
