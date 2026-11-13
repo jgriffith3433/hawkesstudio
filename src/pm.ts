@@ -55,7 +55,10 @@ import { fileUrl, signFileLinks } from './gen.ts';
 import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
 import { REF_LOCK } from './gitlock.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
-import { heldRun, creditsWaitReason } from './creditwait.ts';
+import { heldRun as heldForCredits, creditsWaitReason } from './creditwait.ts';
+import { heldForBuild } from './buildwait.ts';
+/** A run waiting for credits or for the product's build: not broken, nothing is blamed. */
+const heldRun = (run: string) => heldForCredits(run) || heldForBuild(run);
 import { adoptParks, releaseParks, parkOf, holdForGpu, gpuHeld, parkTask, type ParkView } from './parks.ts';
 import { gpuRunning as gpuRunningRead, forgetGpuSeen, gpuVerdict } from './gpuverdict.ts';
 import { onParkEvent, parkEvent } from './parkevents.ts';

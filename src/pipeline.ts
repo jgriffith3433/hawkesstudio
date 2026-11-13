@@ -19,6 +19,7 @@ import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, m
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
 import { creditRefusal, holdRun as creditsHold, creditsWaiting } from './creditwait.ts';
+import { waitingOnBuild as bwWaiting, holdForBuild as holdForBuildWait } from './buildwait.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
@@ -693,14 +694,23 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
       // The published site must be beta's tip (servedpage.ts ensurePublishedCurrent): behind, it is published again and
       // that is what's played; still behind, the verdict is stale (step stale + wrongBuild: no findings, no fixers).
       const previews = await import('./previews.ts');
+      const bw = await import('./buildwait.ts');
       await previews.betaSettled(p.id);
       const cur = await (await import('./servedpage.ts')).ensurePublishedCurrent({
         tip: await betaTipOf(p), published: () => previews.betaPreview(p.id)?.sha,
         // Starts the publish (or joins the one going) and also waits for any build run of the project already going for
         // the tip (a start for a commit being built starts no second run, so buildPreview alone returns at once).
         republish: async () => { await previews.buildPreview(p.id); await (await import('./builds.ts')).buildsSettled(p.id); await previews.betaSettled(p.id); },
+        building: () => bw.runningBuildOf(p.id),
         timeoutMs: (await import('./servedpage.ts')).publishWaitMs(previews.betaPreview(p.id)?.ms),
       });
+      if (!cur.ok && cur.waiting) {
+        // Waiting, not failing: cancelled (no review, no finding, no fixer), held for the build's end (buildwait.ts).
+        console.log(`[studio] ${p.id} ${name} (${run}): ${cur.why}`);
+        bw.holdForBuild(run, p.id, cur.buildRun);
+        updateStep(s, { status: 'cancelled', detail: cur.why, data: { waitingForBuild: cur.buildRun, published: cur.published, tip: cur.tip, cancelled: true }, finished: true });
+        return null;
+      }
       if (cur.waited) {
         const w = cur.waited;
         const line = `waited for the beta site's publish: site ${w.before.slice(0, 7)} before, ${w.after.slice(0, 7)} after, ${w.seconds} s${'timedOut' in w && w.timedOut ? ' (timed out)' : ''}`;
@@ -1608,6 +1618,18 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) {
     setImmediate(() => void import('./deploy.ts').then((d) => d.wakeGoLives(p.id, id)).catch(() => {}));
     return { id, done: Promise.resolve() };
+  }
+  // Behind a build that is still publishing: the earlier run is waiting for it, so this one waits too and plays nothing
+  // (buildwait.ts; no failed run every few minutes). The build's end plays beta once.
+  if (betaLane() && (o.playtest || o.plays?.length || betaPlaytestsOn())) {
+    const w = bwWaiting(p.id);
+    if (w) {
+      holdForBuildWait(id, p.id, w.buildRun);
+      db.prepare(`UPDATE runs SET status = 'cancelled', detail = ?, finished = ? WHERE id = ?`).run(`waiting for build ${w.buildRun} (not started; not a failure)`, Date.now(), id);
+      kickFollowups();
+      setImmediate(() => void import('./deploy.ts').then((d) => d.wakeGoLives(p.id, id)).catch(() => {}));
+      return { id, done: Promise.resolve() };
+    }
   }
   // However the run ends (passed, failed, superseded, waiting for credits), a go live waiting for beta's play looks
   // again (deploy.ts waitForBetaPlay): nothing stays parked on a run that's over.
