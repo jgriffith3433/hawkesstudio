@@ -442,7 +442,7 @@ and the change's summary say "Compile check skipped: <why>, so the change goes o
 `docs/unity-cloudrun.md`, "Compile-only check", added in hawkesgen #120). Studio calls no endpoint of its own for it: it
 submits an ordinary `unity.build` job and reads the finished job.
 - Looks up: `GET` the tool (`gen.tool('unity.build')`) and needs a `check` entry in its `params` (`genCompileMode`, cached 5
-  minutes). No `check` param, or Gen unreachable: the gate is skipped and says which.
+  minutes). No `check` param, or Gen unreachable: the gate is skipped and says which. A 403 "internal-only" (a customer key may not read the card) is not a skip: customer-mode submits accept `check`, so the gate runs and Gen's answer to the job decides.
 - Submits: `{ tool: "unity.build", project: <the key's Gen project>, params: { github: { repo, commit, token, ref }, check:
   true, target: "web", path?, machine? } }`. Only the `github` keys Gen takes (`GEN_GITHUB_KEYS`), no `out`, no `method`
   (Gen refuses both with `check`). `check` is a boolean; customer mode only.

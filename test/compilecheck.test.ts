@@ -87,6 +87,9 @@ test('the gate degrades: no compile mode in Gen skips with a note, a cost over t
   assert.equal(g.run, false);
   assert.match(g.why ?? '', /couldn't be asked/, 'a Gen that cannot be reached is named, not "not live yet"');
   forgetGenCompileMode();
+  (gen as any).tool = async () => { throw Object.assign(new Error('Tool unity.build is internal-only and not available for user accounts'), { status: 403 }); };
+  assert.equal((await compileGate()).run, true, 'a customer key cannot read the tool card but may submit a check: the gate runs');
+  forgetGenCompileMode();
   (gen as any).tool = async () => ({ params: { check: { type: 'boolean' } } });
   assert.equal((await compileGate()).run, true);
   recordCompile('c_x', 'p', { outcome: 'compiled', ok: true, sha: 'a', issues: [], seconds: 100, cost: 5, summary: '' });

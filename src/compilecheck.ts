@@ -93,7 +93,13 @@ export async function genCompileMode(): Promise<{ ok: boolean; why?: string }> {
     const params = t?.params ?? t?.tool?.params;
     ok = Array.isArray(params) ? params.some((x: any) => x?.name === 'check' || x === 'check') : Boolean(params && typeof params === 'object' && 'check' in params);
     if (!ok) why = "Hawkes Gen's unity.build has no compile-only `check` mode yet";
-  } catch (e: any) { why = `Hawkes Gen couldn't be asked about its compile-only mode (${String(e?.message ?? e).slice(0, 120)})`; }
+  } catch (e: any) {
+    // A customer key (role user) may not read the internal-only tool card (hawkesgen api.ts GET /v1/tools/:id, 403), but it may submit
+    // unity.build in customer mode with `check` (jobs.ts customerMayRun). Real builds use that path, so the card's absence says
+    // nothing: submit, and a Gen that refuses the job ends the check `unavailable` with Gen's own words (never a block).
+    if (e?.status === 403 && /internal-only/i.test(String(e?.message ?? ''))) ok = true;
+    else why = `Hawkes Gen couldn't be asked about its compile-only mode (${String(e?.message ?? e).slice(0, 120)})`;
+  }
   genSeen = { at: Date.now(), ok, ...(why ? { why } : {}) };
   return genSeen;
 }
