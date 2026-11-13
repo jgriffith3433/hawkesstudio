@@ -187,12 +187,52 @@ test('fetchMergeObjects fetches only what is missing, and nothing once it is all
   assert.ok(before > 0);
   const first = await fetchMergeObjects(c.wt, 'origin/beta');
   assert.equal(first.ok, true, first.why);
-  assert.ok(first.count >= before, `fetched ${first.count}, ${before} missing in the two tips`);
+  assert.ok(first.count > 0 && first.count <= before, `fetched ${first.count}, ${before} missing in the two tips`);
   assert.equal(missingIn(c.wt), 0, 'nothing missing now');
   const calls0 = uploads();
   const again = await fetchMergeObjects(c.wt, 'origin/beta');
   assert.deepEqual(again, { ok: true, count: 0 });
   assert.equal(uploads(), calls0, 'no fetch when nothing is missing');
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
+});
+
+// 2026-11-13: fetchMergeObjects fetched every file of the merge base, HEAD and beta, so one Yooba Land catch-up with beta
+// brought the whole 2 GB game into the cloud server's 2.5 GB in-memory disk, and every change waited for disk room. A
+// light worktree is sparse: a file only beta changed, outside what the worktree checks out, is merged by name and never read.
+test("a light, sparse worktree's catch-up with beta fetches only what the merge reads, never beta's untouched art", async () => {
+  const c = readyChange('menu.txt', 'Start, sparse\n');
+  git(c.wt, 'sparse-checkout', 'set', '--no-cone', '/menu.txt', '/level.txt', '/AGENTS.md');
+  fs.mkdirSync(path.join(other, 'art'), { recursive: true });
+  betaMoves('art/forest.bin', 'pixels '.repeat(20000));
+  betaMoves('level.txt', 'one\ntwo\nthree\nfour\nfive\nsix\nseven, sparse beta\n');
+  git(repoDir, 'fetch', '--quiet', 'origin');
+  const art = git(repoDir, 'rev-parse', 'origin/beta:art/forest.bin');
+  const level = git(repoDir, 'rev-parse', 'origin/beta:level.txt');
+  const has = (oid: string) => !git(c.wt, 'rev-list', '--objects', '--missing=print', '--no-walk', 'origin/beta').split('\n').includes(`?${oid}`);
+  assert.equal(has(art), false, "the light clone doesn't have beta's art yet");
+  const got = await fetchMergeObjects(c.wt, 'origin/beta');
+  assert.equal(got.ok, true, got.why);
+  assert.equal(has(level), true, 'beta\'s version of a file the worktree checks out is fetched');
+  assert.equal(has(art), false, 'beta\'s art, which only beta changed and the worktree never checks out, is not');
+  const r = await updateFromBase(c.id);
+  assert.equal(r.state, 'merged', `${JSON.stringify(r)}\n${getChange(c.id)!.log.join('\n')}`);
+  assert.equal(git(c.wt, 'rev-parse', 'HEAD:art/forest.bin'), art, "beta's art is in the merge, by name");
+  assert.equal(has(art), false, `and the merge itself never read it\n${getChange(c.id)!.log.join('\n')}`);
+  assert.equal(fs.readFileSync(path.join(c.wt, 'level.txt'), 'utf8'), 'one\ntwo\nthree\nfour\nfive\nsix\nseven, sparse beta\n');
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
+});
+
+test('both sides changed one file in a sparse worktree it does not check out: its three versions are fetched, so git can compare them', async () => {
+  const c = readyChange('menu.txt', 'Start, both\n');
+  git(c.wt, 'sparse-checkout', 'set', '--no-cone', '/level.txt', '/AGENTS.md');
+  betaMoves('menu.txt', 'Start, beta\n');
+  git(repoDir, 'fetch', '--quiet', 'origin');
+  const mb = git(c.wt, 'merge-base', 'HEAD', 'origin/beta');
+  const want = ['HEAD', 'origin/beta', mb].map((rev) => git(c.wt, 'rev-parse', `${rev}:menu.txt`));
+  const { mergeReads } = agents;
+  const reads = await mergeReads(c.wt, mb, 'origin/beta');
+  assert.equal(reads.ok, true);
+  for (const o of want) assert.ok(reads.ok && reads.oids.has(o), `${o} is read by the merge`);
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
 });
 

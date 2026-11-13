@@ -358,6 +358,9 @@ export const lastLine = (err: string) => err.split('\n').map((l) => l.trim()).fi
 export const LIGHT_CONFIG: [string, string][] = [
   ['hawkes.light', 'true'],
   ...GIT_MEMORY_CONFIG,
+  // No diffstat after a merge: counting reads every file the other side changed, and in a partial clone that fetches
+  // them all (2026-11-13: a Yooba Land catch-up with beta pulled 2.5 GB of art into the in-memory disk).
+  ['merge.stat', 'false'],
   ['filter.lfs.smudge', 'git-lfs smudge --skip -- %f'],
   ['filter.lfs.process', 'git-lfs filter-process --skip'],
 ];
