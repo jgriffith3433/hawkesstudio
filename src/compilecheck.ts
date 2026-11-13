@@ -153,12 +153,18 @@ export function compileResultOf(job: any, sha: string): CompileResult {
   const listed: CompileIssue[] = Array.isArray(r.errors)
     ? r.errors.filter((e: any) => e && typeof e === 'object' && e.file).map((e: any) => ({ file: String(e.file), line: Number(e.line) || 0, ...(e.col ? { col: Number(e.col) } : {}), code: String(e.code ?? 'CS'), message: String(e.message ?? '').slice(0, 300) }))
     : [];
-  const issues = listed.length ? listed : parseCompilerLog(String(r.logTail ?? ''));
+  // Gen's own words about a failed job (job.error, r.error) carry the log's last lines too: read them as well as logTail.
+  const text = [r.logTail, r.error, job?.error].filter((x) => typeof x === 'string').join('\n');
+  const issues = listed.length ? listed : parseCompilerLog(text);
+  if (!issues.length && /Scripts have compiler errors/i.test(text)) issues.push({ file: '(Unity log)', line: 0, code: 'CS', message: 'Scripts have compiler errors (no file and line in the log tail)' });
   if (issues.length) {
     const files = new Set(issues.map((i) => i.file)).size;
     return { ...base, outcome: 'failed', ok: false, issues, summary: `Compile check FAILED (Hawkes Gen, Unity ${r.unity ?? '?'}, ${mins(seconds)}, ${usd(cost)}): ${issues.length} error${issues.length === 1 ? '' : 's'} in ${files} file${files === 1 ? '' : 's'}: ${issues.slice(0, 3).map((i) => `${i.file}:${i.line} ${i.code}`).join(', ')}${issues.length > 3 ? ' ...' : ''}` };
   }
   if (job?.status === 'done' && r.ok !== false) return { ...base, outcome: 'compiled', ok: true, issues: [], summary: `Compile check passed (Hawkes Gen, Unity ${r.unity ?? '?'}, ${mins(seconds)}, ${usd(cost)}): the branch compiles` };
+  // A compile-only run builds no player, so Gen may say "the build wrote nothing to HAWKES_OUT" about a run where Unity exited
+  // batchmode successfully and the log has no compiler error: that is a pass (j_65b4f615ffa7), not "couldn't run".
+  if (/wrote nothing to HAWKES_OUT/i.test(text) && /Exiting batchmode successfully/i.test(text)) return { ...base, outcome: 'compiled', ok: true, issues: [], summary: `Compile check passed (Hawkes Gen, Unity ${r.unity ?? '?'}, ${mins(seconds)}, ${usd(cost)}): Unity exited cleanly with no compiler errors` };
   const why = String(job?.error ?? r.error ?? 'no reason given').slice(0, 200);
   return { ...base, outcome: 'unavailable', ok: true, issues: [], note: why, summary: `Compile check couldn't run (${why}): the change goes on to beta's own build` };
 }

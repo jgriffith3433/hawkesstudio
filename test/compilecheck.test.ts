@@ -113,3 +113,32 @@ test('a skipped gate is said on the change: the ready line carries why nothing c
   assert.equal(s.ok, true, 'a skipped gate never blocks');
   assert.match(readyDetail({ compileCheck: s }), /Compile check skipped: .* no compile-only `check` mode yet/);
 });
+
+const NOTHING = 'the build wrote nothing to HAWKES_OUT: a build method of your own must build into the folder in env HAWKES_OUT: Exiting batchmode successfully now!';
+
+test('j_65b4f615ffa7: Unity exited cleanly, nothing in HAWKES_OUT, no CS errors = compile passed', () => {
+  const r = compileResultOf({ id: 'j_65b4f615ffa7', status: 'failed', error: NOTHING, result: { ok: false, seconds: 302, cost: 0.058 } }, 'e'.repeat(40));
+  assert.equal(r.outcome, 'compiled');
+  assert.equal(r.ok, true);
+  assert.match(r.summary, /passed.*\$0\.06/);
+});
+
+test('an error CS line beside the empty HAWKES_OUT still fails, first error file:line in the summary', () => {
+  const r = compileResultOf({ status: 'failed', error: NOTHING, result: { ok: false, logTail: LOG + '\nExiting batchmode successfully now!' } }, 'f'.repeat(40));
+  assert.equal(r.outcome, 'failed');
+  assert.equal(r.ok, false);
+  assert.match(r.summary, /Assets\/Scripts\/Player\.cs:42 CS1503/);
+});
+
+test('"Scripts have compiler errors" without a parsable line still fails', () => {
+  const r = compileResultOf({ status: 'failed', error: 'Scripts have compiler errors.' }, '1'.repeat(40));
+  assert.equal(r.outcome, 'failed');
+});
+
+test('infra failures stay unavailable: 5xx, timeout, refusal, nothing-written without a clean exit', () => {
+  for (const error of ['Hawkes Gen 503 Service Unavailable', 'timed out after 1800 s', 'refused: plan does not include cloud builds', 'the build wrote nothing to HAWKES_OUT: Unity crashed']) {
+    const r = compileResultOf({ status: 'failed', error }, '2'.repeat(40));
+    assert.equal(r.outcome, 'unavailable', error);
+    assert.equal(r.ok, true);
+  }
+});
