@@ -128,6 +128,12 @@ export const WAIT_POINTS: WaitPoint[] = [
     fallback: 'A scout per idle product (open milestones with no tasks first, then the most recent work), most likely first. Walk-away mode in J\'s Studio: each scout\'s proposal goes to the PM the moment that scout reports and a product is scouted again as soon as it is idle again, nobody is asked. Elsewhere the owner gets one question after the scouts report or their deadline.', fallbackKind: 'without',
     file: 'src/pace.ts', symbols: ['idleWatch'], test: 'test/wait-points.test.ts', via: 'waits',
   },
+  {
+    id: 'park-condition', what: 'A roadmap task parked on an outside condition (Gen credits, a GPU server, an AI provider), or waiting for GPU after a run that found none.',
+    event: 'A Gen job finishing ok, credits added, a GPU server coming up, a GPU budget approved, a provider back, or idle agent slots (parkevents.ts, read in the PM\'s pass); the condition is a row in task_parks.', deadline: '6 h from the park', env: 'STUDIO_PARK_WAIT_MS', maxMs: 6 * H,
+    fallback: 'The task is planned again (or its GPU run goes again) whatever Studio sees; if the condition still holds, the attempt that hits it parks the task again with a new deadline.', fallbackKind: 'carry-on',
+    file: 'src/parks.ts', symbols: ['releaseParks', 'recordPark', 'adoptParks'], test: 'test/parks.test.ts', via: 'waits',
+  },
   // Gates that keep their own deadline (database row or one timer of their own), listed so no gate goes unnamed.
   {
     id: 'disk-wait', what: 'A change waiting for disk room for its worktree.', event: 'A pass ending, a worktree removed, a sweep freeing room (diskwait.ts).',
