@@ -964,6 +964,51 @@ test('two starts of the same product and commit together submit one Gen build, a
   }
 });
 
+/** A Unity build Gen finished ok whose /files download answers `answer(n)` (n = 1, 2, ...): the build step's whole path. */
+async function downloadCase(product: string, answer: (n: number) => Response) {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: product, name: product, engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  fastHistory(db, product);
+  const saved = [...B.DOWNLOAD_WAITS];
+  B.DOWNLOAD_WAITS.splice(0, B.DOWNLOAD_WAITS.length, 1, 1, 1);
+  const g = genStandIn([`j_${product}`], () => ({ status: 'done', result: { ok: true, artifact: { asset: 'a_dl', bytes: unityTar.length }, unity: '6000.3.7f1' } }));
+  const outer = globalThis.fetch;
+  let downloads = 0;
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test' && u.pathname === '/v1/files/a_dl') return answer(++downloads);
+    return outer(input, init);
+  }) as typeof fetch;
+  try {
+    const r = (await B.startBuild(product, {}))!;
+    await r.done;
+    const row = db.prepare('SELECT status, detail, fail_class FROM builds WHERE product = ? ORDER BY started DESC').get(product) as any;
+    return { row, downloads: () => downloads, run: await runOf(r.id) };
+  } finally {
+    g.restore();
+    globalThis.fetch = outer;
+    B.DOWNLOAD_WAITS.splice(0, B.DOWNLOAD_WAITS.length, ...saved);
+  }
+}
+
+test('a finished Unity build whose first download answers 502 and second 200 is published', async () => {
+  const c = await downloadCase('game-dl502ok', (n) => (n === 1 ? new Response('bad gateway', { status: 502 }) : new Response(unityTar as any)));
+  assert.equal(c.downloads(), 2);
+  assert.equal(c.row.status, 'ready', JSON.stringify(c.run.steps.map((s: any) => s.detail)));
+});
+
+test('a download that answers 502 every try is an infrastructure failure naming HTTP 502 and the tries, with no fixer sent', async () => {
+  const { classify } = await import('../src/buildfail.ts');
+  const { isBuilderLoss } = await import('../src/outcomes.ts');
+  const c = await downloadCase('game-dl502bad', () => new Response('bad gateway', { status: 502 }));
+  assert.equal(c.downloads(), 4, 'the first try and three more');
+  assert.equal(c.row.status, 'failed');
+  assert.match(c.row.detail, /HTTP 502 \(after 4 tries\)/);
+  const k = classify(c.row.detail, { stage: 'build' });
+  assert.equal(k.kind, 'infrastructure');
+  assert.equal(isBuilderLoss(c.row.detail), true, 'nothing is sent back to the change\'s agent');
+});
+
 test('a build whose finished output never downloads is an infrastructure failure, and no agent is sent back for it', async () => {
   const { classify } = await import('../src/buildfail.ts');
   const { isBuilderLoss } = await import('../src/outcomes.ts');
