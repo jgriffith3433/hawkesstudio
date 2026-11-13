@@ -526,7 +526,7 @@ async function mergeMainIn(dir: string, name: string, by: string) {
   const onlyRollbacks = cmp.behind.every((c) => c.title.startsWith(STUDIO_ROLLBACK));
   const wt = await scratch(dir, name, cmp.beta!.sha);
   const msg = `Merge ${MAIN} into ${BETA}${onlyRollbacks ? ' (rollbacks: keeps beta\'s files)' : ''} (by ${by})`;
-  const m = await gitAsync(wt, [...AUTHOR, 'merge', '--no-ff', '--no-edit', '-m', msg, ...(onlyRollbacks ? ['-s', 'ours'] : []), cmp.main!.sha]);
+  const m = await gitAsync(wt, [...AUTHOR, 'merge', '--no-stat', '--no-ff', '--no-edit', '-m', msg, ...(onlyRollbacks ? ['-s', 'ours'] : []), cmp.main!.sha]);
   if (!m.ok) {
     git(wt, ['merge', '--abort']);
     throw new Error(`Merging ${MAIN} into ${BETA} in ${path.basename(dir)} conflicts (${(m.out || m.err).split('\n').filter((l) => /CONFLICT/.test(l)).slice(0, 5).join('; ') || m.err}). Resolve it by hand on a branch.`);

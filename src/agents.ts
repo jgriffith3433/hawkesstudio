@@ -3829,7 +3829,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
-          const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'merge', '--no-edit', `origin/${c.base}`]);
+          const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'merge', ...MERGE_QUIET, '--no-edit', `origin/${c.base}`]);
           if (!m.ok) await gitAsync(c.worktree, ['merge', '--abort']);
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
@@ -4601,7 +4601,7 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   if (!current) {
     // A merge writes over ignored files, and .hawkes/ may be tracked on the base: the notes are kept aside and put back.
     let notes = snapshotNotes(c.worktree);
-    const merge = () => gitAsync(c.worktree, [...STUDIO_GIT, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
+    const merge = () => gitAsync(c.worktree, [...STUDIO_GIT, 'merge', ...MERGE_QUIET, '--no-ff', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
     const unmerged = async () => (await gitAsync(c.worktree, ['diff', '--name-only', '--diff-filter=U'])).out.split('\n').filter(Boolean);
     let m = await merge();
     let files = m.ok ? [] : await unmerged();
@@ -4670,16 +4670,27 @@ const lastLines = (r: { out: string; err: string }) => (r.err || r.out).split('\
 export const PROMISOR_FETCH_FAILED = /could not fetch [0-9a-f]{7,64} from promisor remote|promisor remote|could not read (username|password)|terminal prompts disabled|authentication failed|could not read from remote repository/i;
 
 /**
- * The objects a merge of `ref` into HEAD reads that a light clone (`--filter=blob:none`) doesn't have yet: the three
- * snapshots' missing file contents (HEAD, `ref` and their merge base; `rev-list --missing=print` lists them without
- * fetching), fetched from origin in one explicit, credentialed fetch per batch, the way git's own lazy fetch asks for
- * them. A full clone has none missing: nothing is fetched.
+ * The objects a merge of `ref` into HEAD reads that a light clone (`--filter=blob:none`) doesn't have yet, fetched from
+ * origin in one explicit, credentialed fetch per batch, the way git's own lazy fetch asks for them. A full clone has none
+ * missing: nothing is fetched.
+ *
+ * Only what the merge reads (2026-11-13: this fetched every file of the merge base, HEAD and `ref`, the whole game: one
+ * Yooba Land catch-up with beta brought its 2 GB of art and video into the cloud server's 2.5 GB disk, which is memory;
+ * the disk sat full, every change waited for disk room, and each restart did it again as the catch-up ran once more):
+ *   - files changed on both sides since the merge base: the three versions (git compares their contents),
+ *   - a side's added files when that side deleted a file the other side changed (git looks for a rename),
+ *   - files changed on `ref`'s side that this worktree checks out (its sparse patterns): `ref`'s version.
+ * A file only one side changed and the worktree doesn't check out is merged by its name alone and never read.
  */
 export async function fetchMergeObjects(worktree: string, ref: string): Promise<{ ok: boolean; count: number; why?: string }> {
   const mb = (await gitAsync(worktree, ['merge-base', 'HEAD', ref])).out;
   const list = await gitAsync(worktree, ['rev-list', '--objects', '--missing=print', '--no-walk', ...(mb ? [mb] : []), ref, 'HEAD']);
   if (!list.ok) return { ok: false, count: 0, why: lastLines(list) };
-  const missing = [...new Set(list.out.split('\n').filter((l) => l.startsWith('?')).map((l) => l.slice(1).trim()).filter((o) => /^[0-9a-f]{40,64}$/.test(o)))];
+  const absent = new Set(list.out.split('\n').filter((l) => l.startsWith('?')).map((l) => l.slice(1).trim()).filter((o) => /^[0-9a-f]{40,64}$/.test(o)));
+  if (!absent.size) return { ok: true, count: 0 };
+  const needed = mb ? await mergeReads(worktree, mb, ref) : null;
+  if (needed && !needed.ok) return { ok: false, count: 0, why: needed.why };
+  const missing = needed ? [...needed.oids].filter((o) => absent.has(o)) : [...absent];
   for (let i = 0; i < missing.length; i += 1000) {
     const f = await gitAsync(worktree, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--recurse-submodules=no', '--filter=blob:none', 'origin', ...missing.slice(i, i + 1000)]);
     if (!f.ok) return { ok: false, count: i, why: lastLines(f) };
@@ -4687,8 +4698,64 @@ export async function fetchMergeObjects(worktree: string, ref: string): Promise<
   return { ok: true, count: missing.length };
 }
 
+/** A side's changes since the merge base by name (no renames: finding one would read the files): status letter → paths. */
+async function sideChanges(worktree: string, from: string, to: string) {
+  const r = await gitAsync(worktree, ['diff', '--no-renames', '--no-ext-diff', '--name-status', '-z', from, to]);
+  if (!r.ok) return null;
+  const parts = r.out.split('\0').filter(Boolean);
+  const out = new Map<string, string>();
+  for (let i = 0; i + 1 < parts.length; i += 2) out.set(parts[i + 1], parts[i][0]);
+  return out;
+}
+
+/** The blob ids at `rev` of `files` (`ls-tree` reads trees only, never a file's contents). */
+async function blobsAt(worktree: string, rev: string, files: string[]) {
+  const oids = new Set<string>();
+  for (let i = 0; i < files.length; i += 500) {
+    const r = await gitAsync(worktree, ['ls-tree', '-z', '--full-tree', rev, '--', ...files.slice(i, i + 500).map((f) => `:(literal)${f}`)]);
+    if (!r.ok) continue;
+    for (const e of r.out.split('\0')) { const m = /^\d+ blob ([0-9a-f]{40,64})\t/.exec(e); if (m) oids.add(m[1]); }
+  }
+  return oids;
+}
+
+/** Which of `files` this worktree checks out (its sparse patterns); all of them when it isn't sparse or git can't say. */
+function checkedOut(worktree: string, files: string[]): string[] {
+  if (!files.length) return [];
+  const sparse = spawnSync('git', ['config', '--bool', 'core.sparseCheckout'], { cwd: worktree, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  if (sparse.stdout.trim() !== 'true') return files;
+  const r = spawnSync('git', ['sparse-checkout', 'check-rules', '-z'], { cwd: worktree, input: files.join('\0') + '\0', encoding: 'utf8', windowsHide: true, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
+  return r.status === 0 ? r.stdout.split('\0').filter(Boolean) : files;
+}
+
+/** What `git merge ref` into HEAD reads (fetchMergeObjects), as blob ids. */
+export async function mergeReads(worktree: string, mb: string, ref: string): Promise<{ ok: true; oids: Set<string> } | { ok: false; why: string }> {
+  const ours = await sideChanges(worktree, mb, 'HEAD');
+  const theirs = await sideChanges(worktree, mb, ref);
+  if (!ours || !theirs) return { ok: false, why: `listing what each side of the merge changed failed` };
+  const both = [...ours.keys()].filter((f) => theirs.has(f));
+  const bothSet = new Set(both);
+  // A side that deleted a file the other changed: git looks among that side's new files for where it went.
+  const renameTargets = (side: Map<string, string>) => [...side].some(([f, s]) => s === 'D' && bothSet.has(f)) ? [...side].filter(([, s]) => s === 'A').map(([f]) => f) : [];
+  const oids = new Set<string>();
+  const add = (s: Set<string>) => { for (const o of s) oids.add(o); };
+  for (const rev of [mb, 'HEAD', ref]) add(await blobsAt(worktree, rev, both));
+  add(await blobsAt(worktree, 'HEAD', renameTargets(ours)));
+  add(await blobsAt(worktree, ref, renameTargets(theirs)));
+  const written = checkedOut(worktree, [...theirs].filter(([f, s]) => s !== 'D' && !bothSet.has(f)).map(([f]) => f));
+  add(await blobsAt(worktree, ref, written));
+  return { ok: true, oids };
+}
+
 /** Agents' notes (brief, summary, try, learned, video.json): Studio reads them from the worktree; they never belong in git. */
 const NOTES = '.hawkes/';
+/**
+ * A merge that prints no diffstat (2026-11-13): `git merge` ends by counting the lines of every file the other side
+ * changed, and in a light clone (`--filter=blob:none`) counting reads each one, so git fetched them all. One Yooba Land
+ * change behind beta pulled beta's new art and video, 2.5 GB, into the cloud server's 2.5 GB in-memory disk; the disk sat
+ * full, every change waited for disk room, and each restart did it again when the catch-up ran once more.
+ */
+export const MERGE_QUIET = ['--no-stat'];
 const STUDIO_GIT = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null'];
 
 /**
