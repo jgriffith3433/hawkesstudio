@@ -1318,7 +1318,9 @@ export async function downloadBuild(fetchIt: () => Promise<Response>, say: (s: s
       return tmp;
     } catch (e: any) {
       fs.rmSync(tmp, { recursive: true, force: true });
-      if (n >= waits.length || !downloadTransient(e, { missing: o.missing })) throw e;
+      if (!downloadTransient(e, { missing: o.missing })) throw e;
+      // Out of tries: the last status and how many tries were made, so the failure says it was tried again ("HTTP 502 (after 4 tries)").
+      if (n >= waits.length) throw Object.assign(new Error(`${String(e?.message ?? e)} (after ${n + 1} tries)`), { status: e?.status });
       say(`downloading the build failed (${String(e?.message ?? e).slice(0, 120)}): trying again in ${Math.round(waits[n] / 1000)} s (try ${n + 2} of ${waits.length + 1})`);
       await new Promise((r) => setTimeout(r, waits[n]));
     }
