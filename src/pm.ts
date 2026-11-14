@@ -24,6 +24,7 @@
 // Going live stays J's (DEPLOY <product>). Studio and Gen changes need J's approval (they restart services), except in
 // walk-away mode (walkaway.ts), where they merge by themselves once green and the PM decides routine calls itself.
 
+import { forEachBreathing } from './breathe.ts';
 import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
 import { isVideoTask } from './videos.ts';
 import { unityBuildOf, buildProof, builtBy, buildFailedIn, includesMerge, missingScenarioSkips } from './betabuild.ts';
@@ -246,7 +247,12 @@ export async function syncTasks() {
     console.warn(`[pm] reconcile: ${e.message ?? e}`);
   }
   await settleGpuRuns().catch((e) => console.warn(`[pm] GPU waits: ${e.message ?? e}`));
-  for (const t of (db.prepare(`SELECT id FROM tasks WHERE status IN ('working', 'needs answer', 'review', 'merged', 'verified')`).all() as any[]).map((r) => getTask(r.id)!)) {
+  // Each task read fresh as its turn comes (an earlier one's sync may have moved it), with the event loop let in between
+  // (breathe.ts: one pass over every task froze Studio for 1-5 s, 2026-11-14).
+  const ids = (db.prepare(`SELECT id FROM tasks WHERE status IN ('working', 'needs answer', 'review', 'merged', 'verified')`).all() as any[]).map((r) => String(r.id));
+  await forEachBreathing(ids, async (id) => {
+    const t = getTask(id);
+    if (!t) return;
     // One task going wrong never stops the loop (and the starts after it): its note says why.
     try {
       await syncTask(t, getChange);
@@ -254,7 +260,7 @@ export async function syncTasks() {
       console.warn(`[pm] task ${t.id}: ${e.message ?? e}`);
       try { setTask(t.id, { note: `the PM couldn't follow it up: ${e.message ?? e}`.slice(0, 500) }); } catch {}
     }
-  }
+  });
   // Beta's build after each merge, on its task ("did it work"); a failed one goes back to an agent.
   try {
     await followBuilds();
@@ -986,7 +992,8 @@ export async function milestoneCheck(id: string, group: string[] = [id]) {
   }
   // Its tasks judged from those runs first (checkOnBeta: a "no" goes to decideMiss in walk-away mode), then J hears, but
   // only when every criterion is met, or misses remain after the tries (J, 2026-10-19: "0 of 2 criteria met" was announced).
-  for (const t of tasks) await syncTask(getTask(t.id)!, (await changes()).getChange).catch((e) => console.warn(`[pm] milestone task ${t.id}: ${e.message ?? e}`));
+  const { getChange: gc } = await changes();
+  await forEachBreathing(tasks, (t) => syncTask(getTask(t.id)!, gc).catch((e) => console.warn(`[pm] milestone task ${t.id}: ${e.message ?? e}`)));
   const left = milestoneTasks(id).filter((t) => hasBeta(t.product) && t.criteria.length && !['verified', 'live', DONE].includes(t.status));
   if (!left.length || tries >= s.maxTries || !s.enabled) return announceMilestone(id);
   setMilestoneChecks(id, []);

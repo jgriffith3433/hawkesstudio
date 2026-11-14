@@ -43,6 +43,16 @@ export function onDbWrite(fn: (table: string) => void) {
   return () => void writeListeners.delete(fn);
 }
 const WRITE = /^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)/i;
+// db.exec writes are reported too (a schema step, a test's cleanup), so a reader that remembers an answer until its
+// tables change (betabuild.ts buildInProgress) never keeps one past a write.
+const WRITE_ANY = /(?:^|;)\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)/gi;
+const exec = db.exec.bind(db);
+(db as any).exec = (sql: string) => {
+  const r = exec(sql);
+  const tables = new Set([...String(sql).matchAll(WRITE_ANY)].map((m) => m[1].toLowerCase()).filter((t) => !NOISY.has(t)));
+  for (const table of tables) for (const fn of writeListeners) try { fn(table); } catch { /* a listener never breaks a write */ }
+  return r;
+};
 const prepare = db.prepare.bind(db);
 // Prepared statements, kept (2026-11-10): Studio's ~1000 db.prepare(sql) calls each compiled their SQL again on every
 // call, and a PM pass over a few hundred tasks spent 400-1100 ms of a 1.5-3.6 s event-loop freeze in SQLite's prepare

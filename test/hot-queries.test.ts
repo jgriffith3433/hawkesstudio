@@ -119,3 +119,15 @@ test("one subject's decisions are searched in SQLite, not picked out of every de
   const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sqls.find((s) => /subject = \?/.test(s))}`).all(0, 'replan', 't_4', 100) as { detail: string }[]).map((p) => p.detail).join(' | ');
   assert.match(plan, /USING INDEX pm_log_(subject|action)/, plan);
 });
+
+test("what is building is read once per product until runs, steps or builds are written", () => {
+  db.prepare("UPDATE runs SET status = 'running' WHERE id = 'r_going'").run();
+  assert.deepEqual(buildInProgress('hq', 'r_2'), { run: 'r_going', sha: 'c'.repeat(40) });
+  const again = capture(() => { for (let i = 0; i < 200; i++) buildInProgress('hq', 'r_2'); });
+  assert.equal(again.length, 0, 'two hundred merged tasks of one product: no query after the first');
+  // A write moves it (a prepared statement, or db.exec).
+  db.exec("UPDATE runs SET status = 'done' WHERE id = 'r_going'");
+  assert.equal(buildInProgress('hq', 'r_2'), null, 'db.exec writes are seen');
+  db.prepare("UPDATE runs SET status = 'running' WHERE id = 'r_going'").run();
+  assert.deepEqual(buildInProgress('hq', 'r_2'), { run: 'r_going', sha: 'c'.repeat(40) });
+});
