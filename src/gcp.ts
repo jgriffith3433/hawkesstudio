@@ -163,10 +163,18 @@ export async function gcsWrite(bucket: string, key: string, data: Buffer | strin
 export type CloudRunTarget = { project: string; region: string; job: string };
 const runBase = (t: CloudRunTarget) => `https://run.googleapis.com/v2/projects/${t.project}/locations/${t.region}`;
 
+/**
+ * The body of jobs.run: arguments, env, the task timeout and, when memoryMiB is given, that memory as this execution's limit
+ * (a per-run override of the job's own; none: the job's limit stays). Exported for the tests.
+ */
+export function runBody(o: { args?: string[]; env?: Record<string, string>; timeoutSeconds: number; memoryMiB?: number }) {
+  return { overrides: { containerOverrides: [{ ...(o.args ? { args: o.args } : {}), env: Object.entries(o.env ?? {}).map(([name, value]) => ({ name, value })), ...(o.memoryMiB ? { resources: { limits: { memory: `${o.memoryMiB}Mi` } } } : {}) }], taskCount: 1, timeout: `${o.timeoutSeconds}s` } };
+}
+
 /** Starts one execution of the job with these arguments, env and a task timeout; returns the execution's full name. */
-export async function runJob(t: CloudRunTarget, o: { args?: string[]; env?: Record<string, string>; timeoutSeconds: number }): Promise<string> {
+export async function runJob(t: CloudRunTarget, o: { args?: string[]; env?: Record<string, string>; timeoutSeconds: number; memoryMiB?: number }): Promise<string> {
   const op = await gapi(`${runBase(t)}/jobs/${t.job}:run`, {
-    body: { overrides: { containerOverrides: [{ ...(o.args ? { args: o.args } : {}), env: Object.entries(o.env ?? {}).map(([name, value]) => ({ name, value })) }], taskCount: 1, timeout: `${o.timeoutSeconds}s` } },
+    body: runBody(o),
   });
   const name = executionNameOf(op);
   if (name) return name;

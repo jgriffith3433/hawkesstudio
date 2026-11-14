@@ -255,7 +255,7 @@ export type JobRunner = {
   list(prefix: string): Promise<string[]>;
   remove(key: string): Promise<void>;
   /** Starts the execution; returns its name. */
-  start(unit: string): Promise<string>;
+  start(unit: string, o?: { memoryMiB?: number }): Promise<string>;
   /** null: Cloud Run doesn't know it (any more). started: Cloud Run began running it (false: still waiting for room). */
   state(execution: string): Promise<{ done: boolean; message: string; started?: boolean } | null>;
   cancel(execution: string): Promise<void>;
@@ -295,9 +295,10 @@ export function cloudRunner(): JobRunner {
     list: async (prefix) => (await (await g()).gcsList(bucket, at(prefix))).map((o) => (P ? o.name.slice(P.length + 1) : o.name)),
     remove: async (key) => (await g()).gcsDelete(bucket, at(key)),
     // In the jobs' own project when there is one (jobsproject.ts: they can't take the server's CPU there), else here.
-    start: async (unit) => (await import('./jobsproject.ts')).startInJobsPlace(job, async (p) => (await g()).runJob({ project: p.project, region: p.region, job }, {
+    start: async (unit, so) => (await import('./jobsproject.ts')).startInJobsPlace(job, async (p) => (await g()).runJob({ project: p.project, region: p.region, job }, {
       env: { STUDIO_JOB_UNIT: unit, ...(P ? { STUDIO_STATE_PREFIX: P } : {}), ...brokerEnv(unit) },
       timeoutSeconds: Number(process.env.STUDIO_AGENT_JOB_TIMEOUT) || 4 * 3600,
+      ...(so?.memoryMiB ? { memoryMiB: so.memoryMiB } : {}),
     }), unit),
     state: async (execution) => (await g()).getExecution(execution),
     cancel: async (execution) => (await g()).cancelExecution(execution),
@@ -873,7 +874,7 @@ export type CloudBuild = { code: number | null; error?: string; log: string; out
  * from GitHub (`bundle`: a local file of commits GitHub lacks, for an agent change not pushed yet); `command` runs in
  * `cwd` (the clone's absolute path; a site in a subfolder cds into it); `outputs` (relative to cwd) come back as a .tgz.
  */
-export async function runCloudBuild(unit: string, o: { remote: string; head: string; cwd: string; command: string; outputs: string[]; bundle?: string | null; gitToken?: string | null; timeoutMs?: number; onLine?: (s: string) => void; every?: number; beforeOutputs?: () => Promise<void>; secretEnv?: Record<string, string> }): Promise<CloudBuild> {
+export async function runCloudBuild(unit: string, o: { remote: string; head: string; cwd: string; command: string; outputs: string[]; bundle?: string | null; gitToken?: string | null; timeoutMs?: number; onLine?: (s: string) => void; every?: number; beforeOutputs?: () => Promise<void>; secretEnv?: Record<string, string>; memoryMiB?: number }): Promise<CloudBuild> {
   const r = runnerFor();
   const k = (n: string) => key(unit, n);
   building++;
@@ -890,7 +891,7 @@ export async function runCloudBuild(unit: string, o: { remote: string; head: str
       env: { CI: '1', npm_config_update_notifier: 'false', ...(o.secretEnv ?? {}) }, sessions: path.posix.join(o.cwd, '.hawkes-none', 's', 's'),
       git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, o.remote)), shallow: !o.bundle, lfs: true },
     }));
-    execution = await r.start(unit);
+    execution = await r.start(unit, o.memoryMiB ? { memoryMiB: o.memoryMiB } : undefined);
     const t0 = Date.now();
     const seen = { log: 0, err: 0 };
     for (;;) {

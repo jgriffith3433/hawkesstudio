@@ -496,6 +496,11 @@ export type BuildSpec = {
    */
   machine?: BuildMachine;
   /**
+   * npm: the memory (MiB) Studio's build job runs this build with, for the whole process tree (a Vite build that dies with
+   * "The configured memory limit was reached"). None: the job's own limit, so no other build's cost changes (builds.ts viaStudio).
+   */
+  memoryMiB?: number;
+  /**
    * firebase (firebasebuild.ts): `firebase deploy` from Studio's own cloud build job, signed in keylessly as the Firebase
    * project's deployer service account. beta/live: the Firebase projects (default: .firebaserc's staging and prod
    * aliases); only: what to deploy (default: what firebase.json has); serviceAccount: the account to act as ("{project}"
@@ -507,6 +512,13 @@ export type FirebaseConf = { beta?: string; live?: string; only?: string; servic
 export type BuildMachine = string | { cpu: number; memoryGiB: number };
 /** Cloud Run's vCPU counts and the most memory each takes (GiB); Hawkes Gen checks a size name against its own sizes. */
 const MACHINE_MEMORY: Record<number, [number, number]> = { 2: [1, 8], 4: [2, 16], 6: [4, 24], 8: [4, 32] };
+
+/** A build job's memory in MiB, checked: a whole number Cloud Run takes for the job's 2 vCPU (512 to 8192). Throws naming the field. */
+export function checkMemoryMiB(v: unknown, at = 'memoryMiB'): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 512 || n > 8192) throw new StudioError(`${at}: a whole number of MiB from 512 to 8192`, 400);
+  return n;
+}
 
 /** A build's machine, checked: a size name, or { cpu, memoryGiB } that Cloud Run runs. Throws naming the field. */
 export function checkMachine(m: unknown, at = 'machine'): BuildMachine {
@@ -573,6 +585,10 @@ export function checkBuilds(list: unknown): BuildSpec[] {
     if (b.machine !== undefined && b.machine !== null && b.machine !== '') {
       if (b.tool !== 'unity') throw new StudioError(`${at}.machine: only Unity builds (Hawkes Gen's cloud) take a machine size`, 400);
       out.machine = checkMachine(b.machine, `${at}.machine`);
+    }
+    if (b.memoryMiB !== undefined && b.memoryMiB !== null && (b.memoryMiB as unknown) !== '') {
+      if (b.tool !== 'npm') throw new StudioError(`${at}.memoryMiB: only npm builds (Studio's build job) take a memory size`, 400);
+      out.memoryMiB = checkMemoryMiB(b.memoryMiB, `${at}.memoryMiB`);
     }
     if (b.playtest !== undefined) out.playtest = b.playtest !== false;
     if (b.firebase !== undefined && b.firebase !== null) {
