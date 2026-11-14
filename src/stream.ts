@@ -14,6 +14,7 @@
 import type http from 'node:http';
 import { db, onDbWrite } from './db.ts';
 import { genEvents } from './gen.ts';
+import { breathe } from './breathe.ts';
 
 type Event = { topic: string; [k: string]: unknown };
 const clients = new Set<http.ServerResponse>();
@@ -86,13 +87,21 @@ async function look() {
   if (busy) return void (again = true);
   busy = true;
   try {
+    // One look runs every topic's read, and a look follows every burst of writes while a page is open: run back to back
+    // they held Studio for 100-200 ms about once a second (event loop p99 ~120 ms, 2026-11-14). Each read is its own
+    // stretch: Studio answers requests between them.
     compare('changes', one('SELECT COUNT(*) AS n, MAX(updated) AS u FROM changes'));
+    await breathe();
     compare('runs', one(`SELECT COUNT(*) AS n, MAX(started) AS s, MAX(finished) AS f, (SELECT group_concat(id || status || COALESCE(detail, ''), '|') FROM steps WHERE run IN (SELECT id FROM runs WHERE status = 'running')) AS now FROM runs`));
+    await breathe();
     // The roadmap board (dashboard/roadmap.js): any item, task or milestone changing (status, milestone, dependencies, notes).
     compare('roadmap', one(`SELECT (SELECT group_concat(id || status || COALESCE(milestone, '') || COALESCE(updated, 0), '|') FROM items) AS i, (SELECT group_concat(id || status || COALESCE(updated, 0), '|') FROM tasks) AS t, (SELECT group_concat(id || status || COALESCE(updated, 0), '|') FROM milestones) AS m`));
+    await breathe();
     // Builds finishing or failing (buildfail.ts): the Today cards, Go live and the project's build list redraw.
     compare('builds', one("SELECT id, status, fail_class, notified, (SELECT group_concat(id, '|') FROM runs WHERE kind = 'build' AND status = 'running') AS going FROM builds ORDER BY started DESC LIMIT 80"));
+    await breathe();
     compare('ops', one(`SELECT id, status, step FROM ops WHERE status IN ('queued', 'running') OR created > ${Date.now() - 86_400_000} ORDER BY created DESC LIMIT 40`));
+    await breathe();
     // The activity panel asks Hawkes Gen for its jobs; the Inbox reads the roadmap: both only after something moved.
     if (probes.activity) {
       const a = await probes.activity().catch(() => null);
@@ -101,6 +110,7 @@ async function look() {
         compare('activity', signature(a), { count: a.count, ...('failed' in a ? { failed: (a as any).failed } : {}), ...('failures' in a ? { failures: (a as any).failures } : {}) });
       }
     }
+    await breathe();
     if (probes.inbox) {
       const ib = await probes.inbox().catch(() => null);
       if (ib) {

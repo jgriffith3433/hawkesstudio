@@ -52,3 +52,13 @@ test("the PM's tick, its build follow-up and its starts let Studio answer betwee
     assert.match(start, new RegExp(loop.replace(/[()[\]{}]/g, '\\$&') + '\\n\\s+await breath\\(\\);'), loop);
   }
 });
+
+test("the dashboard stream's look runs each topic's read as its own stretch", () => {
+  const src = fs.readFileSync(new URL('../src/stream.ts', import.meta.url), 'utf8');
+  const look = src.slice(src.indexOf('async function look()'), src.indexOf('function schedule('));
+  // The top-level reads (four spaces in): each topic's compare, and the two probes.
+  const reads = [...look.matchAll(/\n    (compare\('|if \(probes\.)/g)].map((m) => m.index!);
+  assert.ok(reads.length >= 7, `every topic is read (${reads.length})`);
+  // Between any two reads there is a breath.
+  for (let i = 1; i < reads.length; i++) assert.match(look.slice(reads[i - 1], reads[i]), /\n    await breathe\(\);/, `before read ${i + 1}`);
+});
