@@ -10,14 +10,24 @@ export const BREATH_MS = 15;
 /** Hands the event loop back once: queued I/O, timers and requests run, then this resolves. */
 export const breathe = () => new Promise<void>((r) => setImmediate(r));
 
+/**
+ * For a loop or a chain of steps that can't take a callback: `const breath = breather(); ... await breath();` lets the
+ * event loop in when BREATH_MS of work has gone by since the last time, and costs nothing otherwise.
+ */
+export function breather(ms = BREATH_MS): () => Promise<void> {
+  let since = Date.now();
+  return async () => {
+    if (Date.now() - since < ms) return;
+    await breathe();
+    since = Date.now();
+  };
+}
+
 /** Runs fn on each item in order (awaiting it), letting the event loop in at least every BREATH_MS. */
 export async function forEachBreathing<T>(items: Iterable<T>, fn: (item: T) => unknown | Promise<unknown>, ms = BREATH_MS): Promise<void> {
-  let since = Date.now();
+  const breath = breather(ms);
   for (const item of items) {
     await fn(item);
-    if (Date.now() - since >= ms) {
-      await breathe();
-      since = Date.now();
-    }
+    await breath();
   }
 }

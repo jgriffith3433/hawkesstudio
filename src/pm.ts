@@ -24,7 +24,7 @@
 // Going live stays J's (DEPLOY <product>). Studio and Gen changes need J's approval (they restart services), except in
 // walk-away mode (walkaway.ts), where they merge by themselves once green and the PM decides routine calls itself.
 
-import { forEachBreathing } from './breathe.ts';
+import { breathe, breather, forEachBreathing } from './breathe.ts';
 import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
 import { isVideoTask } from './videos.ts';
 import { unityBuildOf, buildProof, builtBy, buildFailedIn, includesMerge, missingScenarioSkips } from './betabuild.ts';
@@ -682,13 +682,17 @@ export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[
     const at = (t.change ? getChange(t.change)?.merged_at : null) ?? Math.max(0, (t.merged_at ?? 0) - 5 * 60_000);
     byProduct.set(t.product, [...(byProduct.get(t.product) ?? []), { t, at }]);
   }
+  const breath = breather();
   for (const [product, list] of byProduct) {
+    await breath();
     const since = Math.min(...list.map((x) => x.at));
     // A run whose build was cancelled (J, Talk, the PM or Gen) built nothing: it is neither a build nor a failed one, and
     // the "nothing built the newest merge" check below starts another (cancel.ts).
     // A run whose Unity build was held (unitybuild-policy.ts) built nothing either: its tasks wait for the milestone's build.
-    const runs = (db.prepare(`SELECT id, status, detail, started, finished FROM runs WHERE kind = 'beta' AND products LIKE ? AND started >= ? ORDER BY started DESC, rowid DESC`).all(`%"${product}"%`, since) as any[])
-      .filter((x) => !buildCancelled(x.id, product) && !heldRun(x.id) && !heldBuildRun(x.id, product));
+    const runs: any[] = [];
+    await forEachBreathing(db.prepare(`SELECT id, status, detail, started, finished FROM runs WHERE kind = 'beta' AND products LIKE ? AND started >= ? ORDER BY started DESC, rowid DESC`).all(`%"${product}"%`, since) as any[], (x) => {
+      if (!buildCancelled(x.id, product) && !heldRun(x.id) && !heldBuildRun(x.id, product)) runs.push(x);
+    });
     // Beta's Unity build waits for a milestone's end with nothing else queued: no beta run of its own is started for a
     // merge meanwhile (it would only be held again); the milestone's check builds it (milestoneCheck). Asked only when a
     // start is otherwise due: reading the project's work every pass for every product froze Studio before (2026-11-10).
@@ -1457,7 +1461,9 @@ export async function startWork() {
     return id;
   };
   const reports = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND source = 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, first_seen`).all() as any[];
+  const breath = breather();
   for (const f of reports) {
+    await breath();
     if (cap.free <= 0) break;
     // A report already tried waits behind the roadmap's tasks (the bug stage below): retries don't take slots from them.
     if (hasEarlierAttempt(f.id)) continue;
@@ -1476,6 +1482,7 @@ export async function startWork() {
   // A project handed over to another Studio (config.ts managedBy): its PM works it there.
   const waiting = startableTasks().filter((t) => !managedElsewhereId(t.product));
   for (const t of waiting) {
+    await breath();
     if (cap.free <= 0) break;
     // The change it starts is queued at once, so the next task of the product sees it here.
     if (await slotHeld(t.product, await taskShape(t))) continue;
@@ -1504,6 +1511,7 @@ export async function startWork() {
     const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') AND (COALESCE(source, '') != 'J' OR EXISTS (SELECT 1 FROM changes WHERE changes.findings LIKE '%"' || findings.id || '"%')) ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
     const { betaPreview } = await import('./previews.ts');
     for (const f of bugs) {
+      await breath();
       if (cap.free <= 0) break;
       if (isInfra(f.product) || managedElsewhereId(f.product) || waiting.some((t) => t.product === f.product) || await slotHeld(f.product, { text: f.title })) continue;
       // An automatic error report from a beta build older than a fix waits for the current build to catch it again.
@@ -3396,12 +3404,17 @@ export async function tick() {
     for (const [what, f] of [['watch', watch], ['syncTasks', syncTasks]] as const) {
       try {
         await f();
+        await breathe();
       } catch (e: any) {
         failed = `${what}: ${e.message ?? e}`;
         console.warn(`[pm] ${failed}`);
       }
     }
     lastError = failed;
+    // Each step below hands the event loop back once it has run for BREATH_MS (breathe.ts): one pass of the PM is many
+    // short stretches, never one long one, so requests and the lease's heartbeat get in between them.
+    const breath = breather();
+    await breath();
     await settleFindingQuestions().catch((e) => console.warn(`[pm] settling bug questions: ${e.message ?? e}`));
     const s = pmSettings();
     // Walk-away mode: ready Studio/Gen changes merge by themselves once green, and the daily digest (agents.ts, above).
@@ -3416,6 +3429,7 @@ export async function tick() {
         console.warn(`[pm] walk-away: ${e.message ?? e}`);
       }
     }
+    await breath();
     if (!s.enabled) return;
     // A PM turn that just ended: its leftovers get the defaults.
     if (turn && !turnRunning()) {
@@ -3424,10 +3438,13 @@ export async function tick() {
       await applyDefaults(done.subjects);
     }
     await applyDefaults([], s.graceMinutes * 60_000);
+    await breath();
     // Tasks that only failed because the harness stopped their agents: planned again with fresh tries (harness-hold.ts).
     await repairHarnessFailures().catch((e: any) => console.warn(`[pm] harness repair: ${e.message ?? e}`));
+    await breath();
     // Failed tasks nobody was asked about: an investigation (walk-away) or one question in J's Inbox.
     await sweepFailed().catch((e: any) => console.warn(`[pm] failed tasks: ${e.message ?? e}`));
+    await breath();
     // Tasks dropped as already done count as done; ideas held until other work is on beta are released once it is.
     try {
       adoptDoneDrops();
@@ -3440,7 +3457,9 @@ export async function tick() {
     } catch (e: any) {
       console.warn(`[pm] done and held tasks: ${e.message ?? e}`);
     }
+    await breath();
     const startedNow = await startWork();
+    await breath();
     // A harness hold isn't idle slots or a stall: nothing may start, and it resumes by itself (studio_pm status "hold").
     const held = noProviderFree();
     // Where the time goes (pace.ts): idle slots and work parked on Gen/GPU, sampled each tick; idle slots with nothing
@@ -3452,6 +3471,7 @@ export async function tick() {
     }
     // Nothing moving with free agents and work left: why, per task, and what it can fix (one "stall" decision).
     if (!held) { try { livenessWatch(); } catch (e: any) { console.warn(`[pm] liveness: ${e.message ?? e}`); } }
+    await breath();
     if (!held) await stallWatch().catch((e: any) => console.warn(`[pm] stall watch: ${e.message ?? e}`));
     const daily = state().daily !== today() && new Date().getHours() >= s.dailyHour;
     if ((events.length || daily) && !turnRunning() && process.env.STUDIO_PM_TALK !== 'off') await runPmTurn(daily);
