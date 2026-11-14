@@ -827,6 +827,18 @@ async function viaFirebase(p: Product, b: BuildSpec, slug: string, sha: string, 
   return { ...out, detail: `Firebase ${project} (${only}) at ${url}` };
 }
 
+/**
+ * Memory (MiB) for an npm build's job: the build's own memoryMiB, else the one set here for a project whose build settings
+ * live in J's cell data, not products.json (the read-time way, memory m_1318822c1405): Dose of Destruction's site build
+ * died at "rendering chunks" with "The configured memory limit was reached" (J, 2026-11-14, q_47ed113b805c: 1 GB). Nothing
+ * for any other build, so its job keeps its own limit and no other cost changes. Exported for the tests.
+ */
+const MEMORY_BY_PRODUCT: Record<string, number> = { 'dose-of-destruction': 1024 };
+export function buildMemoryMiB(p: Pick<Product, 'id'>, b: Pick<BuildSpec, 'tool' | 'memoryMiB'>): number | undefined {
+  if (b.tool !== 'npm') return undefined;
+  return b.memoryMiB ?? MEMORY_BY_PRODUCT[p.id];
+}
+
 /** npm or static: Studio's Cloud Run job runs the command (or the files are published as they are, with no package.json). */
 async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, token: string | null, gh: typeof fetch, say: (s: string) => void, hold: () => Promise<void> = async () => {}): Promise<Output> {
   const { githubFiles } = await import('./sitestore.ts');
@@ -859,9 +871,10 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
   const command = b.command ?? 'npm run build';
   const installs = /\b(npm (ci|install|i)\b|pnpm( [\w@.-]+)? install|yarn( [\w@.-]+)? install|bun install)/.test(command);
   const env = Object.entries({ CI: 'false', ...(b.env ?? {}) }).map(([k, v]) => `export ${k}='${String(v).replace(/'/g, `'\\''`)}'`).join('; ');
-  say(`building ${sha.slice(0, 7)} in a Cloud Run job (${command})`);
+  const memoryMiB = buildMemoryMiB(p, b);
+  say(`building ${sha.slice(0, 7)} in a Cloud Run job (${command})${memoryMiB ? `, ${memoryMiB} MiB of memory` : ''}`);
   const r = await runCloudBuild(`build-${p.id}-${b.id}-${Date.now().toString(36)}`, {
-    remote: `https://github.com/${slug}.git`, head: sha, cwd: root, command: `${env}; ${cd}${installs ? '' : `(${install}) && `}${command}`, outputs: [outDir], gitToken: token,
+    remote: `https://github.com/${slug}.git`, head: sha, cwd: root, command: `${env}; ${cd}${installs ? '' : `(${install}) && `}${command}`, outputs: [outDir], gitToken: token, ...(memoryMiB ? { memoryMiB } : {}),
     onLine: (l) => { if (/^\[job\]|error|built in/i.test(l)) say(l); }, beforeOutputs: hold,
   });
   if (r.error || r.code !== 0) {
