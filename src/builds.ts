@@ -16,6 +16,7 @@ import type http from 'node:http';
 import { db, newId } from './db.ts';
 import { getProduct, loadProducts, hasOwnBeta, StudioError, managedElsewhere, setBuildMachine, type BuildSpec, type BuildMachine, type Product } from './config.ts';
 import { folderFilesAsync } from './sitestore.ts';
+import { holdTmp, releaseTmp } from './disksweep.ts';
 import { BuildFailure, LOG_LINES, extractLog, recordFailure, announce, settleFailure } from './buildfail.ts';
 import { asFirebase } from './firebasebuild.ts';
 import { enterLine, lineKey, type Turn } from './buildline.ts';
@@ -773,7 +774,9 @@ async function pageInfo(p: Product, sha: string, ref: string, change: string | u
 
 // ------------------------------------------------------------------ runners
 
-const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hs-build-'));
+// A build's folder is held (disksweep.ts holdTmp) from its creation until dropTmp, so no sweep removes it under a publish.
+const tmpDir = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-build-')); holdTmp(d); return d; };
+const dropTmp = (tmp: string) => { releaseTmp(tmp); fs.rmSync(tmp, { recursive: true, force: true }); };
 const sizeOf = (files: { size: number }[]) => files.reduce((n, f) => n + f.size, 0);
 
 /**
@@ -1275,13 +1278,13 @@ async function viaActions(b: BuildSpec, slug: string, a: { runId: string; name?:
 }
 
 export async function folderOutput(dir: string, tmp: string, keepFolder = false): Promise<Output> {
-  if (!fs.existsSync(dir)) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build made no output'); }
+  if (!fs.existsSync(dir)) { dropTmp(tmp); throw new Error('the build made no output'); }
   // An output that is one folder (an artifact zipped around its folder): its contents are the site.
   const entries = fs.readdirSync(dir);
   const root = !keepFolder && entries.length === 1 && fs.statSync(path.join(dir, entries[0])).isDirectory() && !fs.existsSync(path.join(dir, 'index.html')) ? path.join(dir, entries[0]) : dir;
   const files = await folderFilesAsync(root);
-  if (!files.length) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build output is empty'); }
-  return { files, bytes: sizeOf(files), cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
+  if (!files.length) { dropTmp(tmp); throw new Error('the build output is empty'); }
+  return { files, bytes: sizeOf(files), cleanup: () => dropTmp(tmp) };
 }
 
 /** Whether a download failure is worth another try: Gen or its proxy busy (5xx, 429), the connection cut, a timeout. Exported for the tests. */
@@ -1332,7 +1335,7 @@ export async function downloadBuild(fetchIt: () => Promise<Response>, say: (s: s
       await (o.unpack ?? untarStream)(await fetchIt(), tmp);
       return tmp;
     } catch (e: any) {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      dropTmp(tmp);
       if (!downloadTransient(e, { missing: o.missing })) throw e;
       // Out of tries: the last status and how many tries were made, so the failure says it was tried again ("HTTP 502 (after 4 tries)").
       if (n >= waits.length) throw Object.assign(new Error(`${String(e?.message ?? e)} (after ${n + 1} tries)`), { status: e?.status });
@@ -1598,7 +1601,7 @@ export async function unpackBuild(res: Response, dir: string, o: { stage?: Stage
  * index.html at its root) is unwrapped unless the site keeps its own page (keepFolder). Exported for the tests.
  */
 export function unpackedOutput(u: { files: Unpacked[] }, tmp: string, keepFolder = false, stage: Stage | null = null, store: () => Promise<{ get(key: string): Promise<Buffer | null> }> = siteStore): Output {
-  const drop = () => { fs.rmSync(tmp, { recursive: true, force: true }); void stage?.drop().catch(() => {}); };
+  const drop = () => { dropTmp(tmp); void stage?.drop().catch(() => {}); };
   if (!u.files.length) { drop(); throw new Error('the build output is empty'); }
   const tops = new Set(u.files.map((f) => f.path.split('/')[0]));
   const strip = !keepFolder && tops.size === 1 && u.files.every((f) => f.path.includes('/')) ? `${[...tops][0]}/` : '';

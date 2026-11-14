@@ -13,6 +13,7 @@ process.env.STUDIO_DISK_SWEEP = 'on';
 const {
   capByCountAndSize, sweepProfiles, sweepTmp, sweepWorktrees, liveWorkNames, sweepDisk, ensureDiskRoom,
   setDiskSource, diskHigh, diskFull, diskBudget, PROFILE_KEEP, removeChangeDirs, TMP_MAX_AGE_MS,
+  holdTmp, releaseTmp, isTmpHeld, HOLD_MAX_MS,
 } = await import('../src/disksweep.ts');
 const { setMemSource } = await import('../src/memgate.ts');
 
@@ -156,4 +157,27 @@ test('removeChangeDirs only deletes under .work and takes siblings', () => {
   assert.ok(!fs.existsSync(path.join(work, 'c_x-site')));
   assert.ok(!fs.existsSync(path.join(work, 'c_x.repos')));
   assert.equal(removeChangeDirs('/tmp/not-under-work'), 0);
+});
+
+test('sweepTmp with maxAge 0 keeps a held build dir, still removes a stale unheld one, and a released one goes', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ds-hold-'));
+  const live = path.join(root, 'hs-build-live');
+  const stale = path.join(root, 'hs-build-stale');
+  for (const d of [live, stale]) { fs.mkdirSync(path.join(d, 'a'), { recursive: true }); fs.writeFileSync(path.join(d, 'a', 'x.bundle'), 'y'); }
+  holdTmp(live);
+  const r = sweepTmp(root, Date.now(), 0);
+  assert.equal(r.removed, 1);
+  assert.ok(fs.existsSync(path.join(live, 'a', 'x.bundle')), 'the held dir and its files survive');
+  assert.ok(!fs.existsSync(stale), 'an unregistered stale dir is removed');
+  releaseTmp(live);
+  sweepTmp(root, Date.now(), 0);
+  assert.ok(!fs.existsSync(live), 'once released, a later sweep removes it');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a hold older than HOLD_MAX_MS no longer protects a folder', () => {
+  const d = path.join(os.tmpdir(), 'hs-build-leaked');
+  holdTmp(d, 1000);
+  assert.ok(isTmpHeld(d, 1000 + 1000));
+  assert.ok(!isTmpHeld(d, 1000 + HOLD_MAX_MS));
 });

@@ -297,6 +297,23 @@ export function sweepNpmCache(dir = npmCacheDir()): { bytes: number; skipped?: s
 }
 
 /**
+ * Tmp folders a running build still holds (builds.ts: from unpack until publish ends). Every sweep skips them, the
+ * maxAge 0 rung of the reclaim ladder too: Yooba Land beta build 132 lost its unpacked files to that rung while
+ * publishSite was reading them. A hold older than HOLD_MAX_MS is ignored, so a build that never released can't pin a
+ * folder forever.
+ */
+export const HOLD_MAX_MS = 6 * 60 * 60 * 1000;
+const heldTmp = new Map<string, number>();
+export const holdTmp = (dir: string, now = Date.now()): void => { heldTmp.set(path.resolve(dir), now); };
+export const releaseTmp = (dir: string): void => { heldTmp.delete(path.resolve(dir)); };
+export const isTmpHeld = (dir: string, now = Date.now()): boolean => {
+  const at = heldTmp.get(path.resolve(dir));
+  if (at === undefined) return false;
+  if (now - at >= HOLD_MAX_MS) { heldTmp.delete(path.resolve(dir)); return false; }
+  return true;
+};
+
+/**
  * Stale temp downloads: Studio's hs-build-* folders, leftover /tmp/build trees, and other Studio scratch dirs older
  * than TMP_MAX_AGE_MS. Never touches another process's live cwd.
  */
@@ -304,6 +321,7 @@ export function sweepTmp(root = os.tmpdir(), now = Date.now(), maxAge = TMP_MAX_
   let removed = 0, bytes = 0;
   const take = (p: string) => {
     try {
+      if (isTmpHeld(p, now)) return;
       const st = fs.statSync(p);
       if (now - st.mtimeMs < maxAge) return;
       bytes += rmTree(p);
