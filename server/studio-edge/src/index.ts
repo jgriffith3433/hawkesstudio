@@ -167,9 +167,13 @@ export default {
   },
 };
 
-/** Whether the cell's own /api/health answers now (it sets X-Studio-Cell on every answer). */
-async function cellUp(target: URL, org: string) {
-  const h = await fetch(new URL('/api/health', target), { headers: { 'X-Forwarded-Prefix': `/o/${org}` }, signal: AbortSignal.timeout(4000) }).catch(() => null);
+/**
+ * Whether the cell answers now (it sets X-Studio-Cell on every answer). It asks /api/ready, which the cell answers before
+ * anything else, with no database or network (src/server.ts): /api/health asks Gen and reads the agent queue, and a busy
+ * Studio kept the opening page waiting on it (2026-11-14).
+ */
+async function cellUp(target: URL, org: string, ms = 4000) {
+  const h = await fetch(new URL('/api/ready', target), { headers: { 'X-Forwarded-Prefix': `/o/${org}` }, signal: AbortSignal.timeout(ms) }).catch(() => null);
   return h?.headers.get('X-Studio-Cell') === org;
 }
 
@@ -197,8 +201,8 @@ async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> 
   const target = new URL(`https://${cellHost(org, env)}${path}${url.search}`);
   // The waking page's question: is the cell up yet?
   if (path === '/__waking') {
-    const h = await fetch(new URL('/api/health', target), { headers: { 'X-Forwarded-Prefix': `/o/${org}` } }).catch(() => null);
-    if (h?.headers.get('X-Studio-Cell')) return Response.json({ ready: true }, { headers: { 'Cache-Control': 'no-store' } });
+    // A cell that doesn't answer within 10 s reads as not ready yet, and the page asks again; never a wait without end.
+    if (await cellUp(target, org, 10_000)) return Response.json({ ready: true }, { headers: { 'Cache-Control': 'no-store' } });
     const s: any = await (await control(env, `/api/cells/edge/${org}`)).json().catch(() => ({}));
     return Response.json({ ready: false, state: s.state ?? 'unknown', ...(s.state === 'new' ? { next: '/auth/start' } : {}), ...(s.error ? { error: s.error } : {}) }, { headers: { 'Cache-Control': 'no-store' } });
   }

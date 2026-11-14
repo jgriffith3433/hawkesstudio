@@ -85,8 +85,8 @@ test('a hibernated cell: the control plane is asked to wake it, the visitor sees
   const api = await worker.fetch(at('/o/acme-1a2b/api/overview'), env);
   assert.equal(api.status, 503);
   assert.equal((await api.json()).waking, true);
-  // The page's question: ready once the cell's own health answers.
-  answer = (url) => (url.endsWith('/api/health') ? cell() : Response.json({ state: 'awake' }));
+  // The page's question: ready once the cell answers /api/ready (never /api/health, which reads Gen and the queue).
+  answer = (url) => (url.endsWith('/api/ready') ? cell() : Response.json({ state: 'awake' }));
   assert.deepEqual(await (await worker.fetch(at('/o/acme-1a2b/__waking'), env)).json(), { ready: true });
 });
 
@@ -225,7 +225,7 @@ test('event streams and video streams go back as they come: not buffered, compre
 test("a cell's own error (a 500 that lost its header on the way) is shown as that error: never resent, never 'restarting'", async () => {
   let posts = 0;
   answer = (url, init) => {
-    if (url.endsWith('/api/health')) return cell();
+    if (url.endsWith('/api/ready')) return cell();
     if (url.includes('studio-o-acme-1a2b')) { if ((init.method ?? 'GET') === 'POST') posts++; return Response.json({ error: "Antigravity's CLI (agy) isn't installed" }, { status: 500 }); }
     return Response.json({});
   };
@@ -235,7 +235,7 @@ test("a cell's own error (a 500 that lost its header on the way) is shown as tha
   assert.match(b.error, /isn't installed/);
   assert.equal(b.restarting, undefined);
   assert.equal(posts, 1, 'the sign-in was started once, not four times');
-  answer = (url) => (url.endsWith('/api/health') ? cell() : url.includes('studio-o-acme-1a2b') ? new Response('<html>Server Error</html>', { status: 500, headers: { 'Content-Type': 'text/html' } }) : Response.json({}));
+  answer = (url) => (url.endsWith('/api/ready') ? cell() : url.includes('studio-o-acme-1a2b') ? new Response('<html>Server Error</html>', { status: 500, headers: { 'Content-Type': 'text/html' } }) : Response.json({}));
   const html = await (await worker.fetch(at('/o/acme-1a2b/api/overview'), env)).json();
   assert.match(html.error, /couldn't do that \(HTTP 500\)/);
 });

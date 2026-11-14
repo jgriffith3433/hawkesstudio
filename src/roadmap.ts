@@ -1048,10 +1048,16 @@ export function logDecision(action: string, subject: string | null, product: str
   pmLogVersion.n++;
   return id;
 }
-export function listDecisions(q: { limit?: number; since?: number; action?: string } = {}) {
+/**
+ * The PM's decisions, newest first. subject: only that task's, milestone's or run's (pm_log_subject), searched in SQLite:
+ * callers used to read every decision of an action (limit 10 000, each one's undo parsed) and pick one subject out in JS,
+ * once per task on every PM pass (2026-11-14: a large share of 50 event-loop freezes an hour).
+ */
+export function listDecisions(q: { limit?: number; since?: number; action?: string; subject?: string } = {}) {
   const where = ['at >= ?'];
   const args: any[] = [q.since ?? 0];
   if (q.action) { where.push('action = ?'); args.push(q.action); }
+  if ('subject' in q) { where.push('subject = ?'); args.push(q.subject ?? null); }
   return (db.prepare(`SELECT * FROM pm_log WHERE ${where.join(' AND ')} ORDER BY at DESC LIMIT ?`).all(...args, q.limit ?? 100) as any[]).map((r) => ({ ...r, undo: parse(r.undo) })) as LogEntry[];
 }
 export const getDecision = (id: string) => {

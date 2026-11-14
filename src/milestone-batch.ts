@@ -65,7 +65,7 @@ export function milestonesComing(product: string, except: Set<string>): string[]
 
 /** When a milestone was first found complete and waiting (its first batch decision), or now. */
 export function waitingSince(id: string, now = Date.now()) {
-  const rows = R.listDecisions({ since: 0, action: 'milestone-batch', limit: 10_000 }).filter((d) => d.subject === id);
+  const rows = R.listDecisions({ since: 0, action: 'milestone-batch', limit: 10_000, subject: id });
   return rows.length ? rows[rows.length - 1].at : now;
 }
 
