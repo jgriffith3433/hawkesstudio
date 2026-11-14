@@ -276,3 +276,28 @@ test('the lease moved while preparing: the claim decides again from the new hold
   assert.equal(prepared, 1);
   assert.equal(r.previous, other, `decided from the new holder, not ${holder}`);
 });
+
+test('2026-11-14 08:05Z: a prepare longer than the stale window still waits for the holder to release (never "quiet")', async () => {
+  const holder = L.myLeaseId()!;
+  // The holder serves and beats; the new instance prepares for longer than staleMs.
+  objects.set('db/lease.json', Buffer.from(JSON.stringify({ id: holder, rev: null, at: Date.now() })));
+  objects.delete(`db/released-${holder}`);
+  let lostTo: string | null = null;
+  const beats = setInterval(() => objects.set(`db/alive-${holder}`, Buffer.from(JSON.stringify({ at: Date.now(), generation: null, servedAt: Date.now() }))), 10);
+  objects.set(`db/alive-${holder}`, Buffer.from(JSON.stringify({ at: Date.now(), generation: null, servedAt: Date.now() })));
+  const stop = L.watchLease((by) => { lostTo = by.id; }, { everyMs: 20 });
+  let releasedAt = 0;
+  const claiming = L.claim({ pollMs: 10, waitMs: 5000, staleMs: 100, confirmMs: 50, prepare: () => new Promise((r) => setTimeout(r, 300)) });
+  const released = (async () => {
+    while (!lostTo) await new Promise((r) => setTimeout(r, 10));
+    clearInterval(beats);
+    await new Promise((r) => setTimeout(r, 150)); // saving state and Litestream's last sync
+    releasedAt = Date.now();
+    await L.release(holder);
+  })();
+  const [r]: any[] = await Promise.all([claiming, released]);
+  stop();
+  clearInterval(beats);
+  assert.equal(r.how, 'released', `claimed as ${r.how} while the holder was still writing`);
+  assert.ok(Date.now() >= releasedAt && releasedAt > 0);
+});
