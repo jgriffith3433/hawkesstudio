@@ -441,3 +441,188 @@ test("Hawkes Gen's beta app (beta.<domain>) has the button: its reports file aga
   assert.match(rep.state, /u_abc/);
   assert.ok(rep.shot, 'the screenshot is kept');
 });
+
+test('the 🐞 widget hides under Studio playtests (web and Unity WebGL, ?playtest= or runner flags), shows on normal beta visits and ?report=1, and keeps checkBuild / data-hawkes working', async () => {
+  const { servedSha } = await import('../src/servedpage.ts');
+  const { withPlaytestHint } = await import('../src/pipeline.ts');
+  const widgetCode = fs.readFileSync(br.WIDGET, 'utf8');
+
+  const runPage = async (opts: { search?: string; globals?: Record<string, any>; webdriver?: boolean; info?: any; buildReply?: any } = {}) => {
+    const info = opts.info ?? { product: 'place-department-unity', sha: 'abc1234', ref: 'beta (build Game/v12)', version: '12' };
+    const html = br.injectReport('<!doctype html><html><head><meta charset="utf-8"></head><body><canvas></canvas></body></html>', info);
+    const loaderCode = /<script data-hawkes-loader>([\s\S]*?)<\/script>/.exec(html)![1];
+
+    const makeEl = (tag: string): any => {
+      const classes = new Set<string>();
+      const attrs: Record<string, string> = {};
+      const children: any[] = [];
+      const listeners: Record<string, Function[]> = {};
+      const el: any = {
+        tagName: tag.toUpperCase(),
+        hidden: false,
+        textContent: '',
+        value: '',
+        checked: false,
+        disabled: false,
+        dataset: {} as Record<string, string>,
+        style: { cssText: '', display: '', top: '' },
+        children,
+        parentNode: null as any,
+        classList: {
+          add: (...cs: string[]) => cs.forEach((c) => classes.add(c)),
+          remove: (...cs: string[]) => cs.forEach((c) => classes.delete(c)),
+          toggle: (c: string, on?: boolean) => {
+            const want = on === undefined ? !classes.has(c) : Boolean(on);
+            if (want) classes.add(c); else classes.delete(c);
+            return want;
+          },
+          contains: (c: string) => classes.has(c),
+        },
+        setAttribute: (k: string, v: string) => { attrs[k] = String(v); },
+        getAttribute: (k: string) => (k in attrs ? attrs[k] : null),
+        hasAttribute: (k: string) => k in attrs,
+        removeAttribute: (k: string) => { delete attrs[k]; },
+        appendChild: (c: any) => { c.parentNode = el; children.push(c); return c; },
+        removeChild: (c: any) => { const i = children.indexOf(c); if (i >= 0) { children.splice(i, 1); c.parentNode = null; } return c; },
+        remove: () => { if (el.parentNode) el.parentNode.removeChild(el); },
+        addEventListener: (t: string, fn: Function) => { (listeners[t] ||= []).push(fn); },
+        setPointerCapture: () => {},
+        focus: () => {},
+        blur: () => {},
+        attachShadow: () => {
+          const bySel = new Map<string, any>();
+          const root: any = {
+            innerHTML: '',
+            querySelector: (s: string) => {
+              if (!bySel.has(s)) {
+                const sub = makeEl(s.startsWith('.') ? 'div' : s);
+                if (s === '.dot') sub.textContent = '🐞';
+                bySel.set(s, sub);
+              }
+              return bySel.get(s);
+            },
+          };
+          el.shadowRoot = root;
+          return root;
+        },
+      };
+      return el;
+    };
+
+    const body = makeEl('body');
+    const docEl = makeEl('html');
+    const timers: { fn: Function; ms: number }[] = [];
+    const winListeners: Record<string, Function[]> = {};
+    const fetched: string[] = [];
+    let hostCreated: any = null;
+    let scriptEl: any = null;
+
+    const ctx: any = {
+      ...(opts.globals ?? {}),
+      console: { error() {}, warn() {} },
+      location: {
+        href: `https://sb-placedept.hawkesgen.ai/${opts.search ?? ''}`,
+        hostname: 'sb-placedept.hawkesgen.ai',
+        search: opts.search ?? '',
+        reload: () => {},
+      },
+      navigator: { webdriver: Boolean(opts.webdriver), userAgent: 'TestBrowser', language: 'en-US', platform: 'Linux' },
+      localStorage: { getItem: () => null, setItem: () => {} },
+      sessionStorage: { getItem: () => null, setItem: () => {} },
+      innerWidth: 1280,
+      innerHeight: 720,
+      devicePixelRatio: 1,
+      scrollX: 0,
+      scrollY: 0,
+      matchMedia: () => ({ matches: false }),
+      URLSearchParams,
+      Object, JSON, Date, String, Number, Boolean, Array, Map, Set, WeakSet, RegExp, Error, Math, Promise,
+      performance: { now: () => 0 },
+      requestAnimationFrame: () => 0,
+      setTimeout: (fn: Function, ms = 0) => { timers.push({ fn, ms }); return timers.length; },
+      clearTimeout: () => {},
+      setInterval: () => 1,
+      clearInterval: () => {},
+      addEventListener: (t: string, fn: Function) => { (winListeners[t] ||= []).push(fn); },
+      fetch: async (u: string) => {
+        fetched.push(u);
+        return opts.buildReply ? { ok: true, status: 200, json: async () => opts.buildReply } : { ok: false, status: 404, json: async () => ({}) };
+      },
+      document: {
+        readyState: 'complete',
+        visibilityState: 'visible',
+        title: 'Place Department',
+        body,
+        documentElement: docEl,
+        head: makeEl('head'),
+        currentScript: null as any,
+        activeElement: body,
+        createElement: (tag: string) => {
+          const e = makeEl(tag);
+          if (tag === 'div' && !hostCreated) hostCreated = e;
+          if (tag === 'script') scriptEl = e;
+          return e;
+        },
+        querySelectorAll: () => [],
+        addEventListener: (t: string, fn: Function) => { (winListeners[`doc:${t}`] ||= []).push(fn); },
+      },
+    };
+    ctx.window = ctx;
+    ctx.top = ctx;
+
+    // 1. Run the loader snippet injected into the page and flush its load timer to append <script data-hawkes=...>.
+    vm.runInNewContext(loaderCode, ctx);
+    for (const t of timers.splice(0)) t.fn();
+    assert.ok(scriptEl, 'the loader creates the report.js script element');
+    ctx.document.currentScript = scriptEl;
+
+    // 2. Run dashboard/report-widget.js with that script element as document.currentScript.
+    vm.runInNewContext(widgetCode, ctx);
+
+    // 3. Run the 3000 ms checkBuild timer if scheduled.
+    for (const t of timers.filter((x) => x.ms === 3000)) await t.fn();
+
+    const mountedReportEls = body.children.filter((c: any) => c.hasAttribute('data-hawkes-report'));
+    const dot = hostCreated?.shadowRoot?.querySelector('.dot');
+    const panel = hostCreated?.shadowRoot?.querySelector('.panel');
+    const fresh = hostCreated?.shadowRoot?.querySelector('.fresh');
+    return { html, sha: servedSha(html), mountedReportEls, host: hostCreated, dot, panel, fresh, fetched, winListeners };
+  };
+
+  // (1) Beta playtests of web or Unity WebGL projects: ?playtest= (from withPlaytestHint), ?playtest=<scenario>, or runner flags before navigation.
+  const unityPlaytestUrl = new URL(withPlaytestHint('https://sb-placedept.hawkesgen.ai/'));
+  assert.equal(unityPlaytestUrl.search, '?playtest=', 'withPlaytestHint adds ?playtest= to beta playtest URLs');
+
+  for (const c of [
+    { label: 'empty ?playtest= (withPlaytestHint)', search: unityPlaytestUrl.search },
+    { label: '?playtest=smoke scenario param', search: '?playtest=smoke' },
+    { label: 'runner __hawkesRunnerFps flag before navigation', globals: { __hawkesRunnerFps: { samples: [] } } },
+    { label: 'runner __hawkesPlaytestPush binding before navigation', globals: { __hawkesPlaytestPush: () => {} } },
+    { label: 'runner HAWKES_PLAYTEST flag before navigation', globals: { HAWKES_PLAYTEST: '1' } },
+    { label: 'navigator.webdriver automation flag', webdriver: true },
+  ]) {
+    const r = await runPage({ ...c, buildReply: { sha: 'new9999', version: '13' } });
+    assert.equal(r.mountedReportEls.length, 0, `${c.label}: no [data-hawkes-report] element is mounted in document.body`);
+    assert.equal(r.host.style.display, 'none', `${c.label}: host is hidden`);
+    assert.equal(r.dot.style.display, 'none', `${c.label}: 🐞 button is hidden`);
+    assert.equal(r.panel.style.display, 'none', `${c.label}: panel is hidden`);
+    assert.equal(r.sha, 'abc1234', `${c.label}: servedpage.ts still reads the sha from data-hawkes`);
+    assert.ok(r.fetched.includes('/dev/__studio/build'), `${c.label}: checkBuild still runs`);
+    assert.equal(r.fresh.dataset.build, 'new9999/13', `${c.label}: checkBuild still records the newer build`);
+  }
+
+  // (2) Opening a beta page without the playtest parameter still shows the 🐞 button.
+  const normal = await runPage({ search: '', buildReply: { sha: 'new9999', version: '13' } });
+  assert.equal(normal.mountedReportEls.length, 1, 'normal beta visit mounts [data-hawkes-report] in document.body');
+  assert.notEqual(normal.host.style.display, 'none', 'normal beta visit keeps host visible');
+  assert.notEqual(normal.dot.style.display, 'none', 'normal beta visit shows the 🐞 button');
+  assert.equal(normal.dot.textContent, '🐞');
+  assert.equal(normal.sha, 'abc1234', 'servedpage.ts reads the sha from data-hawkes');
+  assert.equal(normal.fresh.classList.contains('on'), true, 'checkBuild shows the newer-build pill on normal visits');
+
+  // (3) ?report=1 forces the 🐞 button on, even when ?playtest= or runner flags are present.
+  const forced = await runPage({ search: '?playtest=smoke&report=1', globals: { __hawkesRunnerFps: { samples: [] } }, webdriver: true });
+  assert.equal(forced.mountedReportEls.length, 1, '?report=1 forces [data-hawkes-report] to mount');
+  assert.notEqual(forced.host.style.display, 'none');
+  assert.notEqual(forced.dot.style.display, 'none', '?report=1 forces the 🐞 button to show');
+});

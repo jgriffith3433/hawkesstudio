@@ -322,6 +322,24 @@ export const REVIEW_RUN_MS = 20 * 60_000;
 
 export const isPhone = (t: Playtest) => t.device === 'phone';
 
+/**
+ * A playtest page, with an empty `?playtest=`: pages that load their playtest bot only for a browser under
+ * automation (Hawkes Games loads public/playtest/portal.js for navigator.webdriver or `?playtest=`) load it under Gen's
+ * playtester too, which doesn't show as automated (2026-11-01: "The page never exposed window.hawkesPlaytest"), and
+ * Studio's 🐞 bug-report widget stays hidden on both web and Unity WebGL beta playtests so screenshots never show Studio UI.
+ * Empty never starts a scenario by itself (the contract's `?playtest=<id>`, docs/playtest.md), and visitors never get it.
+ */
+export function withPlaytestHint(url: string): string {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol) || u.searchParams.has('playtest')) return url;
+    u.searchParams.set('playtest', '');
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 /** Gen params for a playtest's device, baseline, players and (beta) page globals (the previous run of the same scenario, for the visual diff). */
 export function playtestExtras(product: string, name: string, t: Playtest) {
   const prev = db.prepare(`SELECT job FROM steps WHERE product = ? AND kind = 'playtest' AND name = ? AND status = 'done' AND job IS NOT NULL ORDER BY started DESC LIMIT 1`).get(product, name) as any;

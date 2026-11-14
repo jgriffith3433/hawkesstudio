@@ -41,7 +41,8 @@ import { judgeCriteria, sweepFor, type Sweep } from './acceptance.ts';
 import { claimPersona, claimStepIs, noteClaimStep, personaParams, personaOf, personaLine, filePersonaFindings } from './persona.ts';
 import { isFirstFive, enrichFtue, firstFiveParams, firstFiveOnBuild } from './ftue.ts';
 import { enrichPhonePerf, phonePerfFindings } from './phoneperf.ts';
-import { isPhone, runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
+import { isPhone, runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS, withPlaytestHint } from './playtests.ts';
+export { withPlaytestHint };
 import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from './betaqueue.ts';
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
@@ -593,23 +594,6 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
 }
 
 /**
- * A contract game's page, with an empty `?playtest=`: pages that load their playtest bot only for a browser under
- * automation (Hawkes Games loads public/playtest/portal.js for navigator.webdriver or `?playtest=`) load it under Gen's
- * playtester too, which doesn't show as automated (2026-11-01: "The page never exposed window.hawkesPlaytest").
- * Web games only: the runner starts a Unity page with its own `?playtest=<id>`. Empty never starts a scenario by itself (the contract's `?playtest=<id>`, docs/playtest.md), and visitors never get it.
- */
-export function withPlaytestHint(url: string): string {
-  try {
-    const u = new URL(url);
-    if (!/^https?:$/.test(u.protocol) || u.searchParams.has('playtest')) return url;
-    u.searchParams.set('playtest', '');
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
-
-/**
  * Plays one scenario and (unless review is false) has Claude review it; adds findings to the backlog. mode (review.ts):
  * full (daily; regression-only once the scenario meets the product's quality bar), verify (beta runs, one-off checks),
  * regression (live checks). criteria: a roadmap task's acceptance criteria, judged on this playtest.
@@ -839,7 +823,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     // The newcomer persona (persona.ts) rides the first-five play once per game, device and week; the claim is taken first, so a second ask plays without it.
     if (firstFive && (prior ? claimStepIs(p.id, isPhone(t) ? 'phone' : 'desktop', s) : claimPersona(p.id, isPhone(t) ? 'phone' : 'desktop'))) { Object.assign(params, personaParams()); personaAsked = true; noteClaimStep(p.id, isPhone(t) ? 'phone' : 'desktop', s); }
     if (t.mode === 'site') params.maxPages = 40;
-    if (!firstFive && p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
+    if (!firstFive && (t.where === 'local' || (p.contract && (params.mode === 'contract' || params.mode === 'auto')))) params.url = withPlaytestHint(String(params.url));
     // The first five minutes meet the page as a stranger would (nothing set up), but a gated beta site still needs its pass to be
     // reached at all (Studio's sign-in card otherwise: finding f_b3bf8e33e26c), so the pass cookie goes with it; never the page globals.
     Object.assign(params, firstFive ? (({ baseline, cookies }) => ({ ...(baseline ? { baseline } : {}), ...(cookies ? { cookies } : {}) }))(playtestExtras(p.id, name, t) as any) : playtestExtras(p.id, name, t));

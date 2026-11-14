@@ -65,7 +65,7 @@ import { reviewJob } from './review-cc.ts';
 import { gen, genEvents, genRun, fileUrl, warmGenMcp, GEN_MCP_TIMEOUT_MS } from './gen.ts';
 import { ghostQueued, jobUnknown, laneJobs, QUEUED_GHOST_MS, stillQueued } from './gen-recover.ts';
 import { SAFETY_MS as GEN_EVENTS_SAFETY_MS, terminal as genTerminal } from './genevents.ts';
-import { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } from './playtests.ts';
+import { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS, withPlaytestHint } from './playtests.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { jobCancelDetail, noteCancel, cancelNote, cancelWords } from './cancel.ts';
 import { repoMap, ensureCloned, bigProduct } from './repos.ts';
@@ -3668,7 +3668,7 @@ export async function verifyChange(c: Change, p: Product, findings: any[], jobs?
   const url = cloudUrl ?? (prior?.status === 'done' ? localUrl(p) : await serveDir(p, dir, port));
   const timeout = p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.timeout;
   try {
-    const run = await verifyPlaytest(p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}), globals: betaPageGlobals(), ...withPass() },
+    const run = await verifyPlaytest(p.id, { url: withPlaytestHint(url), mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}), globals: betaPageGlobals(), ...withPass() },
       { prior: prior?.id, jobs, timeout });
     if (run.status === 'cancelled') return { outcome: 'not played', error: jobCancelDetail(run), build, cancelled: true };
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
