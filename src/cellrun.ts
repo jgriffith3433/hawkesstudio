@@ -125,7 +125,9 @@ export const CELL_LIMITS = { cpu: '2', memory: '4Gi' } as const;
  * TCP probe allows 4 minutes in one attempt, and three deploys of J's Studio ran past it on 2026-11-02; this checks the
  * port every 10 s for up to 10 minutes. The same numbers as tools/studio-cloudrun/deploy.mjs STARTUP_PROBE.
  */
-export const CELL_STARTUP_PROBE = { initialDelaySeconds: 0, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 60, tcpSocket: { port: 8080 } } as const;
+// Checked every 5 s (was 10): a go-live's new instance takes traffic as soon as it listens, so each second between its start and
+// the next check is a second the old one is gone and pages wait. The same ten minutes to start (120 checks).
+export const CELL_STARTUP_PROBE = { initialDelaySeconds: 0, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 120, tcpSocket: { port: 8080 } } as const;
 const mib = (v: unknown) => { const m = /^(\d+(?:\.\d+)?)(Mi|Gi|M|G)?$/.exec(String(v ?? '')); if (!m) return 0; const n = Number(m[1]); return m[2] === 'Gi' ? n * 1024 : m[2] === 'G' ? (n * 1e9) / 1048576 : m[2] === 'M' ? (n * 1e6) / 1048576 : m[2] === 'Mi' ? n : n / 1048576; };
 const cpus = (v: unknown) => { const m = /^(\d+(?:\.\d+)?)(m)?$/.exec(String(v ?? '')); if (!m) return 0; return m[2] ? Number(m[1]) / 1000 : Number(m[1]); };
 /** A container's limits with at least a cell's CPU and memory (never lowered; anything else kept). */

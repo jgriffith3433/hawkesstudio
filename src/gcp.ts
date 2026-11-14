@@ -121,14 +121,15 @@ export async function gapi(url: string, init: { method?: string; body?: unknown;
 // ------------------------------------------------------------ Cloud Storage
 
 const enc = encodeURIComponent;
-export type GcsObject = { name: string; size: number; updated: string };
+/** generation: Cloud Storage's number for this version of the object (every write makes a new one). */
+export type GcsObject = { name: string; size: number; updated: string; generation?: string };
 
 export async function gcsList(bucket: string, prefix: string): Promise<GcsObject[]> {
   const out: GcsObject[] = [];
   let page = '';
   do {
     const j = await gapi(`https://storage.googleapis.com/storage/v1/b/${bucket}/o?prefix=${enc(prefix)}&maxResults=1000${page ? `&pageToken=${enc(page)}` : ''}`);
-    for (const o of j.items ?? []) out.push({ name: o.name, size: Number(o.size) || 0, updated: o.updated });
+    for (const o of j.items ?? []) out.push({ name: o.name, size: Number(o.size) || 0, updated: o.updated, generation: o.generation ? String(o.generation) : undefined });
     page = j.nextPageToken ?? '';
   } while (page);
   return out;
