@@ -188,7 +188,24 @@ export type { Product };
  * cancelled or superseded run is not it). `sha` is the commit it builds when its build row or step says. null: nothing is
  * building, so the failure stands.
  */
+// Asked for every merged task on every PM pass and roadmap page (roadmap.ts buildUnderWay): an answer stands until
+// runs, steps or builds are written (db.ts onDbWrite), so a pass over a product's tasks reads them once.
+let runsVersion = 0;
+onDbWrite((table) => { if (table === 'runs' || table === 'steps' || table === 'builds') runsVersion++; });
+const progressMemo = new Map<string, { v: number; out: { run: string; sha: string | null } | null }>();
+
 export function buildInProgress(product: string, failedRun: string | null | undefined): { run: string; sha: string | null } | null {
+  const key = `${product}\u0000${failedRun ?? ''}`;
+  const hit = progressMemo.get(key);
+  if (hit && hit.v === runsVersion) return hit.out;
+  const v = runsVersion;
+  const out = readBuildInProgress(product, failedRun);
+  progressMemo.set(key, { v, out });
+  if (progressMemo.size > 2000) progressMemo.delete(progressMemo.keys().next().value!);
+  return out;
+}
+
+function readBuildInProgress(product: string, failedRun: string | null | undefined): { run: string; sha: string | null } | null {
   const since = failedRun ? ((db.prepare('SELECT started FROM runs WHERE id = ?').get(failedRun) as any)?.started ?? 0) : 0;
   // Only a going or queued run can read as `waiting` (buildOutcome), so only those are read (runs_kind_status): every
   // finished beta run since the failure used to be read, two steps queries each, for every merged task on every look
