@@ -30,6 +30,10 @@ on:
         description: "Optional: only this revision's logs (e.g. studio-00042-abc), to see a new revision that failed to start"
         type: string
         default: ''
+      slow:
+        description: "Optional: only requests that took at least this many seconds (e.g. 60), to see what holds a Studio's request slots"
+        type: string
+        default: ''
       contains:
         description: "Optional: only lines containing this text (letters, digits, spaces, : . _ -), e.g. 'installed: ' to see which AI CLIs an image build installed"
         type: string
@@ -54,6 +58,7 @@ jobs:
           ORG: ${{ inputs.org }}
           REVISION: ${{ inputs.revision }}
           CONTAINS: ${{ inputs.contains }}
+          SLOW: ${{ inputs.slow }}
         run: |
           if [ "$TARGET" = cell ]; then [[ "$ORG" =~ ^[a-z0-9-]{1,40}$ ]] || { echo "cell needs org (lower-case letters, digits, dashes)"; exit 1; }; fi
           [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 5 ] && [ "$MINUTES" -le 120 ] || { echo "minutes must be 5 to 120"; exit 1; }
@@ -71,6 +76,7 @@ jobs:
           if [ "$TARGET" != cell ] && [ "$TARGET" != build ]; then f="$f AND resource.labels.location=$region"; fi
           if [ -n "$REVISION" ]; then [[ "$REVISION" =~ ^[a-z0-9-]{1,63}$ ]] || { echo "revision: lower-case letters, digits, dashes"; exit 1; }; f="$f AND resource.labels.revision_name=$REVISION"; fi
           if [ -n "$CONTAINS" ]; then [[ "$CONTAINS" =~ ^[A-Za-z0-9\ :._-]{1,80}$ ]] || { echo "contains: letters, digits, spaces, : . _ - (up to 80)"; exit 1; }; f="$f AND textPayload:\"$CONTAINS\""; fi
+          if [ -n "$SLOW" ]; then [[ "$SLOW" =~ ^[0-9]{1,4}$ ]] || { echo "slow: whole seconds (0 to 9999)"; exit 1; }; f="$f AND httpRequest.latency>=\"${SLOW}s\""; fi
           echo "FILTER=$f" >> "$GITHUB_ENV"
       - uses: google-github-actions/auth@v2
         with:
@@ -85,7 +91,7 @@ jobs:
         run: |
           since=$(date -u -d "-$MINUTES min" +%Y-%m-%dT%H:%M:%SZ)
           gcloud logging read "$FILTER AND severity>=$SEVERITY AND timestamp>=\"$since\"" --project "$PROJECT" --limit 500 --order asc \
-            --format='value(timestamp,severity,resource.labels.revision_name,textPayload,jsonPayload.message,protoPayload.status.message,httpRequest.status,httpRequest.requestUrl)' \
+            --format='value(timestamp,severity,resource.labels.revision_name,textPayload,jsonPayload.message,protoPayload.status.message,httpRequest.status,httpRequest.latency,httpRequest.requestUrl)' \
             | sed -E 's/(hg_|hgm_|hs_|ghs_|ghp_|github_pat_|sk-ant-|cfut_|cfat_|AKIA)[A-Za-z0-9_-]+/\1***/g; s/(Bearer |token=|key=)[A-Za-z0-9._-]+/\1***/g' > logs.txt
           n=$(wc -l < logs.txt)
           { echo "### ${{ inputs.target }} (${{ inputs.lane }}), last $MINUTES min, >= $SEVERITY: $n lines"; echo '```'; tail -n 300 logs.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
