@@ -94,7 +94,7 @@
   // and one for the maximized playtest. Each sends the whole payload whenever it changed. Closed while hidden or away.
   const feedsOn = { grid: null, big: null, backoff: 2000, retry: null };
   function feed(which, url, onData) {
-    const es = new EventSource(url);
+    const es = new EventSource(typeof withTab === "function" ? withTab(url) : url);
     es.onopen = () => { feedsOn.backoff = 2000; };
     es.onmessage = (m) => {
       let d;

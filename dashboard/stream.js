@@ -8,6 +8,13 @@
 // Only a stream the browser gave up on (signed out, the server down: readyState CLOSED, which it never retries) is reopened
 // by a timer, slower each time (2 s doubling to a minute): that is a reconnect, it fetches nothing but the stream itself.
 // Loaded first, before app.js (which uses it at its top level); it needs nothing from the other scripts.
+// studioTab: this tab's id, kept across reloads (sessionStorage). Every stream the page opens sends it (?tab=), so Studio
+// ends the tab's previous stream when a reload or a reconnect opens a new one: one stream per tab (src/slots.ts).
+const studioTab = (() => {
+  const make = () => Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+  try { return sessionStorage.getItem('studioTab') || (sessionStorage.setItem('studioTab', make()), sessionStorage.getItem('studioTab')) || make(); } catch { return make(); }
+})();
+const withTab = (url) => `${url}${url.includes('?') ? '&' : '?'}tab=${encodeURIComponent(studioTab)}`;
 const studioStream = (() => {
   const handlers = new Map();
   const queued = new Map(); // topic -> merged event, waiting for the debounce or for the page to be visible
@@ -43,7 +50,7 @@ const studioStream = (() => {
   function connect() {
     clearTimeout(retry);
     try { es?.close(); } catch {}
-    es = new EventSource('/api/stream');
+    es = new EventSource(withTab('/api/stream'));
     es.onopen = () => {
       up = true;
       backoff = 2000;

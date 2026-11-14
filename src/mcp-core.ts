@@ -8,6 +8,7 @@
 
 import readline from 'node:readline';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { hold } from './slots.ts';
 
 export type McpTool = { name: string; description: string; inputSchema: any; run: (a: any) => Promise<unknown> };
 export type McpServer = { name: string; version: string; instructions: string; tools: McpTool[] };
@@ -106,6 +107,8 @@ export async function serveHttp(req: IncomingMessage, res: ServerResponse, serve
   }
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
   res.flushHeaders?.();
+  // Counted as held (slots.ts), never cut: a tool call ends on its own with its answer.
+  hold(res, 'mcp');
   const ping = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
   res.on('close', () => clearInterval(ping));
   try {

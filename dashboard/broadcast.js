@@ -487,7 +487,7 @@
   function connect() {
     clearTimeout(retry);
     if (es || document.hidden) return;
-    const mine = (es = new EventSource('/api/broadcast/stream'));
+    const mine = (es = new EventSource(typeof withTab === 'function' ? withTab('/api/broadcast/stream') : '/api/broadcast/stream'));
     mine.onopen = () => { backoff = 2000; };
     mine.onmessage = (m) => {
       let d;
