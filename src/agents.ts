@@ -63,7 +63,7 @@ import { replayOf } from './feel.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
 import { gen, genEvents, genRun, fileUrl, warmGenMcp, GEN_MCP_TIMEOUT_MS } from './gen.ts';
-import { ghostQueued, laneJobs, QUEUED_GHOST_MS, stillQueued } from './gen-recover.ts';
+import { ghostQueued, jobUnknown, laneJobs, QUEUED_GHOST_MS, stillQueued } from './gen-recover.ts';
 import { SAFETY_MS as GEN_EVENTS_SAFETY_MS, terminal as genTerminal } from './genevents.ts';
 import { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { unityBuild } from './buildpkgs.ts';
@@ -81,7 +81,7 @@ import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.
 import { deployPending, critical, clearStaleDeployFlag, deployFlagSince, watchDeployFlag } from './drain.ts';
 import { onQueueWake } from './queuewake.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
-import { threadFor, getTask, addItem, addTask } from './roadmap.ts';
+import { threadFor, getTask, setTask, addItem, addTask } from './roadmap.ts';
 import { overlapWith, filesIn, othersSection, sortConflicts, UNITY_RULES, type WorkShape } from './parallel.ts';
 import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
@@ -1109,6 +1109,11 @@ function assertWorktreeThere(c: Pick<Change, 'worktree'>) {
 async function worktreeForAgentStep(id: string, ph: Phase, save: (patch: Partial<Phase>) => void) {
   if (ph.step !== 'agent' || fs.existsSync(path.join(getChange(id)!.worktree, '.git'))) return;
   if (!ph.proc) {
+    // A resumed (cancelled) change: its saved branch comes back first, the same way a restart's does (remakeWorktree).
+    if (ph.harness?.kind === 'revive' && await remakeWorktree(id).catch(() => false)) {
+      save({ before: (await gitAsync(getChange(id)!.worktree, ['rev-parse', 'HEAD'])).out });
+      return;
+    }
     addLog(id, 'worktree missing after a Studio restart: preparing it again before the pass');
     save({ step: 'prepare' });
     return;
@@ -5170,14 +5175,17 @@ export function resumeChange(id: string, by = 'J') {
   if (c.status !== 'cancelled') throw new StudioError(`Change ${id} is ${c.status}, not cancelled`);
   const other = c.task ? liveChangeOfTask(c.task, id) : null;
   if (other) throw new StudioError(`task ${c.task} already has change ${other.id} (${other.status}) on its way: close one of them first`, 409);
-  if (!c.worktree || !fs.existsSync(c.worktree)) throw new StudioError(`Change ${id} has no worktree any more: close it and start the task again`);
-  assertWorktree(c.worktree, path.join(PROJECTS, c.repo));
+  // A worktree lost with an instance (a restart on Cloud Run) is made again from the saved branch by the pass that carries
+  // on (worktreeForAgentStep → remakeWorktree), like a restart's resume; it is only refused when there is nowhere to make it.
+  const gone = !c.worktree || !fs.existsSync(path.join(c.worktree, '.git'));
+  if (gone && !c.worktree) throw new StudioError(`Change ${id} has no worktree path: close it and start the task again`);
+  if (!gone) assertWorktree(c.worktree, path.join(PROJECTS, c.repo));
   const old = phaseOf(id);
   const now = Date.now();
   update(id, {
     status: 'queued', detail: `resumed by ${by}: carries on in its own worktree`, notes: [...c.notes, { at: now, by, text: 'resumed' }],
     // at is back-dated by the harness gap: a person's resume starts now (resumeGate).
-    phase: { step: 'agent', since: now, before: git(c.worktree, ['rev-parse', 'HEAD']).out, brain: old?.brain, harness: { kind: 'revive', line: `a person cancelled it and ${by} resumed it`, at: now - RESUME_GAP - 1, on: old?.brain ?? brainId(), parks: [] } },
+    phase: { step: 'agent', since: now, ...(gone ? {} : { before: git(c.worktree, ['rev-parse', 'HEAD']).out }), brain: old?.brain, harness: { kind: 'revive', line: `a person cancelled it and ${by} resumed it`, at: now - RESUME_GAP - 1, on: old?.brain ?? brainId(), parks: [] } },
   });
   addLog(id, `resumed by ${by}`);
   setTimeout(() => void pump(), 0).unref();
@@ -5188,6 +5196,18 @@ export async function close(id: string, by = 'J') {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
   return critical(`closing ${id}`, () => closeNow(c, by));
+}
+/**
+ * A roadmap task whose change is closed goes back to planned by itself (J, 2026-11-14: task k_6ea0ea018c48 stayed "working" on a
+ * closed change and held its milestone until set back by hand). Not when J closed it himself (the PM asks him what next:
+ * afterClosed) and not when the task has another change on its way or has moved on (merged, verified, failed).
+ */
+export function freeTaskOfClosed(c: Pick<Change, 'id' | 'task'>, by: string) {
+  if (!c.task || by === 'J') return false;
+  const t = getTask(c.task);
+  if (!t || !['working', 'needs answer', 'review'].includes(t.status) || (t.change && t.change !== c.id) || liveChangeOfTask(t.id, c.id)) return false;
+  setTask(t.id, { status: 'planned', note: `its change ${c.id} was closed by ${by}: planned again by itself` });
+  return true;
 }
 async function closeNow(c: Change, by: string) {
   const id = c.id;
@@ -5201,6 +5221,7 @@ async function closeNow(c: Change, by: string) {
   await cancelChangeBuilds(id, `its change was closed by ${by}`);
   update(id, { status: 'closed', detail: `closed by ${by}`, notes: [...c.notes, { at: Date.now(), by, text: 'closed' }] });
   remember(id);
+  freeTaskOfClosed(c, by);
   for (const f of c.findings) {
     const fd = getFinding(f);
     // Taken by this change (fixed with its note, or "fixing" from before 2026-10-17) and it won't land: open again.
@@ -5661,6 +5682,7 @@ export function resumeChanges() {
   }
   // Changes parked on Gen jobs: their jobs are looked at again now (they may have finished while Studio was down).
   void pollGenWaits({ force: true });
+  void checkCompileJobs().catch(() => {});
   return out;
 }
 
@@ -5697,6 +5719,25 @@ export function watchCompile(id: string) {
     }, (t) => { if (getChange(id)?.status === WAITING_GEN) update(id, { detail: t }); });
     await finishCompile(id, r);
   })().catch((e) => finishCompile(id, compileUnavailable(String(e?.message ?? e).slice(0, 120), cw.sha))).finally(() => compileWatching.delete(id));
+}
+/**
+ * A parked compile whose Gen job Gen no longer knows (the job was lost around a restart: J, 2026-11-14, a change sat 25 min
+ * on "No such job"): asked once on the event that resumes the waits (Gen's stream opening, Studio's start) and the change
+ * goes on at once with the Roslyn result, not at the 30 min deadline. Gen not answering is no verdict: next event.
+ */
+export async function checkCompileJobs(api: { job(id: string): Promise<any> } = gen as any) {
+  const ended: string[] = [];
+  for (const c of listChanges({ status: WAITING_GEN, limit: 100 })) {
+    const ph = phaseOf(c.id), cw = ph?.compileWait;
+    if (ph?.step !== 'compile-wait' || !cw?.job) continue;
+    try { await api.job(cw.job); } catch (e: any) {
+      if (!jobUnknown(e)) continue;
+      const why = `compile-wait: Hawkes Gen has no such job ${cw.job}`;
+      compileWatching.get(c.id)?.(why);
+      if (await finishCompile(c.id, compileUnavailable(why, cw.sha))) ended.push(c.id);
+    }
+  }
+  return ended;
 }
 /** The compile's end (its verdict, or why it never gave one): the change is queued again at its 'compile' step. Once only. */
 export async function finishCompile(id: string, cc: CompileResult) {
@@ -5854,7 +5895,7 @@ genEvents.onEvent((type, job) => {
   endedJobs.set(String(job.id), job);
 });
 // The stream (re)opened: every parked job is asked for once (one may have ended while it was down).
-genEvents.onConnect(() => void pollGenWaits({ force: true }));
+genEvents.onConnect(() => { void pollGenWaits({ force: true }); void checkCompileJobs().catch(() => {}); });
 // The clock behind the events: a change due a look (the stream down, or its safety check) or due to tell Talk.
 setInterval(() => void pollGenWaits(), genPollMs()).unref();
 // The server calls it once it listens (server.ts); a process that only imports this module (the CLI, tests) doesn't.
