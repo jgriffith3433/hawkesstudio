@@ -128,6 +128,14 @@ const server = http.createServer(async (req, res) => {
   // A customer's cell says so on every answer: the router (server/studio-edge) tells a cell's answer from Cloud Run's
   // own "no such service" (a hibernated cell) by it.
   if (process.env.STUDIO_ORG) res.setHeader('X-Studio-Cell', process.env.STUDIO_ORG);
+  // "Is this Studio up?" (the router's opening page, server/studio-edge /__waking): answered first, with no sign-in,
+  // database, network or import, so a Studio with a lot running still lets people in. /api/health asks Gen and reads the
+  // agent queue; the opening page asked it every 2 s and waited behind every busy moment (2026-11-14: J sat on "Opening
+  // your studio" while Studio froze for 2-5 s at a time).
+  if (route === '/api/ready') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return void res.end('{"ok":true}');
+  }
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
     // /connect: the dashboard's Connect page (connect your editor to this Studio's MCP).

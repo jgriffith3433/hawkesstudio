@@ -303,7 +303,7 @@ export async function reachMilestones() {
   for (const w of v.wait) {
     const m = getMilestone(w.id);
     const line = `milestone "${m?.title}": every task is in; it ${w.why}`;
-    const last = listDecisions({ since: 0, action: 'milestone-batch', limit: 10_000 }).find((d) => d.subject === w.id);
+    const last = listDecisions({ since: 0, action: 'milestone-batch', limit: 10_000, subject: w.id })[0];
     if (!last || !String(last.detail).startsWith(line.slice(0, line.indexOf(' item')))) logDecision('milestone-batch', w.id, m?.product ?? null, line);
   }
   for (const group of v.go) {
@@ -425,7 +425,7 @@ async function checkOnBeta(t: Task) {
     // A Unity project whose build of beta waits for the milestone's end: no check of its own (it would play nothing new).
     const due = playsAfterMerges && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled && !(unityGated(t.product) && !unityBuildGate(t.product, 'auto').go);
     const running = due && db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
-    const asked = due && !running && listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check' }).some((d) => d.subject === t.id);
+    const asked = due && !running && listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check', subject: t.id }).length > 0;
     if (due && !running && !asked && !creditsWaitReason()) {
       const { getChange } = await changes();
       const c = getChange(t.change!);
@@ -463,7 +463,7 @@ async function checkOnBeta(t: Task) {
   // The scenario took longer than its budget: its agent is told (in a scenario fix or a retry's note) to start it nearer.
   const playData = parse(play?.data);
   const slow = playData?.slow ? ` Beta's playtest of it took ${playTime(Number(playData.seconds) || 0)}, ${slowNote(Number(playData.seconds) || 0) ?? 'over its budget'}.` : '';
-  if (slow && !listDecisions({ since: 0, action: 'slow-scenario', limit: 10_000 }).some((d) => d.subject === t.id)) {
+  if (slow && listDecisions({ since: 0, action: 'slow-scenario', limit: 10_000, subject: t.id }).length === 0) {
     // On the task's thread, so its next agent reads it in the brief.
     try { addComment(t.id, `Too slow to check:${slow} Start the scenario nearer what the criteria need (a named start point, "at").`, 'Studio PM'); } catch { /* not a thread subject */ }
     logDecision('slow-scenario', t.id, t.product, `"${t.title}":${slow}`.slice(0, 1000));
@@ -566,7 +566,7 @@ function playedClean(run: string, product: string, name: string) {
  */
 async function scenarioFix(t: Task, unseen: Check[], run: string, checks: TaskChecks, slow = '') {
   if (!pmSettings().enabled) return false;
-  if (listDecisions({ since: 0, action: 'scenario-fix', limit: 10_000 }).some((d) => d.subject === t.id)) return false;
+  if (listDecisions({ since: 0, action: 'scenario-fix', limit: 10_000, subject: t.id }).length > 0) return false;
   const { getChange } = await changes();
   const v = t.change ? getChange(t.change)?.verify : null;
   const what = unseen.map((r) => `${r.criterion} (${r.evidence ?? 'unclear'})`).join('; ');
@@ -725,7 +725,7 @@ export async function followBuilds(deps?: Parameters<typeof carryChangeVerdict>[
       logDecision('beta-build', unproven[0].t.id, product, `beta run ${newest.id} built nothing that includes ${unproven.length} merged task(s): started ${r.id}, which builds beta's head first`);
     }
     const hit = list.map((x) => ({ ...x, t: getTask(x.t.id)! })).filter((x) => x.t.status === 'merged' && x.t.build?.run === newest.id && !x.t.build?.ok && !x.t.build?.unproven);
-    if (!hit.length || deciding.has(newest.id) || listDecisions({ since: newest.started, action: 'build-failed', limit: 10_000 }).some((d) => d.subject === newest.id)) continue;
+    if (!hit.length || deciding.has(newest.id) || listDecisions({ since: newest.started, action: 'build-failed', limit: 10_000, subject: newest.id }).length > 0) continue;
     deciding.add(newest.id);
     try {
       await decideFailedBuild(product, newest, runs, hit);
@@ -866,7 +866,7 @@ async function buildLog(step: any, data: any) {
  */
 async function buildSendBack(t: Task, { errors = [], matched = [] }: { errors?: string[]; matched?: string[] } = {}) {
   const s = pmSettings();
-  const free = !listDecisions({ since: 0, action: 'build-sendback', limit: 10_000 }).some((d) => d.subject === t.id);
+  const free = listDecisions({ since: 0, action: 'build-sendback', limit: 10_000, subject: t.id }).length === 0;
   if (!s.enabled) return;
   // A cancelled build isn't a broken one: nothing to fix, nothing blamed (cancel.ts).
   if (t.build?.run && buildCancelled(t.build.run, t.product)) return void setTask(t.id, { build: null });
@@ -920,7 +920,7 @@ export async function milestoneCheck(id: string, group: string[] = [id]) {
       const v = milestoneBuildDue(product);
       if (v.go) continue;
       const line = `milestone "${m.title}": every task is merged; its build of ${name(product)} waits: ${v.why}`;
-      if (listDecisions({ since: 0, action: 'milestone-wait', limit: 10_000 }).find((d) => d.subject === id)?.detail !== line.slice(0, 2000)) logDecision('milestone-wait', id, m.product, line);
+      if (listDecisions({ since: 0, action: 'milestone-wait', limit: 10_000, subject: id })[0]?.detail !== line.slice(0, 2000)) logDecision('milestone-wait', id, m.product, line);
       return;
     }
     const { startBeta } = await import('./pipeline.ts');
@@ -1065,17 +1065,17 @@ export async function playsFor(tasks: Task[]) {
 const MILESTONE_PLAY_MAX_MS = 4 * 3600_000;
 /** A milestone check waiting after a miss: due once each product's beta built again since (or RECHECK_WAIT_MS passed). */
 const RECHECK_WAIT_MS = 2 * 3600_000;
-const lastDecision = (action: string, subject: string) => listDecisions({ since: 0, action, limit: 10_000 }).find((d) => d.subject === subject)?.at ?? 0;
+const lastDecision = (action: string, subject: string) => listDecisions({ since: 0, action, limit: 10_000, subject })[0]?.at ?? 0;
 /**
  * A milestone's tries: checks that played and found criteria not met. A check that broke, or played a build without the
  * scenario, judged nothing and is no try: before 2026-11-11 both counted, so a milestone whose checks broke three times
  * ran out of tries and J got "misses left after its tries" for criteria nobody had seen (stall-paths.md).
  */
-const milestoneTries = (id: string) => listDecisions({ since: 0, action: 'milestone-recheck', limit: 10_000 }).filter((d) => d.subject === id).length;
+const milestoneTries = (id: string) => listDecisions({ since: 0, action: 'milestone-recheck', limit: 10_000, subject: id }).length;
 /** Checks that broke and were played again since the last real check or wait for a build. */
 const rerunsSince = (id: string) => {
   const since = Math.max(lastDecision('milestone-recheck', id), lastDecision('milestone-build-wait', id));
-  return listDecisions({ since: since + 1, action: 'milestone-rerun', limit: 10_000 }).filter((d) => d.subject === id).length;
+  return listDecisions({ since: since + 1, action: 'milestone-rerun', limit: 10_000, subject: id }).length;
 };
 /** How long a milestone waiting for beta's next build (its checks kept breaking, or a scenario was missing) waits at most. */
 const BUILD_WAIT_MS = 6 * 3600_000;
@@ -1963,7 +1963,7 @@ function announceMilestone(id: string) {
     if (c.ready && /^the critic didn't agree/.test(c.line)) criticNote = `Critic: ${c.line}.`;
     if (c.waiting) {
       const line = `milestone "${m.title}": ${c.line || 'waiting for the critic'}`;
-      if (listDecisions({ since: 0, action: 'milestone-critic', limit: 10_000 }).find((d) => d.subject === id)?.detail !== line.slice(0, 2000)) {
+      if (listDecisions({ since: 0, action: 'milestone-critic', limit: 10_000, subject: id })[0]?.detail !== line.slice(0, 2000)) {
         logDecision('milestone-critic', id, m.product, line);
       }
       return;

@@ -107,3 +107,15 @@ test("the PM's and the pages' per-pass lookups search an index, never scan the b
   sqls.push(`SELECT id, options, started FROM runs WHERE kind = 'build' AND status = 'running' AND products LIKE ? ORDER BY started DESC`);
   assert.deepEqual(scans(sqls), []);
 });
+
+test("one subject's decisions are searched in SQLite, not picked out of every decision of the action", () => {
+  const sqls = capture(() => {
+    const mine = rm.listDecisions({ since: 0, action: 'replan', limit: 10_000, subject: 't_4' });
+    assert.ok(mine.length > 0 && mine.every((d) => d.subject === 't_4' && d.action === 'replan'));
+    assert.equal(rm.listDecisions({ since: 0, action: 'replan', subject: 'nobody' }).length, 0);
+    assert.equal(rm.listDecisions({ since: 0, action: 'replan', subject: null as any }).length, 0, 'no subject matches nothing, never everything');
+  });
+  assert.deepEqual(scans(sqls), []);
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sqls.find((s) => /subject = \?/.test(s))}`).all(0, 'replan', 't_4', 100) as { detail: string }[]).map((p) => p.detail).join(' | ');
+  assert.match(plan, /USING INDEX pm_log_(subject|action)/, plan);
+});
