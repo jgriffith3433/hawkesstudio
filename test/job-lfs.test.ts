@@ -101,7 +101,7 @@ test('an LFS mp3 added in a partial clone reaches the remote with its LFS object
     const pack = C.readPack(objects.get(`jobs/${unit}/out/out.pack`)!);
     assert.deepEqual(pack.lfs?.map((r) => r.oid), [oid]);
     await C.bringLfs(store, unit, studio, pack.lfs!);
-    C.applyWorkspace(studio, { head: out.git.head, bundle: null, pack: { files: pack.files.filter((f) => !path.isAbsolute(f.p)), deleted: pack.deleted, commit: pack.commit } });
+    await C.applyWorkspace(studio, { head: out.git.head, bundle: null, pack: { files: pack.files.filter((f) => !path.isAbsolute(f.p)), deleted: pack.deleted, commit: pack.commit } });
     assert.match(g(studio, 'show', 'HEAD:Assets/Audio/line1.mp3'), /^version https:\/\/git-lfs\.github\.com\/spec/, 'committed as a pointer');
     assert.equal(L.pendingLfs(studio).length, 1);
 

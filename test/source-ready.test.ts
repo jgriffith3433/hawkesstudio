@@ -219,7 +219,7 @@ test('the agents\' preflight and the job\'s patterns follow a nested project too
   await A.ensureSourceReady('c_none', { worktree: wt, product: 'nope', infra: false } as any, () => {});
   assert.ok(fs.existsSync(path.join(wt, 'YoobaLand/Assets/Game/Scripts/YoobaSceneVoice.cs')));
   const { jobSparsePatterns } = await import('../src/cloudjob.ts');
-  assert.ok(jobSparsePatterns(wt).includes('/YoobaLand/Assets/**/*.cs'), 'the job checks out the nested project, not just a root Assets/');
+  assert.ok((await jobSparsePatterns(wt)).includes('/YoobaLand/Assets/**/*.cs'), 'the job checks out the nested project, not just a root Assets/');
 });
 
 test('a Unity product whose source cannot be fetched fails with source unreadable, never a quiet success', async () => {

@@ -103,14 +103,21 @@ export function dirtyState(cwd: string) {
   return { changed, deleted: [...deleted] };
 }
 
-/** The same as `git`, without holding Studio's event loop (a sync spawn froze it for ~2 s per job start, 2026-11-08). */
-export const gitAsync = (cwd: string, args: string[]) => new Promise<{ ok: boolean; out: string; raw: Buffer }>((resolve) => {
+/**
+ * The same as `git`, without holding Studio's event loop. Everything Studio's own server runs in git goes through this:
+ * a sync spawn froze it for ~2 s per job start (2026-11-08), and bringing a finished job's work back (applyWorkspace:
+ * fetch, reset, clean, a hash per file) froze it for 1.1 s (2026-11-14). The sync `git` above is the job's own (cloudjob-run.ts).
+ */
+export const gitAsync = (cwd: string, args: string[], o: { input?: string | Buffer } = {}) => new Promise<{ ok: boolean; out: string; raw: Buffer; err: string }>((resolve) => {
   const p = spawn('git', ['-c', 'safe.directory=*', ...args], { cwd, windowsHide: true });
   const out: Buffer[] = [];
+  const err: Buffer[] = [];
   p.stdout.on('data', (d) => out.push(d));
-  p.stderr.resume();
-  p.on('error', () => resolve({ ok: false, out: '', raw: Buffer.alloc(0) }));
-  p.on('close', (code) => { const raw = Buffer.concat(out); resolve({ ok: code === 0, out: raw.toString('utf8').trim(), raw }); });
+  p.stderr.on('data', (d) => err.push(d));
+  p.on('error', (e) => resolve({ ok: false, out: '', raw: Buffer.alloc(0), err: e.message }));
+  p.on('close', (code) => { const raw = Buffer.concat(out); resolve({ ok: code === 0, out: raw.toString('utf8').trim(), raw, err: Buffer.concat(err).toString('utf8').trim() }); });
+  p.stdin.on('error', () => { /* git exited before reading it all: its exit code says why */ });
+  p.stdin.end(o.input ?? '');
 });
 async function dirtyStateAsync(cwd: string) {
   const list = async (args: string[]) => (await gitAsync(cwd, ['ls-files', '-z', ...args])).raw.toString('utf8').split('\0').filter(Boolean);
@@ -135,46 +142,48 @@ export async function workspaceIn(cwd: string, tmp: string) {
  * Brings a job's result into the local workspace: its commits (out.bundle) and HEAD, then exactly its uncommitted files.
  * Untracked files the pass removed are removed here too (git clean, never ignored files such as node_modules).
  */
-export function applyWorkspace(cwd: string, o: { head: string; bundle: string | null; pack: Pack | null }) {
+export async function applyWorkspace(cwd: string, o: { head: string; bundle: string | null; pack: Pack | null }) {
+  const git = gitAsync;
   let fetchError = '';
   if (o.bundle) {
-    const f = git(cwd, ['fetch', '--quiet', o.bundle, 'HEAD']);
+    const f = await git(cwd, ['fetch', '--quiet', o.bundle, 'HEAD']);
     if (!f.ok) fetchError = f.err.split('\n').filter(Boolean).slice(-2).join(' | ') || 'git printed nothing';
   }
   // The job's HEAD is a commit this workspace has (fetched from the bundle, or already its own).
-  const hasHead = !o.head || git(cwd, ['cat-file', '-e', `${o.head}^{commit}`]).ok;
+  const hasHead = !o.head || (await git(cwd, ['cat-file', '-e', `${o.head}^{commit}`])).ok;
   if (!hasHead && !o.pack?.commit) {
     throw new Error(fetchError ? `couldn't read the job's commits: ${fetchError}` : `the job's HEAD ${o.head.slice(0, 7)} isn't in this workspace and its commits didn't come back`);
   }
   if (hasHead) {
-    if (o.head && git(cwd, ['rev-parse', 'HEAD']).out !== o.head) {
-      const r = git(cwd, ['reset', '--quiet', '--hard', o.head]);
+    if (o.head && (await git(cwd, ['rev-parse', 'HEAD'])).out !== o.head) {
+      const r = await git(cwd, ['reset', '--quiet', '--hard', o.head]);
       if (!r.ok) throw new Error(`couldn't move to the job's HEAD ${o.head.slice(0, 7)}: ${r.err.split('\n').pop()}`);
-    } else git(cwd, ['reset', '--quiet', '--hard']);
+    } else await git(cwd, ['reset', '--quiet', '--hard']);
   } else {
-    git(cwd, ['reset', '--quiet', '--hard']);
+    await git(cwd, ['reset', '--quiet', '--hard']);
   }
-  git(cwd, ['clean', '-fdq']);
+  await git(cwd, ['clean', '-fdq']);
   // The commits as files: written, staged and committed here (a light worktree can't take the job's git objects).
   if (!hasHead) {
-    replayCommit(cwd, o.pack!.commit!, fetchError);
+    await replayCommit(cwd, o.pack!.commit!, fetchError);
     // Studio's own later git status / diff in this light clone must not read blobs it can't fetch either.
-    if (git(cwd, ['config', '--get', 'core.sparseCheckout']).out === 'true') for (const k of ['diff.renames', 'status.renames']) git(cwd, ['config', k, 'false']);
+    if ((await git(cwd, ['config', '--get', 'core.sparseCheckout'])).out === 'true') for (const k of ['diff.renames', 'status.renames']) await git(cwd, ['config', k, 'false']);
   }
   const rest = o.pack ? { files: o.pack.files, deleted: o.pack.deleted } : null;
   if (rest) unpack(rest, cwd);
   // A light (sparse) worktree: tracked files outside its cone are skip-worktree, which git status and `git add -A` don't
   // see, so the pass's edits there looked like "no changes" and were never committed. Mark what the pass touched.
-  if (rest) showSparse(cwd, [...rest.files.filter((f) => !path.isAbsolute(f.p)).map((f) => f.p), ...(rest.deleted ?? [])]);
+  if (rest) await showSparse(cwd, [...rest.files.filter((f) => !path.isAbsolute(f.p)).map((f) => f.p), ...(rest.deleted ?? [])]);
 }
 
 /** Makes the pass's commits here from their files (PackCommit): one commit with the pass's messages. Throws when git refuses. */
-export function replayCommit(cwd: string, c: PackCommit, why = '') {
+export async function replayCommit(cwd: string, c: PackCommit, why = ''): Promise<boolean> {
+  const git = gitAsync;
   const files = c.files.filter((f) => !path.isAbsolute(f.p));
   unpack({ files, deleted: c.deleted }, cwd);
   const paths = [...files.map((f) => f.p), ...c.deleted];
   if (!paths.length) return false;
-  showSparse(cwd, paths);
+  await showSparse(cwd, paths);
   // Rename detection reads the blobs of deleted and added files: a light clone lacks them and can't fetch them (no credentials).
   const norename = ['-c', 'diff.renames=false', '-c', 'status.renames=false'];
   const fail = (what: string, err: string) => new Error(`staging the job's commits as files: ${what}${err.split('\n').pop()}`);
@@ -182,35 +191,38 @@ export function replayCommit(cwd: string, c: PackCommit, why = '') {
   // clone can't fetch that blob (no credentials). Hash the file as it is and point the index at the new object instead.
   const modes = new Map<string, string>();
   for (let i = 0; i < files.length; i += 200) {
-    const ls = git(cwd, ['ls-files', '-s', '-z', '--', ...files.slice(i, i + 200).map((f) => f.p)]).raw.toString('utf8').split('\0').filter(Boolean);
+    const ls = (await git(cwd, ['ls-files', '-s', '-z', '--', ...files.slice(i, i + 200).map((f) => f.p)])).raw.toString('utf8').split('\0').filter(Boolean);
     for (const l of ls) { const m = /^(\d+) [0-9a-f]+ \d\t(.*)$/s.exec(l); if (m) modes.set(m[2], m[1]); }
   }
   const lines: string[] = [];
-  for (const f of files) {
-    const h = git(cwd, ['hash-object', '-w', '--no-filters', '--', path.join(cwd, f.p)]);
-    if (!h.ok || !h.out) throw fail(`${f.p}: `, h.err);
+  // Every file hashed in one git process (--stdin-paths: one object id per line, in order), not one process per file.
+  const hashed = files.length ? await git(cwd, ['hash-object', '-w', '--no-filters', '--stdin-paths'], { input: files.map((f) => path.join(cwd, f.p)).join('\n') + '\n' }) : null;
+  const ids = hashed?.ok ? hashed.out.split('\n') : [];
+  if (hashed && (!hashed.ok || ids.length !== files.length)) throw fail(`${files.length} file(s): `, hashed.err || `git hashed ${ids.length}`);
+  files.forEach((f, i) => {
     const mode = modes.get(f.p) ?? ((f.m ?? 0o644) & 0o111 ? '100755' : '100644');
-    lines.push(`${mode} ${h.out}\t${f.p}`);
-  }
+    lines.push(`${mode} ${ids[i]}\t${f.p}`);
+  });
   // Files the pass deleted may be ones this light worktree never checked out: removed from the index by name.
   for (const d of c.deleted) lines.push(`0 ${'0'.repeat(40)}\t${d}`);
   if (lines.length) {
-    const r = git(cwd, ['update-index', '-z', '--index-info'], { input: Buffer.from(lines.join('\0') + '\0') });
+    const r = await git(cwd, ['update-index', '-z', '--index-info'], { input: Buffer.from(lines.join('\0') + '\0') });
     if (!r.ok) throw fail('', r.err);
   }
-  if (!git(cwd, [...norename, 'diff', '--cached', '--name-only']).out) return false;
+  if (!(await git(cwd, [...norename, 'diff', '--cached', '--name-only'])).out) return false;
   const msg = `${c.message}\n\nCommitted by Hawkes Studio: the agent's commit${why ? ` couldn't be fetched as git objects (${why.slice(0, 200)})` : ' came back as files'}.`;
-  const r = git(cwd, [...norename, '-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', msg]);
+  const r = await git(cwd, [...norename, '-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', msg]);
   if (!r.ok) throw new Error(`committing the job's commits as files: ${r.err.split('\n').pop()}`);
   return true;
 }
 
 /** In a sparse worktree: the tracked `paths` count as present (not skip-worktree), so status and add see their changes. */
-export function showSparse(cwd: string, paths: string[]) {
-  if (!paths.length || git(cwd, ['config', '--get', 'core.sparseCheckout']).out !== 'true') return;
+export async function showSparse(cwd: string, paths: string[]) {
+  const git = gitAsync;
+  if (!paths.length || (await git(cwd, ['config', '--get', 'core.sparseCheckout'])).out !== 'true') return;
   for (let i = 0; i < paths.length; i += 200) {
-    const tracked = git(cwd, ['ls-files', '-z', '--', ...paths.slice(i, i + 200)]).raw.toString('utf8').split('\0').filter(Boolean);
-    if (tracked.length) git(cwd, ['update-index', '--no-skip-worktree', '-z', '--stdin'], { input: Buffer.from(tracked.join('\0') + '\0') });
+    const tracked = (await git(cwd, ['ls-files', '-z', '--', ...paths.slice(i, i + 200)])).raw.toString('utf8').split('\0').filter(Boolean);
+    if (tracked.length) await git(cwd, ['update-index', '--no-skip-worktree', '-z', '--stdin'], { input: Buffer.from(tracked.join('\0') + '\0') });
   }
 }
 
@@ -384,7 +396,7 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         const slug = slugOfRemote(ws.remote);
         if (slug) big = await import('./repos.ts').then(({ bigRepo }) => bigRepo(slug)).catch(() => null);
         // The job's checkout is sparse like Studio's worktree (the job's disk is memory: a Unity project's whole tree killed it).
-        if (big) sparse = jobSparsePatterns(cwd);
+        if (big) sparse = await jobSparsePatterns(cwd);
       }
       // A conflict pass (agents.ts agentPassRaw writes MERGE_BASE_FILE): the job brings that branch's side in with its token.
       const mergeBase = ws ? readMergeBase(cwd) : null;
@@ -425,10 +437,12 @@ export function readMergeBase(cwd: string): string | null {
 }
 
 /** The source patterns the job checks out in a big repo: the same ones Studio's worktree got (source-ready.ts). */
-export function jobSparsePatterns(cwd: string): string[] {
+export async function jobSparsePatterns(cwd: string): Promise<string[]> {
   // A Unity project at the root or nested (YoobaLand/YoobaLand/): its patterns, moved under its folder (source-ready.ts).
-  const unity = Boolean(git(cwd, ['ls-files', '--', 'Assets', 'ProjectSettings']).out) || Boolean(git(cwd, ['ls-files', '--', '*ProjectSettings/ProjectVersion.txt']).out);
-  return unity ? unitySourcePatterns(cwd) : GENERIC_SOURCE_PATTERNS;
+  const versions = await gitAsync(cwd, ['ls-files', '--', '*ProjectSettings/ProjectVersion.txt']);
+  const unity = Boolean(versions.out) || Boolean((await gitAsync(cwd, ['ls-files', '--', 'Assets', 'ProjectSettings'])).out);
+  // The list read above, handed over: unitySourcePatterns runs no git of its own here.
+  return unity ? unitySourcePatterns(cwd, () => ({ ok: versions.ok, out: versions.out, err: versions.err })) : GENERIC_SOURCE_PATTERNS;
 }
 
 /** The spec's way to a fresh clone token (jobgit.ts), or nothing when Studio has no address the job can reach. */
@@ -790,7 +804,7 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
           const file = path.join(os.tmpdir(), `hs-${f.unit}-in.bundle`);
           fs.writeFileSync(file, inB);
           try {
-            const got = git(cwd, ['fetch', '--quiet', file, 'HEAD']);
+            const got = await gitAsync(cwd, ['fetch', '--quiet', file, 'HEAD']);
             if (!got.ok) throw new Error(`couldn't read the workspace's earlier commits: ${got.err.split('\n').pop()}`);
           } finally {
             fs.rmSync(file, { force: true });
@@ -808,7 +822,7 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
       try {
         // The pass's new LFS files into this checkout's store; the branch push uploads them first (agents.ts publish).
         if (pack?.lfs?.length) await bringLfs(r, f.unit, cwd, pack.lfs);
-        applyWorkspace(cwd, { head: exit.git.head, bundle, pack: work });
+        await applyWorkspace(cwd, { head: exit.git.head, bundle, pack: work });
       } finally {
         if (bundle) fs.rmSync(bundle, { force: true });
       }
