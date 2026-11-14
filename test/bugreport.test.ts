@@ -599,7 +599,6 @@ test('the 🐞 widget hides under Studio playtests (web and Unity WebGL, ?playte
     { label: 'runner __hawkesRunnerFps flag before navigation', globals: { __hawkesRunnerFps: { samples: [] } } },
     { label: 'runner __hawkesPlaytestPush binding before navigation', globals: { __hawkesPlaytestPush: () => {} } },
     { label: 'runner HAWKES_PLAYTEST flag before navigation', globals: { HAWKES_PLAYTEST: '1' } },
-    { label: 'navigator.webdriver automation flag', webdriver: true },
   ]) {
     const r = await runPage({ ...c, buildReply: { sha: 'new9999', version: '13' } });
     assert.equal(r.mountedReportEls.length, 0, `${c.label}: no [data-hawkes-report] element is mounted in document.body`);
@@ -611,7 +610,7 @@ test('the 🐞 widget hides under Studio playtests (web and Unity WebGL, ?playte
     assert.equal(r.fresh.dataset.build, 'new9999/13', `${c.label}: checkBuild still records the newer build`);
   }
 
-  // (2) Opening a beta page without the playtest parameter still shows the 🐞 button.
+  // (2) Opening a beta page without the playtest parameter still shows the 🐞 button (including other automated visits with navigator.webdriver).
   const normal = await runPage({ search: '', buildReply: { sha: 'new9999', version: '13' } });
   assert.equal(normal.mountedReportEls.length, 1, 'normal beta visit mounts [data-hawkes-report] in document.body');
   assert.notEqual(normal.host.style.display, 'none', 'normal beta visit keeps host visible');
@@ -620,8 +619,12 @@ test('the 🐞 widget hides under Studio playtests (web and Unity WebGL, ?playte
   assert.equal(normal.sha, 'abc1234', 'servedpage.ts reads the sha from data-hawkes');
   assert.equal(normal.fresh.classList.contains('on'), true, 'checkBuild shows the newer-build pill on normal visits');
 
+  const automatedNonPlaytest = await runPage({ search: '', webdriver: true });
+  assert.equal(automatedNonPlaytest.mountedReportEls.length, 1, 'automated visit without ?playtest= or runner flags still mounts [data-hawkes-report]');
+  assert.notEqual(automatedNonPlaytest.dot.style.display, 'none', 'other automated visits still see the 🐞 button');
+
   // (3) ?report=1 forces the 🐞 button on, even when ?playtest= or runner flags are present.
-  const forced = await runPage({ search: '?playtest=smoke&report=1', globals: { __hawkesRunnerFps: { samples: [] } }, webdriver: true });
+  const forced = await runPage({ search: '?playtest=smoke&report=1', globals: { __hawkesRunnerFps: { samples: [] } } });
   assert.equal(forced.mountedReportEls.length, 1, '?report=1 forces [data-hawkes-report] to mount');
   assert.notEqual(forced.host.style.display, 'none');
   assert.notEqual(forced.dot.style.display, 'none', '?report=1 forces the 🐞 button to show');

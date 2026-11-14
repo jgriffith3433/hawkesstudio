@@ -415,8 +415,7 @@
       window.HAWKES_PLAYTEST ||
       window.__hawkesPlaytest ||
       window.__hawkesRunnerFps ||
-      typeof window.__hawkesPlaytestPush === 'function' ||
-      (typeof navigator !== 'undefined' && navigator.webdriver)
+      typeof window.__hawkesPlaytestPush === 'function'
     );
   };
   const playtest = isPlaytest();
