@@ -215,6 +215,9 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
           // Gen doesn't know the job (404): it is gone, whatever the stream says. Nothing will ever finish it, so the wait
           // ends now as lost (gen-recover recoverOnce resubmits it once) instead of after an hour of misses or the build's timeout.
           if (jobUnknown(e)) return lostResult(id, 'no such job');
+          // Studio's own reason to stop (a compile's deadline) ends the wait even while Gen answers errors.
+          const stop = halt?.();
+          if (stop) { await api.cancel(id).catch(() => {}); return { id, status: 'cancelled', error: stop, halted: true }; }
           if (++misses > 60) throw e;
           if (misses === 10) await ensureGen();
           const ev = await f.next(3000);

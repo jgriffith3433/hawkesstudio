@@ -111,6 +111,8 @@ export async function compileGate(): Promise<{ run: boolean; why?: string }> {
   if (!compileCheckOn()) return { run: false, why: "Compile check skipped: it is switched off (Settings → Builds), so the change goes on to beta's own build" };
   const mode = await genCompileMode();
   if (!mode.ok) return { run: false, why: `Compile check skipped: ${mode.why ?? "Hawkes Gen's compile-only mode isn't live yet"}, so the change goes on to beta's own build` };
+  const trouble = builderTrouble();
+  if (trouble) return { run: false, why: `Compile check skipped: Hawkes Gen's build server has been unavailable since ${new Date(trouble.since).toISOString().slice(11, 16)}Z (${trouble.reason}), so the change goes on to beta's own build` };
   const cap = buildsSettings().unityCompileMaxCost, avg = compileCostReport().avgCost;
   if (avg != null && avg > cap) return { run: false, why: `Compile check skipped: it averages $${avg.toFixed(2)} a run, over your $${cap.toFixed(2)} limit (Settings → Builds), so the change goes on to beta's own build` };
   return { run: true };
@@ -199,9 +201,54 @@ export function compileCostReport() {
   return { runs: row.n as number, avgSeconds: row.n ? Math.round(row.s) : null, avgCost: avgCost == null ? null : Math.round(avgCost * 1000) / 1000, maxCost: row.n ? row.mx : null, totalCost: row.n ? Math.round(row.total * 100) / 100 : 0, overCost: avgCost != null && avgCost > buildsSettings().unityCompileMaxCost };
 }
 
+/**
+ * How long a compile may take counted from when it was queued (J, 2026-11-13: two changes sat 31-33 minutes behind a build
+ * server that never came up, each holding an agent slot). Past it the check ends `unavailable` and the change goes on with
+ * the Roslyn result (CI and beta's build still judge it). STUDIO_COMPILE_MAX_MS; the wait point is `compile-wait`.
+ */
+export const COMPILE_MAX_MS = () => (Number(process.env.STUDIO_COMPILE_MAX_MS) > 0 ? Number(process.env.STUDIO_COMPILE_MAX_MS) : 30 * 60_000);
+
+/** The result of a compile that did not give a verdict: never a block. */
+export const compileUnavailable = (why: string, sha = ''): CompileResult => ({ outcome: 'unavailable', ok: true, sha, issues: [], seconds: null, cost: null, note: why, summary: `Compile check couldn't run (${why}): the change goes on to beta's own build` });
+
+// ---- a build server that stays unavailable: said once, started again, and compiles stop queueing behind it
+// An episode opens on the first compile that ends for want of the builder (deadline, 503, no machine, job lost) and lasts
+// BUILDER_TROUBLE_MS from the last such end. While it is open new compiles are skipped with a plain note instead of queueing
+// behind the builder; the first one after it closes tries again, and its end renews or clears the episode. No timer: it is
+// read when a compile is asked for.
+export const BUILDER_TROUBLE_MS = () => (Number(process.env.STUDIO_BUILDER_TROUBLE_MS) > 0 ? Number(process.env.STUDIO_BUILDER_TROUBLE_MS) : 10 * 60_000);
+let trouble: { since: number; last: number; reason: string; told: boolean } | null = null;
+export const builderTrouble = (now = Date.now()): { since: number; reason: string } | null => (trouble && now - trouble.last < BUILDER_TROUBLE_MS() ? { since: trouble.since, reason: trouble.reason } : null);
+export const resetBuilderTrouble = () => { trouble = null; };
+/** Whether a result that ended `unavailable` says the build server itself is the problem (not the token, not a Studio fault). */
+export const builderIsTheCause = (note: string | undefined) => /compile-wait|never answered|503|unavailable|builder|cloud machine|never started|no such job|lost job|timed out|still queued|waiting for/i.test(String(note ?? ''));
+export type TroubleDeps = { start?: () => Promise<unknown>; tell?: (line: string) => Promise<unknown> };
+/**
+ * The build server could not take a compile. Starts the machine again once per episode (a start that failed is said) and
+ * tells the owner once per episode, in Talk; returns true when this call opened the episode.
+ */
+export async function noteBuilderTrouble(reason: string, deps: TroubleDeps = {}, now = Date.now()): Promise<boolean> {
+  const fresh = !trouble || now - trouble.last >= BUILDER_TROUBLE_MS();
+  if (fresh) trouble = { since: now, last: now, reason: reason.slice(0, 160), told: false };
+  else trouble!.last = now;
+  if (!fresh && trouble!.told) return false;
+  const t = trouble!;
+  t.told = true;
+  let started = 'its machine was asked to start again';
+  try {
+    const start = deps.start ?? (async () => { const { gen } = await import('./gen.ts'); return (gen as any).builderAction('start', { confirm: true }); });
+    await start();
+  } catch (e: any) { started = `its machine could not be started again (${String(e?.message ?? e).slice(0, 100)})`; }
+  await deps.tell?.(`Hawkes Gen's build server isn't taking Unity compiles (${t.reason}); ${started}. Compile checks are skipped, and the changes go on with the Roslyn check, until it answers again. Nothing failed: CI and beta's own build still judge every change.`)?.catch?.(() => {});
+  return true;
+}
+/** A compile got a verdict: the build server works. */
+export const noteBuilderOk = () => { trouble = null; };
+
+export type CompileRun = { changeId: string; product: string; slug: string; sha: string; ref: string; path?: string; /** A job submitted before (a restart): followed, not submitted again. */ job?: string; onSubmit?: (id: string) => void; halt?: () => string | null };
 /** Runs the check on a pushed commit. Never throws: any failure to run is `unavailable`. */
-export async function runCompileCheck(opts: { changeId: string; product: string; slug: string; sha: string; ref: string; path?: string }, say: (s: string) => void = () => {}): Promise<CompileResult> {
-  const unavailable = (why: string): CompileResult => ({ outcome: 'unavailable', ok: true, sha: opts.sha, issues: [], seconds: null, cost: null, note: why, summary: `Compile check couldn't run (${why}): the change goes on to beta's own build` });
+export async function runCompileCheck(opts: CompileRun, say: (s: string) => void = () => {}): Promise<CompileResult> {
+  const unavailable = (why: string) => compileUnavailable(why, opts.sha);
   try {
     const { forgetRepoToken, repoToken } = await import('./ghtoken.ts');
     forgetRepoToken(opts.slug);
@@ -212,7 +259,7 @@ export async function runCompileCheck(opts: { changeId: string; product: string;
     // One Unity build of a product at a time in Gen (unityslot.ts): a check may wait its turn behind a build, so the token
     // is minted again when its turn comes. A newer check replaces it while it waits (it ends `unavailable`, not a verdict).
     const paramsNow = async () => { forgetRepoToken(opts.slug); const t = (await repoToken(opts.slug)) ?? token; return compileParams({ slug: opts.slug, sha: opts.sha, ref: opts.ref, token: t, path: opts.path }); };
-    const job = await genRun('unity.build', opts.product, compileParams({ slug: opts.slug, sha: opts.sha, ref: opts.ref, token, path: opts.path }), (j) => { if (j?.progress?.step) say(`Hawkes Gen: ${j.progress.step}`); }, 30 * 60 * 1000, { paramsNow });
+    const job = await genRun('unity.build', opts.product, compileParams({ slug: opts.slug, sha: opts.sha, ref: opts.ref, token, path: opts.path }), (j) => { if (j?.progress?.step) say(`Hawkes Gen: ${j.progress.step}`); }, 30 * 60 * 1000, { paramsNow, ...(opts.job ? { job: opts.job } : {}), ...(opts.onSubmit ? { onSubmit: opts.onSubmit } : {}), ...(opts.halt ? { halt: opts.halt } : {}) });
     const r = compileResultOf(job, opts.sha);
     recordCompile(opts.changeId, opts.product, r);
     return r;

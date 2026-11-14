@@ -86,6 +86,12 @@ export const WAIT_POINTS: WaitPoint[] = [
     file: 'src/agents.ts', symbols: ['pollGenWaits', 'genWaitEndMs'], test: 'test/wait-points.test.ts', via: 'waits',
   },
   {
+    id: 'compile-wait', what: 'A Unity change parked (no agent slot) while Hawkes Gen compiles its pushed branch (the compile gate).',
+    event: 'The compile job ending (Gen\'s job event, genevents.ts), or the build server being unavailable.', deadline: '30 min counted from when the compile was queued', env: 'STUDIO_COMPILE_MAX_MS', maxMs: H,
+    fallback: 'The compile ends as "unavailable" (its Gen job cancelled), the build server is asked to start again and the owner is told once; the change goes on with the Roslyn check as its verdict (CI and beta\'s build still judge it).', fallbackKind: 'without',
+    file: 'src/agents.ts', symbols: ['parkForCompile', 'finishCompile', 'watchCompile'], test: 'test/wait-points.test.ts', via: 'waits',
+  },
+  {
     id: 'unity-hold', what: 'A Unity project\'s merged work waiting for the one build per complete milestone.',
     event: 'A milestone completing in code with nothing else queued for the project (the PM\'s pass after a merge or a change ending).', deadline: '6 h since the oldest unbuilt merge', env: 'STUDIO_UNITY_HOLD_MAX_MS', maxMs: 6 * H,
     fallback: 'One build of beta\'s head runs anyway.', fallbackKind: 'carry-on',

@@ -36,7 +36,7 @@
 
 import { cpuWaiting, cpuWaits } from './cpuroom.ts';
 import { buildCheckBrief } from './buildfix.ts';
-import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
+import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, compileUnavailable, COMPILE_MAX_MS, builderIsTheCause, noteBuilderTrouble, noteBuilderOk, recordCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
 import { unityBuildVerdict } from './unitybuild-policy.ts';
 import { unityCheckAsync, unityFixPrompt, issueLines, looksUnity, changedCsFilesAsync, type UnityCheckResult } from './unitycheck.ts';
 import { rubricBrief, isGame, qualityGate, failLine } from './quality.ts';
@@ -697,7 +697,7 @@ async function dropEmptyWorktree(id: string, commits: string[]) {
  * (a failed one keeps the step it failed at, with `failed`).
  */
 export type Phase = {
-  step: 'prepare' | 'agent' | 'publish' | 'verify' | 'finish' | 'gen';
+  step: 'prepare' | 'agent' | 'publish' | 'verify' | 'finish' | 'gen' | 'compile-wait' | 'compile';
   /** Played by itself to ship shots and a clip with the change (showcaseFor), not on J's request. */
   showcase?: boolean;
   note?: string;
@@ -738,6 +738,8 @@ export type Phase = {
   compile?: CompileResult;
   compileFixes?: number;
   compileFix?: boolean;
+  /** Parked while Hawkes Gen compiles the pushed branch (step 'compile-wait', status WAITING_GEN, no slot): when it was queued, the commit, the Gen job. Step 'compile': the verdict is in `compile`, the pass acts on it. */
+  compileWait?: { since: number; sha: string; job?: string };
   /** The quality scan (quality-scan.ts, the game quality rubric's build gate) before the pull request: its last result; `qualityFixes` passes sent back for it (at most QUALITY_FIXES), `qualityFix` the next pass is one. */
   quality?: QualityScan;
   qualityFixes?: number;
@@ -1122,7 +1124,7 @@ async function worktreeForAgentStep(id: string, ph: Phase, save: (patch: Partial
  * Returns true when the pass is over (carried to ready).
  */
 async function worktreeForLaterSteps(id: string, ph: Phase): Promise<boolean> {
-  if (!['publish', 'verify', 'finish'].includes(ph.step)) return false;
+  if (!['publish', 'verify', 'finish', 'compile'].includes(ph.step)) return false;
   const c = getChange(id)!;
   if (!c.worktree || fs.existsSync(path.join(c.worktree, '.git'))) return false;
   const ok = await remakeWorktree(id).catch((e: any) => { addLog(id, `couldn't make the worktree again: ${String(e?.message ?? e).slice(0, 300)}`); return false; });
@@ -3152,31 +3154,36 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         const cur = getChange(id)!;
         if (!/Compile check skipped/.test(cur.summary ?? '')) update(id, { summary: `${cur.summary ?? summary}\n\n_${gate.why}._` });
       }
+      // Gen compiles the branch while the change is parked, holding no slot (parkForCompile): the pass ends here and the
+      // verdict (or the compile's deadline) queues it again at the 'compile' step below.
       if (gate?.run) {
         c = getChange(id)!;
-        const tipNow = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
-        update(id, { detail: 'Hawkes Gen is compiling the branch' });
-        const cc = await runCompileCheck({ changeId: id, product: p.id, slug: c.slug, sha: tipNow, ref: `refs/heads/${c.branch}` }, (t) => update(id, { detail: t }));
-        save({ compile: cc });
-        addLog(id, cc.summary);
-        for (const l of cc.issues.slice(0, 40)) addLog(id, `compile check: ${l.file}:${l.line} error ${l.code}: ${l.message}`);
-        if (cc.outcome === 'failed') {
-          const used = ph.compileFixes ?? 0;
-          if (used < COMPILE_FIXES) {
-            addLog(id, `compile check failed: sending the agent back to fix it (${used + 1} of ${COMPILE_FIXES}); not ready, it can't merge`);
-            save({ step: 'agent', compileFixes: used + 1, compileFix: true, result: undefined, stopped: undefined, proc: undefined, since: Date.now() }, { status: 'working', detail: `the compile check found ${cc.issues.length} error${cc.issues.length === 1 ? '' : 's'}: the agent is fixing them` });
-            return work(id, note, answer, ph, true);
-          }
-          const detail = `blocked from merging: the branch still doesn't compile after ${COMPILE_FIXES} fix passes: ${cc.issues.slice(0, 3).map((i) => `${i.file}:${i.line} ${i.code} ${i.message}`).join('; ')}`.slice(0, 300);
-          reopenTaken(id, findings.map((f) => f.id), detail);
-          update(id, { status: 'failed', detail, summary, commits, phase: { ...ph, failed: true, compile: cc } });
-          await endChangeDisk(id);
-          return;
-        }
+        return parkForCompile(id, ph, save, (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out);
       }
       // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). A change
       // is not played by itself (play-policy.ts, J 2026-11-11): its milestone's one play of the build judges its criteria.
       save({ step: 'finish', tip: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, jobs: {}, verify: undefined });
+    }
+
+    // Back from Gen's compile (parkForCompile / finishCompile): the verdict is on the phase. Compiler errors send the agent
+    // back (COMPILE_FIXES, never a try); a compile that couldn't run (unavailable) or was skipped goes on with the Roslyn result.
+    if (ph.step === 'compile') {
+      c = getChange(id)!;
+      const cc = ph.compile;
+      if (cc?.outcome === 'failed') {
+        const used = ph.compileFixes ?? 0;
+        if (used < COMPILE_FIXES) {
+          addLog(id, `compile check failed: sending the agent back to fix it (${used + 1} of ${COMPILE_FIXES}); not ready, it can't merge`);
+          save({ step: 'agent', compileFixes: used + 1, compileFix: true, compileWait: undefined, result: undefined, stopped: undefined, proc: undefined, since: Date.now() }, { status: 'working', detail: `the compile check found ${cc.issues.length} error${cc.issues.length === 1 ? '' : 's'}: the agent is fixing them` });
+          return work(id, note, answer, ph, true);
+        }
+        const detail = `blocked from merging: the branch still doesn't compile after ${COMPILE_FIXES} fix passes: ${cc.issues.slice(0, 3).map((i) => `${i.file}:${i.line} ${i.code} ${i.message}`).join('; ')}`.slice(0, 300);
+        reopenTaken(id, findings.map((f) => f.id), detail);
+        update(id, { status: 'failed', detail, summary: c.summary ?? '', commits: c.commits, phase: { ...ph, failed: true, compile: cc } });
+        await endChangeDisk(id);
+        return;
+      }
+      save({ step: 'finish', compileWait: undefined, tip: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, jobs: {}, verify: undefined });
     }
 
     // A change that was about to be played before Studio stopped playing changes (play-policy.ts): it finishes unplayed.
@@ -5451,7 +5458,7 @@ export function reviveRestartStopped(): string[] {
 }
 
 /** How long a step may go with no sign of life (a log line, a status change, a build or Gen job of its own) before the watchdog takes it over. */
-export const STALL_MS: Record<Phase['step'], number> = { prepare: 30 * 60_000, agent: 90 * 60_000, publish: 30 * 60_000, verify: 45 * 60_000, finish: 60 * 60_000, gen: 24 * 3600_000 };
+export const STALL_MS: Record<Phase['step'], number> = { prepare: 30 * 60_000, agent: 90 * 60_000, publish: 30 * 60_000, verify: 45 * 60_000, finish: 60 * 60_000, gen: 24 * 3600_000, 'compile-wait': 2 * 3600_000, compile: 30 * 60_000 };
 const stallMs = (step: Phase['step']) => {
   const n = Number(process.env.STUDIO_STALL_MS);
   return n > 0 ? n : STALL_MS[step] ?? 45 * 60_000;
@@ -5645,10 +5652,83 @@ export function resumeChanges() {
   }
   // Walk-away mode: ready Studio/Gen changes not decided yet (or cut off mid-merge) are looked at again.
   walkAwayPending();
+  // Changes parked while Gen compiles their branch: the job is followed again (its deadline is armed by rearmWaits).
+  for (const c of listChanges({ status: WAITING_GEN, limit: 100 })) {
+    const cw = phaseOf(c.id)?.compileWait;
+    if (phaseOf(c.id)?.step !== 'compile-wait' || !cw) continue;
+    beginWait('compile-wait', c.id, { waitsOn: `Hawkes Gen compiling ${cw.sha.slice(0, 7)}`, deadlineMs: COMPILE_MAX_MS(), since: cw.since, product: c.product });
+    watchCompile(c.id);
+  }
   // Changes parked on Gen jobs: their jobs are looked at again now (they may have finished while Studio was down).
   void pollGenWaits({ force: true });
   return out;
 }
+
+/**
+ * The compile gate's wait holds no agent slot (J, 2026-11-13: two changes sat 31-33 min at "Hawkes Gen is compiling the
+ * branch" behind a build server that never came up, holding 2 of 3 busy slots and, through file collisions, a whole product).
+ * The pass ends after the pull request is open: the change is parked (WAITING_GEN, step 'compile-wait') while a watcher
+ * outside any slot follows the compile job. The job's end (Gen's event) or the wait's deadline (waits.ts point
+ * `compile-wait`, counted from when the compile was queued, stored so a restart arms it again) hands the verdict to
+ * finishCompile, which queues the change at step 'compile'. A deadline, a 503, a machine that never started, a job Gen
+ * lost: all end as `unavailable` and the change goes on with the Roslyn result. No interval, no watchdog.
+ */
+export const compileHooks = { run: runCompileCheck };
+const compileWatching = new Map<string, (why: string) => void>();
+export function parkForCompile(id: string, ph: Phase, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, sha: string) {
+  const since = Date.now();
+  save({ step: 'compile-wait', compileWait: { since, sha }, compile: undefined, proc: undefined, result: undefined }, { status: WAITING_GEN, detail: 'Hawkes Gen is compiling the branch (the change waits without holding an agent slot)' });
+  beginWait('compile-wait', id, { waitsOn: `Hawkes Gen compiling ${sha.slice(0, 7)}`, deadlineMs: COMPILE_MAX_MS(), since, product: getChange(id)?.product, renew: true });
+  addLog(id, `parked: Hawkes Gen is compiling ${sha.slice(0, 7)} (no player build); the change holds no slot and goes on with its verdict, or without it after ${Math.round(COMPILE_MAX_MS() / 60_000)} min`);
+  watchCompile(id);
+  void pump();
+}
+/** Follows the compile job of a parked change (also after a restart: the job is followed, not submitted again). */
+export function watchCompile(id: string) {
+  const c = getChange(id), cw = phaseOf(id)?.compileWait;
+  if (!c || !cw || compileWatching.has(id)) return;
+  let expired: string | null = null;
+  compileWatching.set(id, (why) => { expired = why; });
+  void (async () => {
+    const r = await compileHooks.run({
+      changeId: id, product: c.product, slug: c.slug, sha: cw.sha, ref: `refs/heads/${c.branch}`, ...(cw.job ? { job: cw.job } : {}),
+      onSubmit: (job) => { const ph = phaseOf(id); if (ph?.step === 'compile-wait') update(id, { phase: { ...ph, compileWait: { ...ph.compileWait!, job } } }); },
+      halt: () => expired ?? (['cancelled', 'closed', 'merged'].includes(getChange(id)?.status ?? '') ? 'the change ended' : null),
+    }, (t) => { if (getChange(id)?.status === WAITING_GEN) update(id, { detail: t }); });
+    await finishCompile(id, r);
+  })().catch((e) => finishCompile(id, compileUnavailable(String(e?.message ?? e).slice(0, 120), cw.sha))).finally(() => compileWatching.delete(id));
+}
+/** The compile's end (its verdict, or why it never gave one): the change is queued again at its 'compile' step. Once only. */
+export async function finishCompile(id: string, cc: CompileResult) {
+  const c = getChange(id), ph = phaseOf(id);
+  if (!c || c.status !== WAITING_GEN || ph?.step !== 'compile-wait') return false;
+  endWait('compile-wait', id, 'event');
+  addLog(id, cc.summary);
+  for (const l of cc.issues.slice(0, 40)) addLog(id, `compile check: ${l.file}:${l.line} error ${l.code}: ${l.message}`);
+  if (cc.outcome === 'unavailable' && builderIsTheCause(cc.note)) {
+    // The build server itself can't take compiles: started again and told once; new compiles are skipped while it is down.
+    await noteBuilderTrouble(cc.note ?? 'no reason given', { tell: (line) => import('./followup.ts').then((F) => F.tellAbout(getChange(id), `Hawkes Gen's build server: compiles unavailable`, `${line} (first seen on ${c.title ?? id}) ${PUBLIC_URL}/#changes/${id}`)) }).catch(() => {});
+  } else if (cc.outcome === 'compiled' || cc.outcome === 'failed') noteBuilderOk();
+  update(id, {
+    status: 'queued', detail: cc.outcome === 'unavailable' ? 'the compile check could not run; the change goes on with the Roslyn check' : `compile check: ${cc.outcome}; the change carries on`,
+    phase: { ...ph, step: 'compile', compile: cc, compileWait: undefined, notBefore: Date.now() },
+  });
+  void pump();
+  return true;
+}
+// The deadline of a compile counted from when it was queued: the watcher is told to stop (it cancels the Gen job), a job
+// nobody follows (a restart) is cancelled, and the change goes on without a verdict.
+onDeadline('compile-wait', async (w) => {
+  const id = w.subject, cw = phaseOf(id)?.compileWait;
+  const why = `compile-wait: Hawkes Gen's build server never answered within ${Math.round(COMPILE_MAX_MS() / 60_000)} min of the compile being queued${cw?.job ? ` (job ${cw.job})` : ''}`;
+  const watched = compileWatching.get(id);
+  watched?.(why);
+  const cc = compileUnavailable(why, cw?.sha ?? '');
+  if (!(await finishCompile(id, cc))) return;
+  const c = getChange(id);
+  if (!watched && c) recordCompile(id, c.product, cc);
+  if (!watched && cw?.job) { const { gen } = await import('./gen.ts'); await (gen as any).cancel?.(cw.job).catch?.(() => {}); }
+});
 
 let polling = false;
 /** A look asked for while one ran (an event, a reconnect): run right after it, so nothing is dropped. */

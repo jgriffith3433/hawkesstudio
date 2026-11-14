@@ -74,6 +74,19 @@ test('genWait: Gen answering No such job ends at once as lost (shared path)', as
   assert.match(j.error, /Hawkes Gen lost job j_gone/);
 });
 
+test('genWait: Gen answering 503 on the job does not hold a wait past Studio\'s own reason to stop (a compile\'s deadline)', async () => {
+  const G = await import('../src/gen.ts');
+  let cancelled = 0, stop: string | null = null;
+  const api = { job: async () => { throw Object.assign(new Error('503 /builder unavailable'), { status: 503 }); }, cancel: async () => { cancelled++; return {}; }, jobs: async () => [] };
+  setTimeout(() => { stop = 'the compile never started'; }, 30);
+  const t = Date.now();
+  const j: any = await G.genWait('j_503', undefined, 60_000, () => stop, { api, events: noEvents, pollMs: 10, tool: 'unity.build' });
+  assert.equal(j.halted, true);
+  assert.equal(j.status, 'cancelled');
+  assert.equal(cancelled, 1, 'the job is not left behind');
+  assert.ok(Date.now() - t < 5000, 'it did not run through its 60 misses first');
+});
+
 test('genWait: a still-queued job Gen knows with work ahead is never timed out as lost (fromStart / free-room rule)', async () => {
   process.env.STUDIO_GEN_QUEUED_GHOST_MS = '40';
   try {
