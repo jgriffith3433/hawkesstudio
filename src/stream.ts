@@ -15,6 +15,7 @@ import type http from 'node:http';
 import { db, onDbWrite } from './db.ts';
 import { genEvents } from './gen.ts';
 import { breathe } from './breathe.ts';
+import { hold, endStream, tabKey } from './slots.ts';
 
 type Event = { topic: string; [k: string]: unknown };
 const clients = new Set<http.ServerResponse>();
@@ -173,7 +174,9 @@ export function handleStream(req: http.IncomingMessage, res: http.ServerResponse
   startWatch();
   const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
   ping.unref?.();
-  req.on('close', () => {
+  // Held to a share of Studio's request slots, and ends itself after a while (its page reconnects): slots.ts.
+  hold(res, 'stream', endStream(res), tabKey(req, '/api/stream'));
+  res.on('close', () => {
     clearInterval(ping);
     clients.delete(res);
     if (!clients.size) stopWatch();

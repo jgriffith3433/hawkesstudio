@@ -307,7 +307,7 @@
   function follow(id) {
     if (live?.id === id && live.es.readyState !== EventSource.CLOSED) return;
     unfollow();
-    const es = new EventSource(`/api/talk/${id}/events`);
+    const es = new EventSource(typeof withTab === "function" ? withTab(`/api/talk/${id}/events`) : `/api/talk/${id}/events`);
     live = { id, es, text: '', ended: false };
     es.onmessage = (m) => {
       if (live?.es !== es) return;

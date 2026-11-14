@@ -9,6 +9,7 @@
 // advances when it is read), `everyMs`. A feed without `everyMs` reads once when a page opens and then only when poked.
 
 import type http from 'node:http';
+import { hold, endStream, tabKey } from './slots.ts';
 
 type Feed = {
   clients: Set<http.ServerResponse>;
@@ -83,7 +84,9 @@ export function serveFeed(req: http.IncomingMessage, res: http.ServerResponse, k
   }
   const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
   ping.unref?.();
-  req.on('close', () => {
+  // Held to a share of Studio's request slots, and ends itself after a while (its page reconnects): slots.ts.
+  hold(res, 'stream', endStream(res), tabKey(req, `feed:${key}`));
+  res.on('close', () => {
     clearInterval(ping);
     feed.clients.delete(res);
     if (!feed.clients.size) {

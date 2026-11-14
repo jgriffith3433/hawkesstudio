@@ -3,6 +3,7 @@
 
 import { brainHistory } from './runs.ts';
 import http from 'node:http';
+import { track, hold, endStream, tabKey, summary as slotSummary } from './slots.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PORT, DATA, ROOT, paths, loadProducts, getProduct, StudioError, localUrl, managedElsewhere } from './config.ts';
@@ -122,6 +123,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
   const route = url.pathname;
   const method = req.method ?? 'GET';
+  // Counted until it closes: what stays open is held to a share of Cloud Run's request slots (slots.ts).
+  track(req, res, route);
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   // The Talk conversation behind this call (Talk's MCP server sends it): what it starts reports back there.
   const origin = originOf(req);
@@ -265,12 +268,12 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') {
       const ops = await import('./ops.ts');
-      return send(res, 200, { ok: true, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
+      return send(res, 200, { ok: true, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), slots: slotSummary(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
     }
     // Background operations (ops.ts): the go-live queue, rollbacks and merges, the commands running now, the event loop.
     if (route === '/api/ops' && method === 'GET') {
       const ops = await import('./ops.ts');
-      return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), diskReclaims: (await import('./diskreclaim.ts')).reclaimLog(Number(q('reclaims')) || 50), disk: (await import('./disksweep.ts')).diskSummary() });
+      return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth(), slots: slotSummary(), genBusy: (await import('./genpace.ts')).genBusy(), queue: (await import('./agents.ts')).queueHealth(), diskReclaims: (await import('./diskreclaim.ts')).reclaimLog(Number(q('reclaims')) || 50), disk: (await import('./disksweep.ts')).diskSummary() });
     }
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
     if (route === '/api/overview') return send(res, 200, await overview());
@@ -714,7 +717,8 @@ const server = http.createServer(async (req, res) => {
       out({ type: 'hello', status: c.status, partial: c.partial ?? null, call: callInfo(c.id) });
       const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
       talkEvents.on(c.id, out);
-      req.on('close', () => {
+      hold(res, 'stream', endStream(res), tabKey(req, route));
+      res.on('close', () => {
         clearInterval(ping);
         talkEvents.off(c.id, out);
       });
@@ -726,6 +730,7 @@ const server = http.createServer(async (req, res) => {
       const b = await readJson(req);
       const abort = new AbortController();
       res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+      hold(res, 'wait');
       return send(res, 200, await (await import('./guide.ts')).requestGuide(origin, b.actions, { cancel: abort.signal }));
     }
     m = /^\/api\/talk\/(t_[0-9a-f]+)\/guide\/(g_[0-9a-f]+)(\/claim)?$/.exec(route);
@@ -743,6 +748,7 @@ const server = http.createServer(async (req, res) => {
       if (wait && getConversation(m[1])) {
         const abort = new AbortController();
         res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+        hold(res, 'wait');
         await untilIdle(m[1], wait * 1000, abort.signal);
         if (abort.signal.aborted) return;
       }
