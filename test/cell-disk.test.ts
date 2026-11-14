@@ -208,6 +208,29 @@ test('a revision that fails for its image (not the disk) still goes back to the 
   assert.equal(g.svc.template.containers[0].image, 'old');
 });
 
+// 2026-11-14 03:34-03:46: the try with the disk never started while a Unity build waited for CPU, so the roll read it
+// as "no CPU", made the jobs give way and tried again with the disk; Google refused that for the ephemeral disk quota,
+// and the roll went back to the old image, so the fix for Studio's freezes never reached J's Studio.
+test('no CPU, then the retry refused for its disk: the same image goes out without the disk, never back to the old one', async () => {
+  const g = fakeGoogle(false);
+  g.svc.labels = { 'hawkes-studio-cell': '1', 'hawkes-org': 'acme', 'hawkes-lane': 'live' };
+  (g.svc as any).services = [{ ...g.svc, name: 'projects/p/locations/us-east4/services/studio-o-acme' }];
+  const seen: boolean[] = [];
+  let yielded = 0;
+  const outcome = async () => {
+    const hasDisk = (g.svc.template.volumes ?? []).some((v: any) => v.emptyDir?.medium === 'DISK');
+    seen.push(hasDisk);
+    if (!hasDisk) return { ok: true, why: null };
+    return seen.length === 1 ? { ok: false, why: "the new revision wasn't serving in time" } : { ok: false, why: 'Revision is not ready: Quota exceeded for total allowable ephemeral disk allocation per project per region.' };
+  };
+  const lines: string[] = [];
+  const r = await R.rollCells('v11', { health: async () => true, log: (s) => lines.push(s), outcome, shortOfCpu: async () => true, yieldCpu: async () => { yielded++; return []; } }, cfg);
+  assert.equal(r.failed, null, lines.join('\n'));
+  assert.equal(g.svc.template.containers[0].image, 'v11', 'the new image is what runs');
+  assert.equal(yielded, 1, 'the jobs gave way once');
+  assert.deepEqual(seen, [true, true, false], 'with the disk, again with it after the jobs gave way, then without it');
+});
+
 test('diskFailure tells a disk refusal from an image failure', () => {
   assert.equal(R.diskFailure('Quota exceeded for total allowable ephemeral disk allocation per project per region.'), true);
   assert.equal(R.diskFailure('Container failed to start and listen on the port defined by PORT'), false);
