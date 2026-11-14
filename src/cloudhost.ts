@@ -60,24 +60,54 @@ export const synced = (rel: string) => !SKIP.test(rel);
 export const stateBucket = () => process.env.STUDIO_STATE_BUCKET?.trim() || null;
 
 /** Before the rest of Studio loads: brings the state files down from Cloud Storage (a fresh instance has none). */
-export async function pullState(dir = DATA) {
+/**
+ * What a pull brought down (name -> the object's version), so a later pull fetches only what changed since. A go-live's
+ * new instance pulls everything while the old one still serves (cloudlease.ts claim, `prepare`), then, once the old one
+ * has stopped and pushed its last changes, pulls again: only the files that changed or appeared since, and it removes the
+ * ones the old instance deleted. 2026-11-14: one pull was 11,871 files and 75 s, all of it after the old instance had
+ * stopped, so every go-live turned pages away for about two minutes.
+ */
+export const PULL_MANIFEST = () => process.env.STUDIO_STATE_MANIFEST || '/tmp/hawkes-state-pulled.json';
+/** Files fetched at once: a cold start waits for all of them (eight at a time was 75 s for 11,871 files). */
+const PULL_AT_ONCE = 32;
+const version = (o: { size: number; updated: string; generation?: string }) => `${o.size}:${o.updated}:${o.generation ?? ''}`;
+
+/** Pulls the state files; with `manifest` (PULL_MANIFEST on Cloud Run), only what changed since the pull that wrote it.
+ * Returns how many it fetched. */
+export async function pullState(dir = DATA, o: { manifest?: string | null } = {}) {
   const bucket = stateBucket();
   if (!bucket) return 0;
   const { gcsList, gcsRead } = await import('./gcp.ts');
-  let n = 0;
+  const manifest = o.manifest ?? null;
+  let before: Record<string, string> = {};
+  if (manifest) { try { before = JSON.parse(fs.readFileSync(manifest, 'utf8')) ?? {}; } catch { before = {}; } }
   const prefix = STATE();
-  const todo = (await gcsList(bucket, prefix)).filter((o) => { const rel = o.name.slice(prefix.length); return rel && synced(rel) && !rel.includes('..'); });
-  // Eight at a time: every cold start waits for this (one by one it was about 5 s for 21 files, 2026-10-30).
-  for (let i = 0; i < todo.length; i += 8) {
-    await Promise.all(todo.slice(i, i + 8).map(async (o) => {
-      const data = await gcsRead(bucket, o.name);
-      if (!data) return;
-      const dest = path.join(dir, o.name.slice(prefix.length));
+  const listed = (await gcsList(bucket, prefix)).filter((x) => { const rel = x.name.slice(prefix.length); return rel && synced(rel) && !rel.includes('..'); });
+  const now: Record<string, string> = {};
+  for (const x of listed) now[x.name] = version(x);
+  const todo = listed.filter((x) => before[x.name] !== now[x.name] || !fs.existsSync(path.join(dir, x.name.slice(prefix.length))));
+  let n = 0;
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(PULL_AT_ONCE, todo.length) }, async () => {
+    while (next < todo.length) {
+      const x = todo[next++];
+      const data = await gcsRead(bucket, x.name);
+      if (!data) continue;
+      const dest = path.join(dir, x.name.slice(prefix.length));
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, data, { mode: 0o600 });
       n++;
-    }));
+    }
+  }));
+  // A file the earlier pull brought down that is gone from the bucket now was deleted by the instance before this one.
+  for (const name of Object.keys(before)) {
+    if (name in now || !name.startsWith(prefix)) continue;
+    const rel = name.slice(prefix.length);
+    if (!rel || rel.includes('..') || !synced(rel)) continue;
+    try { fs.rmSync(path.join(dir, rel), { force: true }); } catch { /* already gone */ }
   }
+  // Written only after a whole pull: a pull that failed halfway leaves no manifest, and the next one fetches everything.
+  if (manifest) { try { fs.writeFileSync(manifest, JSON.stringify(now)); } catch { /* the next pull fetches everything */ } }
   return n;
 }
 

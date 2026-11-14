@@ -69,7 +69,7 @@ jobs:
       - name: Deploy it, keeping the previous revision to fall back on
         if: steps.newest.outputs.go == 'true'
         env:
-          STARTUP_PROBE: tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=60
+          STARTUP_PROBE: tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=5,failureThreshold=120
         run: |
           prev=$(gcloud run services describe "$SERVICE" --region "$RUN_REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)')
           [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/studio-cloudrun/deploy.ps1 for this lane first"; exit 1; }

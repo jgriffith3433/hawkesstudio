@@ -102,27 +102,33 @@ test('the daily endpoint: only Cloud Scheduler\'s token for Studio (or the owner
 /** A fake Cloud Storage JSON API over a Map (list, read, upload), through gcp.ts's fetch seam. */
 function fakeStorage() {
   const objects = new Map<string, Buffer>();
+  const gens = new Map<string, number>();
+  let reads = 0;
+  let gen = 0;
   const f = (async (input: any, init: any = {}) => {
     const u = new URL(String(input));
     const m = /\/storage\/v1\/b\/([^/]+)\/o(?:\/(.+))?$/.exec(u.pathname);
     if (u.pathname.startsWith('/upload/')) {
-      objects.set(`${u.pathname.split('/')[5]}/${u.searchParams.get('name')}`, Buffer.from(init.body));
+      const k = `${u.pathname.split('/')[5]}/${u.searchParams.get('name')}`;
+      objects.set(k, Buffer.from(init.body));
+      gens.set(k, ++gen); // Cloud Storage: every write is a new generation of the object
       return new Response('{}', { status: 200 });
     }
     if (m && !m[2] && (init.method ?? 'GET') === 'GET') {
       const prefix = `${m[1]}/${u.searchParams.get('prefix') ?? ''}`;
-      const items = [...objects.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ name: k.slice(m[1].length + 1), size: objects.get(k)!.length, updated: '' }));
+      const items = [...objects.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ name: k.slice(m[1].length + 1), size: objects.get(k)!.length, updated: '', generation: String(gens.get(k) ?? 0) }));
       return new Response(JSON.stringify({ items }), { status: 200 });
     }
     if (m && m[2]) {
       const k = `${m[1]}/${decodeURIComponent(m[2])}`;
       if (init.method === 'DELETE') { objects.delete(k); return new Response('', { status: 204 }); }
       const b = objects.get(k);
+      reads++;
       return b ? new Response(new Uint8Array(b), { status: 200 }) : new Response('nope', { status: 404 });
     }
     return new Response('unexpected', { status: 500 });
   }) as typeof fetch;
-  return { objects, fetch: f };
+  return { objects, fetch: f, reads: () => reads };
 }
 
 test('state files: changed ones go up, the database and scratch never; a new instance pulls them down', async () => {
@@ -146,6 +152,44 @@ test('state files: changed ones go up, the database and scratch never; a new ins
     assert.equal(await H.pullState(fresh), 3);
     assert.equal(fs.readFileSync(path.join(fresh, 'settings.json'), 'utf8'), '{"a":22}');
     assert.equal(fs.existsSync(path.join(fresh, 'studio.db')), false);
+  } finally {
+    G.setGcpFetch(null);
+    delete process.env.STUDIO_STATE_BUCKET;
+  }
+});
+
+test('a go-live pulls the state files twice: everything before taking over, then only what changed or went away', async () => {
+  const H = await import('../src/cloudhost.ts');
+  const G = await import('../src/gcp.ts');
+  const store = fakeStorage();
+  G.setGcpFetch(store.fetch, 'test-token');
+  process.env.STUDIO_STATE_BUCKET = 'hawkes-staging-studio-state';
+  try {
+    // The old instance's files in the bucket (many, as on 2026-11-14: 11,871).
+    const old = path.join(TMP, 'pull-old');
+    for (let i = 0; i < 200; i++) { fs.mkdirSync(path.join(old, 'memory'), { recursive: true }); fs.writeFileSync(path.join(old, 'memory', `m${i}.json`), `{"i":${i}}`); }
+    fs.writeFileSync(path.join(old, 'settings.json'), '{"a":1}');
+    fs.writeFileSync(path.join(old, 'gone.json'), '{}');
+    assert.equal(await H.pushState(old), 202);
+    // The new instance, while the old one still serves: everything.
+    const fresh = path.join(TMP, 'pull-new');
+    const manifest = path.join(TMP, 'pulled.json');
+    assert.equal(await H.pullState(fresh, { manifest }), 202);
+    // The old instance goes on, then stops and pushes its last changes: one changed, one new, one deleted.
+    fs.writeFileSync(path.join(old, 'settings.json'), '{"a":2}');
+    fs.writeFileSync(path.join(old, 'new.json'), '{"n":1}');
+    store.objects.delete('hawkes-staging-studio-state/state/gone.json');
+    assert.equal(await H.pushState(old), 2);
+    // The new instance's second pull, after the old one stopped: only those.
+    const before = store.reads();
+    assert.equal(await H.pullState(fresh, { manifest }), 2);
+    assert.equal(store.reads() - before, 2, 'two files read, not 203');
+    assert.equal(fs.readFileSync(path.join(fresh, 'settings.json'), 'utf8'), '{"a":2}');
+    assert.equal(fs.readFileSync(path.join(fresh, 'new.json'), 'utf8'), '{"n":1}');
+    assert.equal(fs.existsSync(path.join(fresh, 'gone.json')), false, 'what the old instance deleted is gone');
+    assert.equal(fs.readFileSync(path.join(fresh, 'memory', 'm7.json'), 'utf8'), '{"i":7}');
+    // Without a manifest (a pull that failed halfway wrote none): everything again.
+    assert.equal(await H.pullState(path.join(TMP, 'pull-cold')), 202);
   } finally {
     G.setGcpFetch(null);
     delete process.env.STUDIO_STATE_BUCKET;

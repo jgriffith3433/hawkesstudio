@@ -81,7 +81,7 @@ had a hand-set service-wide `run.googleapis.com/maxScale: '3'`, which the next `
 **CI does not carry these settings**: `ci.yml` only changes the image (`gcloud run services update --image`), and the
 service keeps everything else. The probe and the service-wide cap reach a lane when J runs `deploy.ps1` for it again,
 or by hand: `gcloud run services update studio --region us-east4 --project hawkes-staging --max=default
---startup-probe=tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=60`
+--startup-probe=tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=5,failureThreshold=120`
 (`studio-beta`: `--region us-central1`). The Litestream change comes with the image, so the next CI deploy has it;
 the first restore after it still replays what the old instance wrote since its last snapshot.
 ## Signing in

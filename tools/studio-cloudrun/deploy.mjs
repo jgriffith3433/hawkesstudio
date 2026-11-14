@@ -46,7 +46,7 @@ const emails = flag('google-emails', 'piercehawkes3@gmail.com');
 const P = `--project=${project}`;
 // The service's startup probe (see the deploy below): a TCP check of the port every 10 s, 60 tries, so up to 10 minutes
 // from start to listening. Cells use the same numbers (src/cellrun.ts CELL_STARTUP_PROBE; test/cells.test.ts checks).
-const STARTUP_PROBE = 'tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=60';
+const STARTUP_PROBE = 'tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=5,failureThreshold=120';
 const sa = `studio-control@${project}.iam.gserviceaccount.com`;
 const agentSa = `studio-agent@${project}.iam.gserviceaccount.com`;
 const schedSa = `studio-scheduler@${project}.iam.gserviceaccount.com`;

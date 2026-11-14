@@ -49,7 +49,7 @@ export const myLeaseId = () => { try { return fs.readFileSync(ID_FILE, 'utf8').t
  * Takes the lease and waits until the previous holder has stopped writing: its released-<id>, or its heartbeat going
  * quiet (`staleMs`), at most `waitMs`. Returns what happened, for the log.
  */
-export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: number; idleMs?: number; confirmMs?: number; olderSilentMs?: number; now?: () => number; rev?: string | null } = {}) {
+export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: number; idleMs?: number; confirmMs?: number; olderSilentMs?: number; now?: () => number; rev?: string | null; prepare?: () => Promise<unknown> } = {}): Promise<any> {
   const bucket = stateBucket();
   if (!bucket) return { claimed: false, why: 'no state bucket' };
   const now = o.now ?? Date.now;
@@ -97,6 +97,15 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
     orphaned = true;
   }
   mine.how = !prev ? 'first' : orphaned ? 'idle' : holderGone ? 'quiet' : 'handover';
+  // This instance takes the database. Everything that doesn't need it is done first, while the holder still serves
+  // (2026-11-14: the state files took 75 s after the old instance had stopped, and Cloud Run turned pages away all that
+  // time). Asking for the lease is what stops the holder, so it comes after; the lease is read again in case another
+  // instance moved first, and the decision is made again from there (without preparing twice).
+  if (o.prepare && mine.how === 'handover') {
+    await o.prepare().catch(() => {});
+    const again = await readJsonObj<Lease>(bucket, 'lease.json');
+    if ((again?.id ?? null) !== (prev?.id ?? null)) return claim({ ...o, prepare: undefined });
+  }
   const took = orphaned ? { took: 'the holder answered nothing' } : {};
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
   fs.writeFileSync(ID_FILE, mine.id);
@@ -244,7 +253,15 @@ export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number; d
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('cloudlease.ts')) {
   const what = process.argv[2];
   if (what === 'claim') {
-    const r: any = await claim().catch((e) => ({ claimed: false, why: String(e.message ?? e) }));
+    // Before asking the holder to stop: the state files, all of them, while it still serves; the server then pulls only
+    // what changed since (cloudrun-main.ts).
+    const prepare = async () => {
+      const t0 = Date.now();
+      const { pullState, PULL_MANIFEST } = await import('./cloudhost.ts');
+      const n = await pullState(undefined, { manifest: PULL_MANIFEST() }).catch((e) => { console.warn(`[lease] state pre-pull: ${e?.message ?? e}`); return -1; });
+      console.log(`[lease] ${n < 0 ? 'no' : n} state file(s) pulled before taking the database, in ${Date.now() - t0} ms`);
+    };
+    const r: any = await claim({ prepare }).catch((e) => ({ claimed: false, why: String(e.message ?? e) }));
     console.log(`[lease] ${JSON.stringify(r)}`);
     // A newer revision, or a live instance of this one, holds the database: this one must not start (exit 3 tells
     // entrypoint.sh).

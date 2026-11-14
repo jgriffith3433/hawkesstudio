@@ -236,3 +236,43 @@ test("a holder whose heartbeat hangs still sees a takeover and stops (no two wri
   hangBeats = false;
   assert.equal(lostTo, 'l_newer', `the old holder (${holder.id}) learned it lost the database despite its hung heartbeat`);
 });
+
+// 2026-11-14: a go-live's new instance pulled 11,871 state files (75 s) only after the old one had stopped, and Cloud Run
+// turned every page away meanwhile. Now what doesn't need the database is done before the lease is asked for.
+test('a go-live prepares first: its state files come down while the holder still serves, then it asks for the lease', async () => {
+  objects.clear();
+  const first: any = await L.claim();
+  assert.equal(first.how, 'first');
+  const holder = first.id;
+  let lostTo: string | null = null;
+  const order: string[] = [];
+  const stop = L.watchLease((by) => { lostTo = by.id; order.push('holder stops'); }, { everyMs: 20 });
+  const prepare = async () => {
+    await new Promise((r) => setTimeout(r, 120)); // several of the holder's checks: it must not stop while this runs
+    assert.equal(JSON.parse(objects.get('db/lease.json')!.toString()).id, holder, 'the lease still names the holder');
+    assert.equal(lostTo, null, 'the holder still serves while the new instance prepares');
+    order.push('prepared');
+  };
+  const claiming = L.claim({ pollMs: 10, waitMs: 5000, confirmMs: 50, prepare });
+  const released = (async () => { while (!lostTo) await new Promise((r) => setTimeout(r, 10)); await L.release(holder); })();
+  const [r]: any[] = await Promise.all([claiming, released]);
+  stop();
+  assert.equal(r.how, 'released');
+  assert.equal(r.previous, holder);
+  assert.deepEqual(order, ['prepared', 'holder stops']);
+});
+
+test('the lease moved while preparing: the claim decides again from the new holder and prepares only once', async () => {
+  const holder = L.myLeaseId()!;
+  let prepared = 0;
+  const other = 'l_0123456789ab';
+  const prepare = async () => {
+    prepared++;
+    // Another instance took the lease meanwhile and is alive.
+    objects.set('db/lease.json', Buffer.from(JSON.stringify({ id: other, rev: null, at: Date.now() })));
+    objects.set(`db/alive-${other}`, Buffer.from(JSON.stringify({ at: Date.now(), generation: null, servedAt: Date.now() })));
+  };
+  const r: any = await L.claim({ pollMs: 10, waitMs: 200, confirmMs: 50, prepare });
+  assert.equal(prepared, 1);
+  assert.equal(r.previous, other, `decided from the new holder, not ${holder}`);
+});
