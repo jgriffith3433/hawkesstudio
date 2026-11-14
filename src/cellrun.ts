@@ -611,12 +611,21 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
       log(`${cell.service}: the new revision got no CPU in ${c.region}${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}; jobs give way and the roll tries again`);
       await (o.yieldCpu ?? yieldJobCpu)({ ...o, log }, c).catch((e: any) => log(`${cell.service}: couldn't stop the jobs (${e.message})`));
       out = await attempt({ disk, retry: now() });
-    } else if (!dryRun(o) && !out.ok && disk === true && startTimedOut(out.why)) {
-      // With the disk and no reason given (no instance ever started, the probe ran out): Google may refuse the disk
-      // without saying so. The same image without it; if that runs, the image was fine and the disk stays off for now.
+    }
+    // After any try with the disk, the CPU retry included: refused for it, or never started with no reason given (Google
+    // may refuse the disk without saying so), the same image goes out without it; if that runs, the image was fine and
+    // the disk stays off for now. 2026-11-14 03:34-03:46: the try with the disk never started while a Unity build waited
+    // for CPU, so it read as "no CPU"; the jobs gave way, the retry was refused for the ephemeral disk quota, and the roll
+    // went back to the old image, leaving J's Studio frozen on code main had already fixed.
+    if (!dryRun(o) && !out.ok && disk === true && (diskFailure(out.why) || startTimedOut(out.why))) {
       log(`${cell.service}: the new revision with the working disk didn't start${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}; the same image without the disk`);
       disk = false; refusedAt = now();
       out = await attempt({ disk });
+      if (!out.ok && diskFailure(out.why)) {
+        log(`${cell.service}: the in-memory working volume was refused too (${String(out.why).slice(0, 200)}); the new image with no volume`);
+        disk = 'none';
+        out = await attempt({ disk });
+      }
     }
     if (!dryRun(o) && !(out.ok && (await health(serviceUrl(cell.org, c))))) {
       log(`${cell.service} is not healthy on the new image${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
