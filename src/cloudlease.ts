@@ -101,10 +101,12 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   // (2026-11-14: the state files took 75 s after the old instance had stopped, and Cloud Run turned pages away all that
   // time). Asking for the lease is what stops the holder, so it comes after; the lease is read again in case another
   // instance moved first, and the decision is made again from there (without preparing twice).
+  // Everything above was read before preparing, which takes a while (16 s for 11,871 files): the holder's heartbeat from
+  // then looks stale now, and a claim that went on from it called a live holder gone ("quiet") and restored while it was
+  // still writing (2026-11-14 08:05Z). So after preparing the whole decision is made again from what is there now.
   if (o.prepare && mine.how === 'handover') {
     await o.prepare().catch(() => {});
-    const again = await readJsonObj<Lease>(bucket, 'lease.json');
-    if ((again?.id ?? null) !== (prev?.id ?? null)) return claim({ ...o, prepare: undefined });
+    return claim({ ...o, prepare: undefined });
   }
   const took = orphaned ? { took: 'the holder answered nothing' } : {};
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
