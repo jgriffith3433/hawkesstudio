@@ -32,6 +32,9 @@ try { db.exec('ALTER TABLE builds ADD COLUMN gen_done INTEGER'); } catch { /* th
 try { db.exec('ALTER TABLE builds ADD COLUMN token_sent INTEGER'); } catch { /* there already */ }
 try { db.exec('ALTER TABLE builds ADD COLUMN token_at INTEGER'); } catch { /* there already */ }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS builds_version ON builds (product, build, version)'); } catch { /* there */ }
+// A run's builds and a product's newest builds are read on every PM pass (2026-11-14 freezes): indexed, never the whole table.
+db.exec('CREATE INDEX IF NOT EXISTS builds_run ON builds (run, product)');
+db.exec('CREATE INDEX IF NOT EXISTS builds_product_started ON builds (product, started)');
 // publish.commit: the repo and the commit on its beta that holds this build (going live fast-forwards that repo's main to it).
 for (const col of ['commit_repo', 'commit_sha']) { try { db.exec(`ALTER TABLE builds ADD COLUMN ${col} TEXT`); } catch { /* there */ } }
 // Why a build failed (buildfail.ts): the class (token / restart / compile / publish / timeout ...), infrastructure or code,

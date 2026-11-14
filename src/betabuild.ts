@@ -190,13 +190,16 @@ export type { Product };
  */
 export function buildInProgress(product: string, failedRun: string | null | undefined): { run: string; sha: string | null } | null {
   const since = failedRun ? ((db.prepare('SELECT started FROM runs WHERE id = ?').get(failedRun) as any)?.started ?? 0) : 0;
-  const runs = db.prepare("SELECT id, status FROM runs WHERE kind = 'beta' AND products LIKE ? AND started > ? ORDER BY started DESC, rowid DESC").all(`%"${product}"%`, since) as { id: string; status: string }[];
+  // Only a going or queued run can read as `waiting` (buildOutcome), so only those are read (runs_kind_status): every
+  // finished beta run since the failure used to be read, two steps queries each, for every merged task on every look
+  // (2026-11-14: 50 freezes an hour of 2-5 s, most of it here).
+  const runs = db.prepare("SELECT id, status FROM runs WHERE kind = 'beta' AND status IN ('running', 'queued') AND started > ? AND products LIKE ? ORDER BY started DESC, rowid DESC").all(since, `%"${product}"%`) as { id: string; status: string }[];
   for (const r of runs) {
     const failedBuild = (db.prepare("SELECT COUNT(*) AS n FROM steps WHERE run = ? AND product = ? AND status = 'failed' AND kind NOT IN ('playtest', 'review')").get(r.id, product) as any).n as number;
     const held = Boolean(db.prepare("SELECT 1 FROM steps WHERE run = ? AND product = ? AND kind = 'build' AND (status = 'cancelled' OR data LIKE '%\"held\"%') LIMIT 1").get(r.id, product));
     if (buildOutcome({ runStatus: r.status, failedBuildSteps: failedBuild, failedSteps: failedBuild, held }) !== 'waiting') continue;
     let sha: string | null = null;
-    try { sha = (db.prepare("SELECT sha FROM builds WHERE product = ? AND run = ? AND sha IS NOT NULL ORDER BY started DESC LIMIT 1").get(product, r.id) as any)?.sha ?? null; } catch { /* no builds table here */ }
+    try { sha = (db.prepare("SELECT sha FROM builds WHERE run = ? AND product = ? AND sha IS NOT NULL ORDER BY started DESC LIMIT 1").get(r.id, product) as any)?.sha ?? null; } catch { /* no builds table here */ }
     if (!sha) {
       for (const st of db.prepare("SELECT data FROM steps WHERE run = ? AND product = ? AND kind = 'build' ORDER BY started DESC").all(r.id, product) as any[]) {
         const d = parse(st.data);

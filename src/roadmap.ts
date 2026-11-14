@@ -58,6 +58,9 @@ db.exec(`
     id TEXT PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, subject TEXT, product TEXT, detail TEXT, undo TEXT, undone INTEGER
   );
   CREATE INDEX IF NOT EXISTS pm_log_at ON pm_log(at);
+  CREATE INDEX IF NOT EXISTS pm_log_action ON pm_log(action, at);
+  CREATE INDEX IF NOT EXISTS pm_log_subject ON pm_log(subject, action);
+  CREATE INDEX IF NOT EXISTS tasks_change ON tasks(change);
   CREATE TABLE IF NOT EXISTS milestones (
     id TEXT PRIMARY KEY, product TEXT, title TEXT NOT NULL, goal TEXT, test TEXT, status TEXT NOT NULL DEFAULT 'open',
     ord REAL NOT NULL DEFAULT 0, origin TEXT, by TEXT, reached_at INTEGER, created INTEGER NOT NULL, updated INTEGER

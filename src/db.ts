@@ -18,6 +18,12 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS steps_run ON steps(run);
   CREATE INDEX IF NOT EXISTS steps_product ON steps(product, kind, name);
+  -- Runs are looked up by kind and status on every PM pass and page (the running beta run of a product, the beta run after
+  -- a merge): without these each look read the whole table, thousands of rows, and Studio froze (2026-11-14).
+  CREATE INDEX IF NOT EXISTS runs_kind_status ON runs(kind, status, started);
+  CREATE INDEX IF NOT EXISTS runs_kind_started ON runs(kind, started);
+  CREATE INDEX IF NOT EXISTS runs_status ON runs(status, started);
+  CREATE INDEX IF NOT EXISTS runs_started ON runs(started);
   CREATE TABLE IF NOT EXISTS findings (
     id TEXT PRIMARY KEY, product TEXT NOT NULL, key TEXT NOT NULL, title TEXT NOT NULL, severity TEXT NOT NULL,
     area TEXT, detail TEXT, fix TEXT, status TEXT NOT NULL DEFAULT 'open', scenario TEXT, shots TEXT,
