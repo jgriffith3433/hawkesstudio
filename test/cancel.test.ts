@@ -144,8 +144,6 @@ test('cancelling an agent change keeps its branch, is not a try, and the PM does
   assert.match(task.note ?? '', /was cancelled by J/);
   assert.equal(task.tries, 0);
   assert.equal(rm.startableTasks().some((x: any) => x.id === t.id), false, 'the PM does not start it again');
-  // Resume needs its worktree.
-  assert.throws(() => agents.resumeChange(id), /no worktree/);
   assert.throws(() => agents.resumeChange('c_c00000000011'), /No such change/);
 });
 
@@ -164,4 +162,58 @@ test('repairing what a Gen-side cancel left as failed is idempotent', () => {
   assert.deepEqual(C.repairCancelled(), [r]);
   assert.deepEqual(C.repairCancelled(), []);
   assert.equal((db.prepare('SELECT status FROM runs WHERE id = ?').get(r) as any).status, 'cancelled');
+});
+
+test('a cancelled change whose worktree is gone resumes: queued at the agent step, its worktree made again from the saved branch by the pass', () => {
+  const it = rm.addItem({ product: 'gw', title: 'Resume without a tree', status: 'planned' });
+  const t = rm.addTask({ item: it.id, request: 'x' });
+  const id = 'c_c00000000020';
+  db.prepare(`INSERT INTO changes (id, product, findings, status, repo, slug, branch, base, worktree, title, notes, log, created, updated, task, phase)
+    VALUES (?, 'gw', '[]', 'cancelled', 'gw', 'x/gw', 'task/c20', 'beta', ?, 'T', '[]', '[]', ?, ?, ?, ?)`).run(id, path.join(tmp, 'gone-tree'), Date.now(), Date.now(), t.id, J({ step: 'agent', since: Date.now() }));
+  const c = agents.resumeChange(id, 'J');
+  assert.equal(c!.status, 'queued', 'no "has no worktree any more" refusal');
+  const ph = agents.phaseOf(id)!;
+  assert.equal(ph.step, 'agent');
+  assert.equal(ph.harness?.kind, 'revive', 'the pass that carries on makes the worktree again first (worktreeForAgentStep)');
+  assert.equal(ph.before, undefined, 'its starting commit is read once the tree is back');
+});
+
+test('closing a change sends its working task back to planned by itself, unless J closed it or another change is on its way', () => {
+  const mk = (cid: string, status = 'working') => {
+    const it = rm.addItem({ product: 'gw', title: `Closed ${cid}`, status: 'planned' });
+    const t = rm.addTask({ item: it.id, request: 'x' });
+    db.prepare(`INSERT INTO changes (id, product, findings, status, repo, slug, branch, base, worktree, title, notes, log, created, updated, task)
+      VALUES (?, 'gw', '[]', 'closed', 'gw', 'x/gw', ?, 'beta', ?, 'T', '[]', '[]', ?, ?, ?)`).run(cid, `task/${cid}`, path.join(tmp, 'none'), Date.now(), Date.now(), t.id);
+    rm.setTask(t.id, { status, change: cid, changes: [cid] });
+    return t.id;
+  };
+  const a = mk('c_c00000000030');
+  assert.equal(agents.freeTaskOfClosed({ id: 'c_c00000000030', task: a }, 'the health watch'), true);
+  assert.equal(rm.getTask(a)!.status, 'planned');
+  const b = mk('c_c00000000031');
+  assert.equal(agents.freeTaskOfClosed({ id: 'c_c00000000031', task: b }, 'J'), false, 'J closing it is the PM\'s question');
+  assert.equal(rm.getTask(b)!.status, 'working');
+  const d = mk('c_c00000000032', 'merged');
+  assert.equal(agents.freeTaskOfClosed({ id: 'c_c00000000032', task: d }, 'the PM'), false, 'a merged task stays merged');
+  const e = mk('c_c00000000033');
+  db.prepare(`INSERT INTO changes (id, product, findings, status, repo, slug, branch, base, worktree, title, notes, log, created, updated, task)
+    VALUES ('c_c00000000034', 'gw', '[]', 'working', 'gw', 'x/gw', 'task/x34', 'beta', ?, 'T', '[]', '[]', ?, ?, ?)`).run(path.join(tmp, 'none'), Date.now(), Date.now(), e);
+  assert.equal(agents.freeTaskOfClosed({ id: 'c_c00000000033', task: e }, 'the PM'), false, 'another change is on its way');
+});
+
+test('a compile parked on a Gen job Gen no longer knows goes on at once when the waits are looked at (the stream opening, Studio start)', async () => {
+  const id = 'c_c00000000040';
+  const since = Date.now();
+  db.prepare(`INSERT INTO changes (id, product, findings, status, repo, slug, branch, base, worktree, title, notes, log, created, updated, phase)
+    VALUES (?, 'gw', '[]', 'waiting on Gen', 'gw', 'x/gw', 'task/c40', 'beta', ?, 'T', '[]', '[]', ?, ?, ?)`).run(id, path.join(tmp, 'none'), since, since, J({ step: 'compile-wait', since, compileWait: { since, sha: 'a'.repeat(40), job: 'j_lost' } }));
+  // Gen having it (or not answering) leaves the wait alone.
+  assert.deepEqual(await agents.checkCompileJobs({ job: async () => ({ status: 'running' }) }), []);
+  assert.deepEqual(await agents.checkCompileJobs({ job: async () => { throw Object.assign(new Error('offline'), { kind: 'offline' }); } }), []);
+  assert.equal(agents.getChange(id)!.status, 'waiting on Gen');
+  assert.deepEqual(await agents.checkCompileJobs({ job: async () => { throw Object.assign(new Error('No such job'), { status: 404 }); } }), [id]);
+  const after = agents.getChange(id)!;
+  assert.equal(after.status, 'queued');
+  assert.equal(agents.phaseOf(id)!.step, 'compile');
+  assert.equal(agents.phaseOf(id)!.compile?.outcome, 'unavailable');
+  assert.equal(agents.phaseOf(id)!.compile?.ok, true, 'never a block');
 });
