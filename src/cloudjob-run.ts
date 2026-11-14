@@ -330,7 +330,9 @@ export async function cloneExtras(repos: ExtraRepo[], at: (p: string) => string,
 export function commitLeftovers(cwd: string, log: (s: string) => void, message = 'Work from the agent\'s pass', baseline?: Baseline) {
   if (!fs.existsSync(path.join(cwd, '.git'))) return false;
   // Mode-only changes are not changes (a checkout without the executable bit, a Windows-made mode).
-  const files = realChanges(cwd, baseline);
+  // .hawkes/ (the brief, scenario.txt, summary) is Studio's notes, read from the worktree, never committed. In a sparse
+  // checkout git refuses to stage paths outside the cone ("will not be updated in the index") and that lost all the work.
+  const files = realChanges(cwd, baseline).filter((f) => f !== '.hawkes' && !f.startsWith('.hawkes/'));
   if (!files.length) {
     if (git(cwd, ['-c', 'core.fileMode=false', 'status', '--porcelain']).out) log('[job] the only loose changes were not the agent\'s (LFS pointers, line endings, modes, or files dirty before it started): nothing to commit');
     return false;

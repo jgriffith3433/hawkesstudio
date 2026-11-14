@@ -127,3 +127,23 @@ test('a change that is only Studio\'s leftover commit from a cut-off agent is no
   assert.equal(cutOffLeftovers({ onlyStudio: onlyStudioCommits(dir, 'beta'), stopped: 'cut', hasSummaryFile: false }), false);
   assert.ok(CUT_OFF_LEFTOVERS.includes("leftovers weren't merged"));
 });
+
+test('a sparse worktree with .hawkes/ notes: the source edit is committed, .hawkes/ is not, nothing throws (c_f590fc63ec5e)', () => {
+  const dir = repo();
+  fs.mkdirSync(path.join(dir, 'other'));
+  fs.writeFileSync(path.join(dir, 'other/o.cs'), 'o\n');
+  sh(dir, 'add', '.'); sh(dir, 'commit', '-qm', 'other');
+  sh(dir, 'sparse-checkout', 'init', '--cone');
+  sh(dir, 'sparse-checkout', 'set', 'Assets');
+  fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'edited\n');
+  fs.mkdirSync(path.join(dir, '.hawkes'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.hawkes/scenario.txt'), 'smoke\n');
+  fs.writeFileSync(path.join(dir, '.hawkes/brief.md'), 'brief\n');
+  const logs: string[] = [];
+  assert.equal(commitLeftovers(dir, (s) => logs.push(s)), true, logs.join('\n'));
+  assert.deepEqual(sh(dir, 'show', '--name-only', '--format=', 'HEAD').split('\n'), ['Assets/V.cs']);
+  // Studio still reads the scenario from the worktree.
+  assert.equal(fs.readFileSync(path.join(dir, '.hawkes/scenario.txt'), 'utf8'), 'smoke\n');
+  // Only .hawkes/ changed: nothing to commit, no throw.
+  assert.equal(commitLeftovers(dir, () => {}), false);
+});
