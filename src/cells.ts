@@ -775,7 +775,7 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
       return send(res, e.status ?? 400, { error: e.message ?? String(e), ...(e.credits ? { credits: e.credits } : {}) }), true;
     }
   }
-  const self = /^\/api\/cells\/self\/(members|ai)$/.exec(route);
+  const self = /^\/api\/cells\/self\/(members|ai|memory-job)$/.exec(route);
   if (self && method === 'POST') {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
     const orgId = String(req.headers['x-studio-cell'] ?? '');
@@ -785,6 +785,12 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
       if (self[1] === 'members') {
         if (Number.isInteger(b.projects) && b.projects >= 0 && b.projects < 100_000) setOrg(orgId, { projects: b.projects });
         return send(res, 200, { ok: true, people: setAccess(orgId, Array.isArray(b.people) ? b.people : []) }), true;
+      }
+      if (self[1] === 'memory-job') {
+        const { checkMemoryMiB } = await import('./config.ts');
+        const memoryMiB = checkMemoryMiB(b.memoryMiB);
+        const region = typeof b.region === 'string' && /^[a-z]+-[a-z0-9]+$/.test(b.region) ? b.region : undefined;
+        return send(res, 200, await R.ensureCellMemoryJob(memoryMiB, region)), true;
       }
       const kind = b.kind === 'claude-subscription' ? 'claude-subscription' : 'anthropic';
       return send(res, 200, await setGenAi(orgId, kind, b.key ? String(b.key) : null)), true;
