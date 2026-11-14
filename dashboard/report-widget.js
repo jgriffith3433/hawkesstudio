@@ -403,9 +403,25 @@
   }, 1000);
 
   // ------------------------------------------------------------- the button
+  // Hidden during Studio playtests (?playtest= or a flag the runner sets before navigation), so screenshots and video
+  // never show Studio's own 🐞 UI; people opening beta normally still see it, and ?report=1 forces it on.
+  const isPlaytest = () => {
+    try {
+      const q = new URLSearchParams(location.search);
+      if (q.get('report') === '1') return false;
+      if (q.has('playtest')) return true;
+    } catch {}
+    return Boolean(
+      window.HAWKES_PLAYTEST ||
+      window.__hawkesPlaytest ||
+      window.__hawkesRunnerFps ||
+      typeof window.__hawkesPlaytestPush === 'function'
+    );
+  };
+  const playtest = isPlaytest();
   const host = document.createElement('div');
   host.setAttribute('data-hawkes-report', '');
-  host.style.cssText = 'position:fixed;right:0;z-index:2147483646;top:0;width:0;height:0;';
+  host.style.cssText = 'position:fixed;right:0;z-index:2147483646;top:0;width:0;height:0;' + (playtest ? 'display:none;' : '');
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>
   :host { all: initial; }
@@ -471,6 +487,14 @@
   const dot = $('.dot'), panel = $('.panel'), ta = $('textarea'), shotBox = $('.shot'), msg = $('.msg'), send = $('.send'), mic = $('.mic');
   const perfBox = $('.perf'), perfSum = $('.perf-sum'), perfWarn = $('.perf-warn'), perfPre = $('.perf-pre');
   $('.info').textContent = [cfg.ref, cfg.sha].filter(Boolean).join(' ') || 'beta';
+  const hideForPlaytest = () => {
+    host.hidden = true;
+    host.style.display = 'none';
+    dot.style.display = 'none';
+    panel.style.display = 'none';
+    try { if (host.parentNode) host.parentNode.removeChild(host); else if (typeof host.remove === 'function') host.remove(); } catch {}
+  };
+  if (playtest) hideForPlaytest();
 
   let perfUiTimer = 0;
   const formatPerfPre = (s) => {
@@ -871,6 +895,13 @@
   window.__hawkesOnError = autoError;
   for (const x of errs.splice(0)) autoError(x);
 
-  const mount = () => { (document.body || document.documentElement).appendChild(host); place(); };
-  if (document.body) mount(); else addEventListener('DOMContentLoaded', mount);
+  const mount = () => {
+    if (isPlaytest()) { hideForPlaytest(); return; }
+    (document.body || document.documentElement).appendChild(host);
+    place();
+  };
+  if (!playtest) {
+    if (document.body) mount(); else addEventListener('DOMContentLoaded', mount);
+    addEventListener('hawkes-playtest', () => { if (isPlaytest()) hideForPlaytest(); });
+  }
 })();

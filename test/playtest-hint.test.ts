@@ -20,3 +20,9 @@ test("one already there is kept, and what isn't a web page is left alone", () =>
   assert.equal(withPlaytestHint('not a url'), 'not a url');
   assert.equal(withPlaytestHint('ws://127.0.0.1:9000'), 'ws://127.0.0.1:9000');
 });
+
+test('pipeline playScenario adds ?playtest= for all local (beta) playtests, both web and Unity WebGL', () => {
+  const src = fs.readFileSync(new URL('../src/pipeline.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /p\.engine === 'web'[^\n]*withPlaytestHint/, 'not restricted to web-only projects: Unity WebGL beta playtests get ?playtest= too');
+  assert.match(src, /!firstFive && \(t\.where === 'local' \|\| \(p\.contract && \(params\.mode === 'contract' \|\| params\.mode === 'auto'\)\)\)[^\n]*withPlaytestHint/);
+});
