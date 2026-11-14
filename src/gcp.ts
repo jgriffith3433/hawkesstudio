@@ -164,18 +164,112 @@ export type CloudRunTarget = { project: string; region: string; job: string };
 const runBase = (t: CloudRunTarget) => `https://run.googleapis.com/v2/projects/${t.project}/locations/${t.region}`;
 
 /**
- * The body of jobs.run: arguments, env, the task timeout and, when memoryMiB is given, that memory as this execution's limit
- * (a per-run override of the job's own; none: the job's limit stays). Exported for the tests.
+ * The body of jobs.run: arguments, env and the task timeout. Cloud Run's jobs.run overrides take only containerOverrides
+ * (name, args, env, clearArgs), taskCount and timeout — never resources (a build's memoryMiB runs a job whose template
+ * has that memory instead). Exported for the tests.
  */
-export function runBody(o: { args?: string[]; env?: Record<string, string>; timeoutSeconds: number; memoryMiB?: number }) {
-  return { overrides: { containerOverrides: [{ ...(o.args ? { args: o.args } : {}), env: Object.entries(o.env ?? {}).map(([name, value]) => ({ name, value })), ...(o.memoryMiB ? { resources: { limits: { memory: `${o.memoryMiB}Mi` } } } : {}) }], taskCount: 1, timeout: `${o.timeoutSeconds}s` } };
+export function runBody(o: { args?: string[]; env?: Record<string, string>; timeoutSeconds: number }) {
+  return { overrides: { containerOverrides: [{ ...(o.args ? { args: o.args } : {}), env: Object.entries(o.env ?? {}).map(([name, value]) => ({ name, value })) }], taskCount: 1, timeout: `${o.timeoutSeconds}s` } };
+}
+
+/** Cloud Run's memory string for a size in MiB: "1Gi" for whole GiB, "768Mi" otherwise. */
+export const memoryLimit = (memoryMiB: number) => (memoryMiB % 1024 === 0 ? `${memoryMiB / 1024}Gi` : `${memoryMiB}Mi`);
+
+/** The Cloud Run job for a memoryMiB build: "<job>-1g" (whole GiB) or "<job>-768m"; the base job when unset. */
+export const memoryJobName = (job: string, memoryMiB?: number) => (!memoryMiB ? job : `${job}-${memoryMiB % 1024 === 0 ? `${memoryMiB / 1024}g` : `${memoryMiB}m`}`);
+
+const JOB_OUTPUT_ONLY = new Set(['name', 'uid', 'generation', 'createTime', 'updateTime', 'deleteTime', 'expireTime', 'creator', 'lastModifier', 'observedGeneration', 'terminalCondition', 'conditions', 'executionCount', 'latestCreatedExecution', 'reconciling', 'satisfiesPzs', 'etag']);
+
+/** A job's definition from `job`'s template with output-only fields removed and the container's memory limit set to `memoryMiB`. */
+export function withJobMemory(job: any, memoryMiB: number) {
+  const out: any = Object.fromEntries(Object.entries(job ?? {}).filter(([k]) => !JOB_OUTPUT_ONLY.has(k)));
+  const t = job?.template?.template ?? {};
+  const containers = (t.containers?.length ? t.containers : [{}]).map((c: any, i: number) => (i === 0
+    ? { ...c, resources: { ...(c.resources ?? {}), limits: { ...(c.resources?.limits ?? {}), memory: memoryLimit(memoryMiB) } } }
+    : c));
+  out.template = { ...(job?.template ?? {}), template: { ...t, containers } };
+  return out;
+}
+
+/** In an isolated customer cell (no project-wide Cloud Run admin), asks the control plane to create or patch the memory job. */
+async function askControlMemoryJob(t: CloudRunTarget, memoryMiB: number): Promise<boolean> {
+  const org = process.env.STUDIO_ORG?.trim();
+  const control = (process.env.STUDIO_CONTROL_URL ?? '').replace(/\/+$/, '');
+  const key = process.env.STUDIO_CELL_KEY?.trim();
+  if (!org || !control || !key) return false;
+  const r = await fetchImpl(`${control}/api/cells/self/memory-job`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'X-Studio-Cell': org, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ region: t.region, memoryMiB }),
+    signal: AbortSignal.timeout(30_000),
+  }).catch(() => null);
+  return Boolean(r?.ok);
+}
+
+/**
+ * Ensures the memory-sized job (e.g. `studio-cell-agent-1g`) exists in `t.project`/`t.region` with `memoryLimit(memoryMiB)`
+ * in its template, creating or patching it from the base job `t.job` through the Cloud Run Admin API v2. Returns the job name.
+ */
+export async function ensureMemoryJob(t: CloudRunTarget, memoryMiB: number): Promise<string> {
+  const sized = memoryJobName(t.job, memoryMiB);
+  const wantMem = memoryLimit(memoryMiB);
+  const baseUrl = `${runBase(t)}/jobs/${t.job}`;
+  const sizedUrl = `${runBase(t)}/jobs/${sized}`;
+  const memOf = (j: any) => j?.template?.template?.containers?.[0]?.resources?.limits?.memory;
+  const imgOf = (j: any) => j?.template?.template?.containers?.[0]?.image;
+  try {
+    const cur = await gapi(sizedUrl, { missingOk: true });
+    if (cur && memOf(cur) === wantMem) {
+      const base = await gapi(baseUrl, { missingOk: true }).catch(() => null);
+      if (base && imgOf(base) && imgOf(base) !== imgOf(cur)) {
+        await gapi(sizedUrl, { method: 'PATCH', body: withJobMemory(base, memoryMiB) }).catch((e) => {
+          if (/answered 403|PERMISSION_DENIED/i.test(String(e?.message ?? e))) return askControlMemoryJob(t, memoryMiB);
+          throw e;
+        });
+      }
+      return sized;
+    }
+    const base = await gapi(baseUrl, { missingOk: Boolean(cur) });
+    const body = withJobMemory(base ?? cur, memoryMiB);
+    if (!cur) {
+      try {
+        await gapi(`${runBase(t)}/jobs?jobId=${enc(sized)}`, { body });
+      } catch (e: any) {
+        if (!/answered 409/.test(String(e?.message ?? e))) throw e;
+      }
+      const policy = await gapi(`${baseUrl}:getIamPolicy`, { missingOk: true }).catch(() => null);
+      if (policy?.bindings?.length) {
+        for (let i = 0; i < 3; i++) {
+          const ok = await gapi(`${sizedUrl}:setIamPolicy`, { body: { policy: { bindings: policy.bindings } } }).then(() => true, () => false);
+          if (ok) break;
+          await new Promise((r) => setTimeout(r, retryWaits[0] ?? 1_000));
+        }
+      }
+    } else {
+      await gapi(sizedUrl, { method: 'PATCH', body });
+    }
+    return sized;
+  } catch (e: any) {
+    if (/answered 403|PERMISSION_DENIED/i.test(String(e?.message ?? e)) && await askControlMemoryJob(t, memoryMiB)) return sized;
+    throw e;
+  }
 }
 
 /** Starts one execution of the job with these arguments, env and a task timeout; returns the execution's full name. */
 export async function runJob(t: CloudRunTarget, o: { args?: string[]; env?: Record<string, string>; timeoutSeconds: number; memoryMiB?: number }): Promise<string> {
-  const op = await gapi(`${runBase(t)}/jobs/${t.job}:run`, {
-    body: runBody(o),
-  });
+  const job = o.memoryMiB ? await ensureMemoryJob(t, o.memoryMiB) : t.job;
+  const body = runBody(o);
+  let op: any;
+  for (let i = 0; ; i++) {
+    try {
+      op = await gapi(`${runBase(t)}/jobs/${job}:run`, { body });
+      break;
+    } catch (e: any) {
+      if (!o.memoryMiB || i >= 2 || !/answered 403|PERMISSION_DENIED/i.test(String(e?.message ?? e))) throw e;
+      await askControlMemoryJob(t, o.memoryMiB);
+      await new Promise((r) => setTimeout(r, retryWaits[0] ? 2_000 : 0));
+    }
+  }
   const name = executionNameOf(op);
   if (name) return name;
   for (let i = 0; i < 10; i++) {

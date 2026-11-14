@@ -365,6 +365,32 @@ export async function setImage(service: string, image: string, o: { dry?: boolea
   }
 }
 
+const ensuredMemoryImages = new Set<string>();
+
+/**
+ * Ensures the memory-sized customer agent job (e.g. `studio-cell-agent-1g` for 1024 MiB) exists where the cells' jobs
+ * run (and in the cells' own region when jobs run apart) with the base job's IAM policy so every cell can view and run it.
+ */
+export async function ensureCellMemoryJob(memoryMiB = 1024, region?: string, c = cellsConfig()) {
+  const { ensureMemoryJob, memoryJobName } = await import('./gcp.ts');
+  const sized = memoryJobName(c.agentJob, memoryMiB);
+  const places = region
+    ? [{ project: region === c.region ? c.project : (c.jobsProject || c.project), region }]
+    : [{ project: c.jobsProject || c.project, region: c.jobsRegion || c.region }, ...(jobsAway(c) ? [{ project: c.project, region: c.region }] : [])];
+  for (const p of places) {
+    if (jobsAway(c) && (p.project !== c.project || p.region !== c.region)) {
+      await (await import('./jobsproject.ts')).copyJob({ from: { project: c.project, region: c.region }, to: p, job: c.agentJob, fromNumber: c.projectNumber }).catch(() => {});
+    }
+    await ensureMemoryJob({ project: p.project, region: p.region, job: c.agentJob }, memoryMiB);
+    const fromPolicy = (await gapi(`https://run.googleapis.com/v2/projects/${p.project}/locations/${p.region}/jobs/${c.agentJob}:getIamPolicy`, { missingOk: true }).catch(() => null))
+      ?? (await gapi(`${base(c)}/jobs/${c.agentJob}:getIamPolicy`, { missingOk: true }).catch(() => null));
+    if (fromPolicy?.bindings?.length) {
+      await gapi(`https://run.googleapis.com/v2/projects/${p.project}/locations/${p.region}/jobs/${sized}:setIamPolicy`, { body: { policy: { bindings: fromPolicy.bindings } } }).catch(() => {});
+    }
+  }
+  return { job: sized, memoryMiB };
+}
+
 /**
  * The customers' agents' job onto an image (Talk, agents and scouts of every cell run there). It used to be left on the
  * image it was made with, so a deploy reached the cells but their Talk kept old tools (2026-10-31: customer Talk had no
@@ -382,13 +408,22 @@ export async function followAgentJob(image: string, o: { dry?: boolean; log?: (s
   const j = await gapi(url, { missingOk: true });
   if (!j) return { job: c.agentJob, skipped: 'no such job' };
   const containers = (j.template?.template?.containers ?? [{}]) as any[];
-  if (containers[0]?.image === image) return { job: c.agentJob, image, changed: false };
+  const memKey = `${url}@${image}`;
+  if (containers[0]?.image === image) {
+    if (!ensuredMemoryImages.has(memKey)) {
+      ensuredMemoryImages.add(memKey);
+      await ensureCellMemoryJob(1024, undefined, c).catch(() => {});
+    }
+    return { job: c.agentJob, image, changed: false };
+  }
   (o.log ?? console.log)(`${c.agentJob} (customers' agents) → ${image}`);
   // Jobs take no update mask in v2 (only services do): the whole job goes back with the image changed, its output-only
   // fields left out, its etag kept so a change made meanwhile isn't overwritten.
   const out = Object.fromEntries(Object.entries(j).filter(([k]) => !JOB_OUTPUT_ONLY.has(k)));
   out.template = { ...j.template, template: { ...j.template.template, containers: containers.map((ct, i) => (i === 0 ? { ...ct, image } : ct)) } };
   await call('PATCH', url, out, o);
+  ensuredMemoryImages.add(memKey);
+  await ensureCellMemoryJob(1024, undefined, c).catch(() => {});
   return { job: c.agentJob, image, changed: true };
 }
 const JOB_OUTPUT_ONLY = new Set(['uid', 'generation', 'createTime', 'updateTime', 'deleteTime', 'expireTime', 'creator', 'lastModifier', 'observedGeneration', 'terminalCondition', 'conditions', 'executionCount', 'latestCreatedExecution', 'reconciling', 'satisfiesPzs']);
