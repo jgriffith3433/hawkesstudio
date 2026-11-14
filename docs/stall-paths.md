@@ -87,6 +87,17 @@ A change parked while its Hawkes Gen jobs (images, music, 3D) run.
 - **Test:** `test/wait-points.test.ts`
 - **Kind:** recorded in the `waits` table (durable, armed again at start-up)
 
+### `compile-wait`
+
+A Unity change parked (no agent slot) while Hawkes Gen compiles its pushed branch (the compile gate).
+
+- **Waits on (event):** The compile job ending (Gen's job event, genevents.ts), or the build server being unavailable.
+- **Deadline:** 30 min counted from when the compile was queued (`STUDIO_COMPILE_MAX_MS`; never more than 1 h)
+- **Fallback:** The compile ends as "unavailable" (its Gen job cancelled), the build server is asked to start again and the owner is told once; the change goes on with the Roslyn check as its verdict (CI and beta's build still judge it).
+- **Where:** `src/agents.ts` (`parkForCompile`, `finishCompile`, `watchCompile`)
+- **Test:** `test/wait-points.test.ts`
+- **Kind:** recorded in the `waits` table (durable, armed again at start-up)
+
 ### `unity-hold`
 
 A Unity project's merged work waiting for the one build per complete milestone.

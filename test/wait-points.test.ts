@@ -142,6 +142,70 @@ test('[gen-wait] a change parked on Gen goes on without a job that never came, a
   noQuestion();
 });
 
+/** Leftover queued changes of earlier tests start first: end every pass that starts until the one under test has. */
+async function startsEventually(p: ReturnType<typeof passes>, id: string) {
+  const end = Date.now() + 5000;
+  while (!p.started.includes(id)) {
+    if (Date.now() > end) throw new Error(`${id} never started`);
+    for (const x of [...p.started]) if (x !== id) p.end(x);
+    await A.pumpNow(); await settle();
+  }
+}
+
+test('[compile-wait] a change waiting on Gen\'s compile frees its slot, and when the build server never answers it goes on at the deadline without the watchdog', async () => {
+  const CC = await import('../src/compilecheck.ts');
+  CC.resetBuilderTrouble();
+  const p = passes();
+  const since = Date.now();
+  // Gen's builder never takes the compile (503 / the machine never starts): the run never ends and never errors.
+  A.compileHooks.run = () => new Promise(() => {});
+  addChange('c_wp_cw1', 'wpd', 'waiting on Gen', { step: 'compile-wait', since, compileWait: { since, sha: 'a'.repeat(40) } });
+  W.beginWait('compile-wait', 'c_wp_cw1', { waitsOn: 'Hawkes Gen compiling', deadlineMs: 600_000, since });
+  A.watchCompile('c_wp_cw1');
+  await settle();
+  // Parked: it holds no slot (the one slot is free for another change) and is not queued or working.
+  assert.equal(A.getChange('c_wp_cw1')!.status, 'waiting on Gen');
+  addChange('c_wp_cw2', 'wpc', 'queued', { step: 'prepare', since });
+  await startsEventually(p, 'c_wp_cw2');
+  assert.equal(A.getChange('c_wp_cw1')!.status, 'waiting on Gen', 'and the parked change stayed parked');
+  p.end('c_wp_cw2'); await settle(40);
+  // The deadline (counted from when the compile was queued) passes.
+  runOut('compile-wait', 'c_wp_cw1');
+  await W.fireDue();
+  await startsEventually(p, 'c_wp_cw1');
+  const cc = A.phaseOf('c_wp_cw1')!;
+  assert.equal(cc.compile?.outcome, 'unavailable');
+  assert.equal(cc.compile?.ok, true, 'never a block');
+  assert.equal(cc.watch, undefined, 'the publish-step watchdog never took it over');
+  assert.equal(row('compile-wait', 'c_wp_cw1').how, 'deadline');
+  assert.ok(CC.builderTrouble(), 'the build server trouble is recorded once');
+  noQuestion();
+  p.end('c_wp_cw1'); await settle(40);
+  CC.resetBuilderTrouble();
+});
+
+test('[compile-wait] a build server answering 503 ends the compile as unavailable at once: the change queues again and the trouble is said once', async () => {
+  const CC = await import('../src/compilecheck.ts');
+  CC.resetBuilderTrouble();
+  const p = passes();
+  const since = Date.now();
+  A.compileHooks.run = async () => CC.compileUnavailable('Hawkes Gen 503 on /builder: unavailable', 'b'.repeat(40));
+  addChange('c_wp_cw3', 'wpd', 'waiting on Gen', { step: 'compile-wait', since, compileWait: { since, sha: 'b'.repeat(40) } });
+  W.beginWait('compile-wait', 'c_wp_cw3', { waitsOn: 'Hawkes Gen compiling', deadlineMs: 600_000, since });
+  A.watchCompile('c_wp_cw3');
+  await startsEventually(p, 'c_wp_cw3');
+  assert.equal(A.phaseOf('c_wp_cw3')!.compile?.outcome, 'unavailable');
+  assert.equal(row('compile-wait', 'c_wp_cw3').how, 'event');
+  let told = 0;
+  CC.resetBuilderTrouble();
+  assert.equal(await CC.noteBuilderTrouble('x', { start: async () => {}, tell: async () => { told++; } }), true);
+  assert.equal(await CC.noteBuilderTrouble('x', { start: async () => {}, tell: async () => { told++; } }), false, 'said once per episode');
+  assert.equal(told, 1);
+  noQuestion();
+  p.end('c_wp_cw3'); await settle(40);
+  CC.resetBuilderTrouble();
+});
+
 test('[unity-hold] merged Unity work held for the milestone\'s build is built anyway once it has waited 6 h', () => {
   const now = Date.now();
   const work = (since: number) => ({ name: 'Game', milestone: null, changes: ['c_x'], tasks: [], unbuiltSince: since, now });
