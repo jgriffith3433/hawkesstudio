@@ -30,11 +30,11 @@ function sparseRepo(name: string) {
   return dir;
 }
 
-test('a loose edit outside the sparse cone is invisible until applyWorkspace marks it', () => {
+test('a loose edit outside the sparse cone is invisible until applyWorkspace marks it', async () => {
   const dir = sparseRepo('studio');
   assert.ok(!fs.existsSync(path.join(dir, 'Assets/Scripts/Video.cs')));
   const pack = readPack(packFiles([{ p: 'Assets/Scripts/Video.cs', file: path.join(TMP, 'new.cs') }].filter(() => (fs.writeFileSync(path.join(TMP, 'new.cs'), 'new\n'), true))));
-  applyWorkspace(dir, { head: git(dir, 'rev-parse', 'HEAD'), bundle: null, pack });
+  await applyWorkspace(dir, { head: git(dir, 'rev-parse', 'HEAD'), bundle: null, pack });
   assert.match(uncommitted(dir), /Assets\/Scripts\/Video\.cs/);
   // Studio's own safety-net commit (agents.ts commitForAgent) adds with --sparse: plain `add -A` skips paths outside the cone.
   git(dir, 'add', '-A');
@@ -60,7 +60,7 @@ test('the job commits an agent\'s leftover edits (and not its .hawkes notes)', (
   assert.equal(git(dir, 'status', '--porcelain'), '');
 });
 
-test('a job commit editing a file outside the cone of a blobless sparse clone stages without fetching blobs', () => {
+test('a job commit editing a file outside the cone of a blobless sparse clone stages without fetching blobs', async () => {
   // Origin with a crlf rule (git add would read the index's old blob to check it) and a file outside the cone.
   const origin = path.join(TMP, 'origin');
   fs.mkdirSync(path.join(origin, 'Assets/Scripts'), { recursive: true });
@@ -81,6 +81,35 @@ test('a job commit editing a file outside the cone of a blobless sparse clone st
   const a = path.join(TMP, 'a.cs');
   fs.writeFileSync(a, 'new\r\nlines\r\n');
   const commit = { message: 'agent: edit', files: [{ p: 'Assets/Scripts/Video.cs', d: fs.readFileSync(a).toString('base64') }, { p: 'Assets/Scripts/New.cs', d: Buffer.from('n\n').toString('base64') }], deleted: ['Assets/Scripts/Gone.cs'] };
-    assert.equal(replayCommit(dir, commit as any), true);
+  assert.equal(await replayCommit(dir, commit as any), true);
   assert.equal(git(dir, 'show', '--name-status', '--format=', '--no-renames', 'HEAD').split('\n').sort().join('|'), 'A\tAssets/Scripts/New.cs|D\tAssets/Scripts/Gone.cs|M\tAssets/Scripts/Video.cs');
+});
+
+// Bringing a finished job's work back ran every git command synchronously in Studio's server (fetch, reset, clean, one
+// hash-object per file): Studio froze for 1.1 s at a time and couldn't answer (studio_ops, 2026-11-14 04:54 UTC).
+test("a job's commit of many files comes back as one commit while Studio keeps answering", async () => {
+  const dir = sparseRepo('many');
+  const files = Array.from({ length: 60 }, (_, i) => ({ p: `Assets/Scripts/F${i}.cs`, d: Buffer.from(`class F${i} {}\n`).toString('base64') }));
+  let turns = 0;
+  const t = setInterval(() => { turns++; }, 0);
+  try {
+    const done = replayCommit(dir, { message: 'agent: many', files, deleted: [] });
+    assert.ok(done instanceof Promise, 'replayCommit hands the loop back while git runs');
+    assert.equal(await done, true);
+  } finally {
+    clearInterval(t);
+  }
+  assert.ok(turns > 0, 'timers ran while the commit was made');
+  assert.equal(git(dir, 'show', '--name-only', '--format=', 'HEAD').split('\n').length, 60);
+  assert.equal(git(dir, 'show', 'HEAD:Assets/Scripts/F42.cs'), 'class F42 {}');
+});
+
+test("Studio's own git calls in cloudjob.ts are all async: the sync one is the job's (cloudjob-run.ts)", () => {
+  const src = fs.readFileSync(new URL('../src/cloudjob.ts', import.meta.url), 'utf8');
+  const sync = src.split('\n').map((l, i) => ({ l, n: i + 1 })).filter(({ l }) => /(^|[^\w.])git\(cwd/.test(l) && !/await git\(|gitAsync\(/.test(l));
+  // dirtyState is the job's (cloudjob-run.ts collect); Studio uses dirtyStateAsync.
+  assert.deepEqual(sync.map((x) => x.l.trim().slice(0, 60)), ["const list = (args: string[]) => git(cwd, ['ls-files', '-z',"]);
+  for (const fn of ['applyWorkspace', 'replayCommit', 'showSparse', 'jobSparsePatterns']) {
+    assert.match(src, new RegExp(`export async function ${fn}\\(`), `${fn} is async`);
+  }
 });

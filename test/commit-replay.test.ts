@@ -47,7 +47,7 @@ function setup() {
   return { studio, job };
 }
 
-test('the job\'s commit reaches a light Studio worktree even when its bundle cannot be applied there', () => {
+test('the job\'s commit reaches a light Studio worktree even when its bundle cannot be applied there', async () => {
   const { studio, job } = setup();
   const start = sh(job, 'rev-parse', 'HEAD');
   // The agent edits a file Studio never checked out, adds one and deletes one, and commits.
@@ -68,11 +68,11 @@ test('the job\'s commit reaches a light Studio worktree even when its bundle can
   const bare = readPack(out.pack); delete bare.commit;
   const probe = path.join(TMP, 'studio-old');
   fs.cpSync(studio, probe, { recursive: true });
-  assert.throws(() => applyWorkspace(probe, { head: out.git!.head, bundle: out.bundle, pack: bare }), /couldn't read the job's commits/);
+  await assert.rejects(() => applyWorkspace(probe, { head: out.git!.head, bundle: out.bundle, pack: bare }), /couldn't read the job's commits/);
 
   fs.appendFileSync(path.join(studio, '.git/info/exclude'), '\n.hawkes/\n'); // as in Studio's worktrees
   // With the files: a commit on top of Studio's HEAD, with the agent's message, the edits, and the notes.
-  applyWorkspace(studio, { head: out.git!.head, bundle: out.bundle, pack });
+  await applyWorkspace(studio, { head: out.git!.head, bundle: out.bundle, pack });
   assert.equal(sh(studio, 'rev-list', '--count', `${start}..HEAD`), '1');
   assert.match(sh(studio, 'log', '-1', '--format=%B'), /Fix the intro video/);
   assert.equal(sh(studio, 'diff', '--name-status', start, 'HEAD').split('\n').sort().join(','), 'A\tAssets/S/new.cs,D\tAssets/S/c.cs,M\tAssets/S/a.cs');

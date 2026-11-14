@@ -32,11 +32,11 @@ test('a job that printed nothing says so', () => {
   assert.match(jobFailureLine('none', { code: 1, signal: null, error: 'boom' }), /it printed nothing/);
 });
 
-test('the job checks out the source patterns of a Unity worktree', () => {
+test('the job checks out the source patterns of a Unity worktree', async () => {
   const d = path.join(TMP, 'w');
   fs.mkdirSync(path.join(d, 'Assets'), { recursive: true });
   fs.writeFileSync(path.join(d, 'Assets/a.cs'), 'x');
   const g = (...a: string[]) => execFileSync('git', a, { cwd: d });
   g('init', '-q'); g('add', '.');
-  assert.deepEqual(jobSparsePatterns(d), UNITY_SOURCE_PATTERNS);
+  assert.deepEqual(await jobSparsePatterns(d), UNITY_SOURCE_PATTERNS);
 });
