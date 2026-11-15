@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c11">
+<meta name="description" content="The ones who wanted to build beautiful worlds, trained instead to wield swords, only for the system to be rigged and bought into the future. The same points descend by gradient three times: to a world, to a sword, and to a price path drawn by a biased coin.">
+<title>Hawkes Studio</title>
+<style>html,body{margin:0;height:100%;background:#0a0c11;overflow:hidden}canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
+<script>(function(){var h=location.hash;if(navigator.webdriver||h.length>1){location.replace('/auth/signin?next=%2F'+h);}})();</script>
+<meta name="robots" content="noindex">
+</head>
+<body>
+<canvas id="v" aria-hidden="true"></canvas>
+<main class="sr"><h1>Hawkes Studio</h1><p>The ones who wanted to build beautiful worlds, trained instead to wield swords, only for the system to be rigged and bought into the future. The same points descend by gradient three times: to a world, to a sword, and to a price path drawn by a biased coin.</p></main>
+<script>
+(function runtime(P, F, make) {
+  var c = document.getElementById('v'), x = c.getContext('2d'), S = make(P, F), M = { x: .5, y: .5, in: false, down: false }, Wd = 0, Ht = 0, last = 0, T = 0;
+  var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function size() { var D = Math.min(2, window.devicePixelRatio || 1); Wd = window.innerWidth; Ht = window.innerHeight; c.width = Math.round(Wd * D); c.height = Math.round(Ht * D); x.setTransform(D, 0, 0, D, 0, 0); S.resize(Wd, Ht); if (still) for (var i = 0; i < 240; i++) S.frame(x, Wd, Ht, i / 30, 1 / 30, M); }
+  function frame(ms) { var dt = Math.min(.05, (ms - last) / 1000 || .016); last = ms; T += dt; S.frame(x, Wd, Ht, T, dt, M); window.requestAnimationFrame(frame); }
+  function pt(e) { M.x = e.clientX / Wd; M.y = e.clientY / Ht; M.in = true; }
+  c.addEventListener('pointermove', pt); c.addEventListener('pointerdown', function (e) { pt(e); M.down = true; });
+  window.addEventListener('pointerup', function () { M.down = false; }); c.addEventListener('pointerleave', function () { M.in = false; M.down = false; });
+  window.addEventListener('resize', size); size(); if (!still) window.requestAnimationFrame(frame);
+})({"bg":"#0a0c11","fg":"#eef1f6","dim":"#757e8d","rule":"#252a35","a":"#ffc247","b":"#6fd0ff","a3":[255,194,71],"b3":[111,208,255],"bg3":[10,12,17]}, {"mono":"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace","serif":"Georgia,\"Times New Roman\",serif","sans":"system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif"}, function morph(P, F) {
+  let W = 0, H = 0, pts = [], phase = 0, tp = 0, losses = [], walk = [], pbias = 0.62;
+  const TAU = Math.PI * 2, N = 1100, DUR = 8, LINES = ['The ones who wanted to build beautiful worlds,', 'trained instead to wield swords,', 'only for the system to be rigged', 'and bought into the future.'];
+  const world = i => { const y = 1 - (i + .5) / N * 2, rr = Math.sqrt(1 - y * y), a = i * 2.399963; return [Math.cos(a) * rr * 0.9, y * 0.9, Math.sin(a) * rr * 0.9]; };
+  const sword = i => { const f = i / N, u = Math.random(); if (f < 0.62) { const t = Math.random(), wd = t < 0.12 ? t / 0.12 * 0.07 : 0.07; return [(u - .5) * 2 * wd, -0.95 + t * 1.25, 0]; } if (f < 0.8) return [(u - .5) * 0.62, 0.3 + (Math.random() - .5) * 0.05, 0]; if (f < 0.94) return [(u - .5) * 0.07, 0.33 + Math.random() * 0.42, 0]; const a = Math.random() * TAU, rr = Math.sqrt(Math.random()) * 0.08; return [Math.cos(a) * rr, 0.83 + Math.sin(a) * rr, 0]; };
+  const rig = () => { walk = [0]; pbias = 0.6 + Math.random() * 0.08; for (let i = 1; i < 120; i++) walk.push(walk[i - 1] + (Math.random() < pbias ? 1 : -1)); const mx = Math.max(1, ...walk.map(Math.abs)); walk = walk.map(v => v / mx); };
+  const price = i => { const t = i / N, k = Math.min(118, Math.floor(t * 119)), v = walk[k] + (walk[k + 1] - walk[k]) * (t * 119 - k); return [-1.1 + t * 2.2, 0.75 - v * 1.45 - 0.05, 0]; };
+  return {
+    resize(w, h) { W = w; H = h; rig(); pts = Array.from({ length: N }, (_, i) => ({ p: world(i), w: world(i), s: sword(i) })); phase = 0; tp = 0; losses = []; },
+    frame(x, w, h, T, dt, M) {
+      x.fillStyle = P.bg; x.fillRect(0, 0, W, H);
+      tp += dt * (M.down ? 3 : 1); if (tp > DUR) { tp = 0; phase = (phase + 1) % 3; if (phase === 2) rig(); if (phase === 0) losses = []; }
+      const wide = W > 860, cx = wide ? W * 0.62 : W / 2, cy = wide ? H * 0.47 : H * 0.36, sc = Math.min(wide ? W * 0.3 : W * 0.42, H * (wide ? 0.36 : 0.26)), rot = T * 0.4, cr = Math.cos(rot), sr = Math.sin(rot), eta = 1.7;
+      let Ls = 0;
+      for (let i = 0; i < N; i++) { const q = pts[i], g = phase === 0 ? [q.w[0] * cr + q.w[2] * sr, q.w[1], -q.w[0] * sr + q.w[2] * cr] : phase === 1 ? q.s : price(i); const e0 = q.p[0] - g[0], e1 = q.p[1] - g[1], e2 = q.p[2] - g[2]; Ls += e0 * e0 + e1 * e1 + e2 * e2; q.p[0] -= eta * e0 * dt; q.p[1] -= eta * e1 * dt; q.p[2] -= eta * e2 * dt; const z = 1 + q.p[2] * 0.25; x.fillStyle = phase === 0 ? P.b : phase === 1 ? P.fg : P.a; x.globalAlpha = 0.3 + z * 0.3; x.beginPath(); x.arc(cx + q.p[0] * sc * z, cy + q.p[1] * sc * z, 1.3 * z, 0, TAU); x.fill(); }
+      x.globalAlpha = 1; const loss = Ls / N; losses.push([phase, loss]); if (losses.length > 600) losses.shift();
+      if (phase === 2) { x.strokeStyle = P.dim; x.setLineDash([3, 5]); x.beginPath(); x.moveTo(cx - 1.1 * sc, cy + 0.7 * sc); x.lineTo(cx + 1.1 * sc, cy - 0.75 * sc); x.stroke(); x.setLineDash([]); x.fillStyle = P.a; x.font = '12px ' + F.mono; x.textAlign = 'right'; x.fillText('a coin that lands up ' + Math.round(pbias * 100) + '% of the time', cx + 1.1 * sc, cy - 0.8 * sc - 8); x.textAlign = 'left'; }
+      // the sentence, lit act by act
+      const big = Math.max(18, Math.min(34, W / 34)), tx0 = Math.max(22, W * 0.04), ty0 = wide ? H * 0.3 : H * 0.62; x.font = '600 ' + big + 'px ' + F.sans; x.textAlign = 'left';
+      let yy = ty0; const maxw = wide ? W * 0.34 : W - tx0 * 2;
+      LINES.forEach((l, i) => { const act = i === 0 ? 0 : i === 1 ? 1 : 2; x.fillStyle = P.fg; x.globalAlpha = act === phase ? 1 : 0.22; let line = ''; for (const wd of l.split(' ')) { if (x.measureText(line + wd).width > maxw && line) { x.fillText(line, tx0, yy); yy += big * 1.18; line = ''; } line += wd + ' '; } x.fillText(line, tx0, yy); yy += big * 1.18; });
+      x.globalAlpha = 1;
+      // the loss curve across the three descents
+      const gw = Math.min(W - 44, wide ? W * 0.34 : 420), gx = tx0, gy = H - 86, gh = 46; x.strokeStyle = P.rule; x.lineWidth = 1; x.beginPath(); x.moveTo(gx, gy + gh); x.lineTo(gx + gw, gy + gh); x.stroke();
+      for (let q = 1; q < losses.length; q++) { const a = losses[q - 1], b = losses[q]; x.strokeStyle = b[0] === 0 ? P.b : b[0] === 1 ? P.fg : P.a; x.lineWidth = 1.5; x.beginPath(); x.moveTo(gx + (q - 1) / 600 * gw, gy + gh - Math.min(1, a[1] * 1.6) * gh); x.lineTo(gx + q / 600 * gw, gy + gh - Math.min(1, b[1] * 1.6) * gh); x.stroke(); }
+      x.fillStyle = P.fg; x.font = 'italic ' + Math.max(14, Math.min(20, W / 60)) + 'px ' + F.serif; x.fillText('p ← p − η∇‖p − target‖²', gx, H - 20);
+      x.font = '11px ' + F.mono; x.fillStyle = P.dim; x.fillText('loss ' + loss.toFixed(4) + '   the same ' + N + ' points every time. only the target changes.', gx, gy - 8);
+      x.fillStyle = P.fg; x.font = '600 12px ' + F.mono; x.fillText('HAWKES STUDIO', tx0, 30);
+    }
+  };
+});
+</script>
+</body>
+</html>

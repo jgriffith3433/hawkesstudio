@@ -175,6 +175,13 @@ const server = http.createServer(async (req, res) => {
       const { requester } = await import('./auth.ts');
       const g = gate(req, route, method, (r) => Boolean(requester(r)));
       if (g) {
+        // The front page (dashboard/front.html; J, 2026-11-14): someone with no session who asks for J's Studio's bare
+        // address gets the visualization, nothing to click, instead of the sign-in page. Any query string, any other
+        // path and every customer's Studio keep the sign-in redirect; signing in is /auth/signin.
+        if (g.status === 302 && route === '/' && method === 'GET' && !url.search && !(await import('./tenancy.ts')).customerStudio()) {
+          const front = path.join(paths.dashboard, 'front.html');
+          if (fs.existsSync(front)) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(fs.readFileSync(front)); }
+        }
         res.writeHead(g.status, { 'Cache-Control': 'no-store', ...(g.body ? { 'Content-Type': 'application/json' } : {}), ...g.headers });
         return res.end(g.body ? JSON.stringify(g.body) : '');
       }
